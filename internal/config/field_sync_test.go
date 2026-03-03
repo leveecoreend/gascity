@@ -38,8 +38,12 @@ func TestAgentFieldSync(t *testing.T) {
 	// "Agent" is the targeting key on AgentOverride, "EnvRemove" is a
 	// remove-only modifier that has no Agent equivalent.
 	patchOnly := map[string]bool{
-		"Agent":     true, // targeting key on AgentOverride
-		"EnvRemove": true, // remove modifier, no Agent field
+		"Agent":                   true, // targeting key on AgentOverride
+		"EnvRemove":               true, // remove modifier, no Agent field
+		"PreStartAppend":          true, // append modifier, no Agent field
+		"SessionSetupAppend":      true, // append modifier, no Agent field
+		"InstallAgentHooksAppend": true, // append modifier, no Agent field
+		"InjectFragmentsAppend":   true, // append modifier, no Agent field
 	}
 
 	agentFields := structFields(reflect.TypeOf(Agent{}))

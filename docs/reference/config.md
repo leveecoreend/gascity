@@ -88,6 +88,10 @@ AgentOverride modifies a topology-stamped agent for a specific rig.
 | `overlay_dir` | string |  |  | OverlayDir overrides the agent's overlay_dir path. Copies contents additively into the agent's working directory at startup. Relative paths resolve against the city directory. |
 | `default_sling_formula` | string |  |  | DefaultSlingFormula overrides the default sling formula. |
 | `inject_fragments` | []string |  |  | InjectFragments overrides the agent's inject_fragments list. |
+| `pre_start_append` | []string |  |  | PreStartAppend appends commands to the agent's pre_start list (instead of replacing). Applied after PreStart if both are set. |
+| `session_setup_append` | []string |  |  | SessionSetupAppend appends commands to the agent's session_setup list. |
+| `install_agent_hooks_append` | []string |  |  | InstallAgentHooksAppend appends to the agent's install_agent_hooks list. |
+| `inject_fragments_append` | []string |  |  | InjectFragmentsAppend appends to the agent's inject_fragments list. |
 
 ## AgentPatch
 
@@ -115,6 +119,10 @@ AgentPatch modifies an existing agent identified by (Dir, Name).
 | `overlay_dir` | string |  |  | OverlayDir overrides the agent's overlay_dir path. Copies contents additively into the agent's working directory at startup. Relative paths resolve against the city directory. |
 | `default_sling_formula` | string |  |  | DefaultSlingFormula overrides the default sling formula. |
 | `inject_fragments` | []string |  |  | InjectFragments overrides the agent's inject_fragments list. |
+| `pre_start_append` | []string |  |  | PreStartAppend appends commands to the agent's pre_start list (instead of replacing). Applied after PreStart if both are set. |
+| `session_setup_append` | []string |  |  | SessionSetupAppend appends commands to the agent's session_setup list. |
+| `install_agent_hooks_append` | []string |  |  | InstallAgentHooksAppend appends to the agent's install_agent_hooks list. |
+| `inject_fragments_append` | []string |  |  | InjectFragmentsAppend appends to the agent's inject_fragments list. |
 
 ## AutomationOverride
 

@@ -634,6 +634,9 @@ func applyAgentOverride(a *Agent, ov *AgentOverride) {
 	if len(ov.PreStart) > 0 {
 		a.PreStart = append([]string(nil), ov.PreStart...)
 	}
+	if len(ov.PreStartAppend) > 0 {
+		a.PreStart = append(a.PreStart, ov.PreStartAppend...)
+	}
 	if ov.PromptTemplate != nil {
 		a.PromptTemplate = *ov.PromptTemplate
 	}
@@ -652,11 +655,17 @@ func applyAgentOverride(a *Agent, ov *AgentOverride) {
 	if len(ov.InstallAgentHooks) > 0 {
 		a.InstallAgentHooks = append([]string(nil), ov.InstallAgentHooks...)
 	}
+	if len(ov.InstallAgentHooksAppend) > 0 {
+		a.InstallAgentHooks = append(a.InstallAgentHooks, ov.InstallAgentHooksAppend...)
+	}
 	if ov.HooksInstalled != nil {
 		a.HooksInstalled = ov.HooksInstalled
 	}
 	if len(ov.SessionSetup) > 0 {
 		a.SessionSetup = append([]string(nil), ov.SessionSetup...)
+	}
+	if len(ov.SessionSetupAppend) > 0 {
+		a.SessionSetup = append(a.SessionSetup, ov.SessionSetupAppend...)
 	}
 	if ov.SessionSetupScript != nil {
 		a.SessionSetupScript = *ov.SessionSetupScript
@@ -669,6 +678,9 @@ func applyAgentOverride(a *Agent, ov *AgentOverride) {
 	}
 	if len(ov.InjectFragments) > 0 {
 		a.InjectFragments = append([]string(nil), ov.InjectFragments...)
+	}
+	if len(ov.InjectFragmentsAppend) > 0 {
+		a.InjectFragments = append(a.InjectFragments, ov.InjectFragmentsAppend...)
 	}
 	// Env: additive merge.
 	if len(ov.Env) > 0 {

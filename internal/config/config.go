@@ -174,6 +174,15 @@ type AgentOverride struct {
 	DefaultSlingFormula *string `toml:"default_sling_formula,omitempty"`
 	// InjectFragments overrides the agent's inject_fragments list.
 	InjectFragments []string `toml:"inject_fragments,omitempty"`
+	// PreStartAppend appends commands to the agent's pre_start list
+	// (instead of replacing). Applied after PreStart if both are set.
+	PreStartAppend []string `toml:"pre_start_append,omitempty"`
+	// SessionSetupAppend appends commands to the agent's session_setup list.
+	SessionSetupAppend []string `toml:"session_setup_append,omitempty"`
+	// InstallAgentHooksAppend appends to the agent's install_agent_hooks list.
+	InstallAgentHooksAppend []string `toml:"install_agent_hooks_append,omitempty"`
+	// InjectFragmentsAppend appends to the agent's inject_fragments list.
+	InjectFragmentsAppend []string `toml:"inject_fragments_append,omitempty"`
 }
 
 // TopologySource defines a remote topology repository.

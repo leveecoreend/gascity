@@ -3052,3 +3052,113 @@ nudge = "standalone fallback"
 		t.Error("agent should have Fallback = true")
 	}
 }
+
+func TestExpandTopologies_OverrideAppendAlone(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "topologies/test/topology.toml", `
+[topology]
+name = "test"
+schema = 1
+
+[[agents]]
+name = "polecat"
+pre_start = ["base-setup.sh"]
+session_setup = ["tmux set status"]
+install_agent_hooks = ["claude"]
+inject_fragments = ["tdd"]
+`)
+	cfg := &City{
+		Rigs: []Rig{{
+			Name: "hw", Path: "/tmp/hw", Topology: "topologies/test",
+			Overrides: []AgentOverride{{
+				Agent:                   "polecat",
+				PreStartAppend:          []string{"extra-setup.sh"},
+				SessionSetupAppend:      []string{"tmux set mouse on"},
+				InstallAgentHooksAppend: []string{"gemini"},
+				InjectFragmentsAppend:   []string{"safety"},
+			}},
+		}},
+	}
+	if err := ExpandTopologies(cfg, fsys.OSFS{}, dir, nil); err != nil {
+		t.Fatalf("ExpandTopologies: %v", err)
+	}
+	a := cfg.Agents[0]
+	wantPreStart := []string{"base-setup.sh", "extra-setup.sh"}
+	if !sliceEqual(a.PreStart, wantPreStart) {
+		t.Errorf("PreStart = %v, want %v", a.PreStart, wantPreStart)
+	}
+	wantSetup := []string{"tmux set status", "tmux set mouse on"}
+	if !sliceEqual(a.SessionSetup, wantSetup) {
+		t.Errorf("SessionSetup = %v, want %v", a.SessionSetup, wantSetup)
+	}
+	wantHooks := []string{"claude", "gemini"}
+	if !sliceEqual(a.InstallAgentHooks, wantHooks) {
+		t.Errorf("InstallAgentHooks = %v, want %v", a.InstallAgentHooks, wantHooks)
+	}
+	wantFragments := []string{"tdd", "safety"}
+	if !sliceEqual(a.InjectFragments, wantFragments) {
+		t.Errorf("InjectFragments = %v, want %v", a.InjectFragments, wantFragments)
+	}
+}
+
+func TestExpandTopologies_OverrideReplacePlusAppend(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "topologies/test/topology.toml", `
+[topology]
+name = "test"
+schema = 1
+
+[[agents]]
+name = "polecat"
+pre_start = ["old-a.sh", "old-b.sh"]
+`)
+	cfg := &City{
+		Rigs: []Rig{{
+			Name: "hw", Path: "/tmp/hw", Topology: "topologies/test",
+			Overrides: []AgentOverride{{
+				Agent:          "polecat",
+				PreStart:       []string{"new-base.sh"},
+				PreStartAppend: []string{"extra.sh"},
+			}},
+		}},
+	}
+	if err := ExpandTopologies(cfg, fsys.OSFS{}, dir, nil); err != nil {
+		t.Fatalf("ExpandTopologies: %v", err)
+	}
+	want := []string{"new-base.sh", "extra.sh"}
+	if !sliceEqual(cfg.Agents[0].PreStart, want) {
+		t.Errorf("PreStart = %v, want %v", cfg.Agents[0].PreStart, want)
+	}
+}
+
+func TestExpandTopologies_OverrideAppendToEmptyBase(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "topologies/test/topology.toml", `
+[topology]
+name = "test"
+schema = 1
+
+[[agents]]
+name = "polecat"
+`)
+	cfg := &City{
+		Rigs: []Rig{{
+			Name: "hw", Path: "/tmp/hw", Topology: "topologies/test",
+			Overrides: []AgentOverride{{
+				Agent:              "polecat",
+				PreStartAppend:     []string{"setup.sh"},
+				SessionSetupAppend: []string{"tmux set mouse on"},
+			}},
+		}},
+	}
+	if err := ExpandTopologies(cfg, fsys.OSFS{}, dir, nil); err != nil {
+		t.Fatalf("ExpandTopologies: %v", err)
+	}
+	a := cfg.Agents[0]
+	if !sliceEqual(a.PreStart, []string{"setup.sh"}) {
+		t.Errorf("PreStart = %v, want [setup.sh]", a.PreStart)
+	}
+	if !sliceEqual(a.SessionSetup, []string{"tmux set mouse on"}) {
+		t.Errorf("SessionSetup = %v, want [tmux set mouse on]", a.SessionSetup)
+	}
+}

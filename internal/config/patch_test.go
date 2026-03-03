@@ -572,3 +572,156 @@ func TestApplyPatches_AgentInstallAgentHooks(t *testing.T) {
 		t.Errorf("InstallAgentHooks = %v, want [gemini copilot]", got)
 	}
 }
+
+func TestApplyPatches_AppendAlone(t *testing.T) {
+	cfg := &City{
+		Agents: []Agent{{
+			Name:              "worker",
+			PreStart:          []string{"base-setup.sh"},
+			SessionSetup:      []string{"tmux set status"},
+			InstallAgentHooks: []string{"claude"},
+			InjectFragments:   []string{"tdd"},
+		}},
+	}
+	err := ApplyPatches(cfg, Patches{
+		Agents: []AgentPatch{{
+			Name:                    "worker",
+			PreStartAppend:          []string{"extra-setup.sh"},
+			SessionSetupAppend:      []string{"tmux set mouse on"},
+			InstallAgentHooksAppend: []string{"gemini"},
+			InjectFragmentsAppend:   []string{"safety"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyPatches: %v", err)
+	}
+	a := cfg.Agents[0]
+	wantPreStart := []string{"base-setup.sh", "extra-setup.sh"}
+	if !sliceEqual(a.PreStart, wantPreStart) {
+		t.Errorf("PreStart = %v, want %v", a.PreStart, wantPreStart)
+	}
+	wantSetup := []string{"tmux set status", "tmux set mouse on"}
+	if !sliceEqual(a.SessionSetup, wantSetup) {
+		t.Errorf("SessionSetup = %v, want %v", a.SessionSetup, wantSetup)
+	}
+	wantHooks := []string{"claude", "gemini"}
+	if !sliceEqual(a.InstallAgentHooks, wantHooks) {
+		t.Errorf("InstallAgentHooks = %v, want %v", a.InstallAgentHooks, wantHooks)
+	}
+	wantFragments := []string{"tdd", "safety"}
+	if !sliceEqual(a.InjectFragments, wantFragments) {
+		t.Errorf("InjectFragments = %v, want %v", a.InjectFragments, wantFragments)
+	}
+}
+
+func TestApplyPatches_ReplacePlusAppend(t *testing.T) {
+	cfg := &City{
+		Agents: []Agent{{
+			Name:     "worker",
+			PreStart: []string{"old-a.sh", "old-b.sh"},
+		}},
+	}
+	err := ApplyPatches(cfg, Patches{
+		Agents: []AgentPatch{{
+			Name:           "worker",
+			PreStart:       []string{"new-base.sh"},
+			PreStartAppend: []string{"extra.sh"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyPatches: %v", err)
+	}
+	want := []string{"new-base.sh", "extra.sh"}
+	if !sliceEqual(cfg.Agents[0].PreStart, want) {
+		t.Errorf("PreStart = %v, want %v", cfg.Agents[0].PreStart, want)
+	}
+}
+
+func TestApplyPatches_AppendToEmptyBase(t *testing.T) {
+	cfg := &City{
+		Agents: []Agent{{Name: "worker"}},
+	}
+	err := ApplyPatches(cfg, Patches{
+		Agents: []AgentPatch{{
+			Name:               "worker",
+			PreStartAppend:     []string{"setup.sh"},
+			SessionSetupAppend: []string{"tmux set mouse on"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyPatches: %v", err)
+	}
+	a := cfg.Agents[0]
+	if !sliceEqual(a.PreStart, []string{"setup.sh"}) {
+		t.Errorf("PreStart = %v, want [setup.sh]", a.PreStart)
+	}
+	if !sliceEqual(a.SessionSetup, []string{"tmux set mouse on"}) {
+		t.Errorf("SessionSetup = %v, want [tmux set mouse on]", a.SessionSetup)
+	}
+}
+
+func TestApplyPatches_EmptyAppendIsNoop(t *testing.T) {
+	cfg := &City{
+		Agents: []Agent{{
+			Name:     "worker",
+			PreStart: []string{"base.sh"},
+		}},
+	}
+	err := ApplyPatches(cfg, Patches{
+		Agents: []AgentPatch{{
+			Name: "worker",
+			// No append fields set — should be no-op.
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ApplyPatches: %v", err)
+	}
+	if !sliceEqual(cfg.Agents[0].PreStart, []string{"base.sh"}) {
+		t.Errorf("PreStart = %v, want [base.sh]", cfg.Agents[0].PreStart)
+	}
+}
+
+func TestApplyPatches_MultipleAppendStack(t *testing.T) {
+	cfg := &City{
+		Agents: []Agent{{
+			Name:     "worker",
+			PreStart: []string{"base.sh"},
+		}},
+	}
+	// Apply first patch.
+	err := ApplyPatches(cfg, Patches{
+		Agents: []AgentPatch{{
+			Name:           "worker",
+			PreStartAppend: []string{"layer1.sh"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("first ApplyPatches: %v", err)
+	}
+	// Apply second patch.
+	err = ApplyPatches(cfg, Patches{
+		Agents: []AgentPatch{{
+			Name:           "worker",
+			PreStartAppend: []string{"layer2.sh"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("second ApplyPatches: %v", err)
+	}
+	want := []string{"base.sh", "layer1.sh", "layer2.sh"}
+	if !sliceEqual(cfg.Agents[0].PreStart, want) {
+		t.Errorf("PreStart = %v, want %v", cfg.Agents[0].PreStart, want)
+	}
+}
+
+func sliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

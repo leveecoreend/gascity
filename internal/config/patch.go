@@ -62,6 +62,15 @@ type AgentPatch struct {
 	DefaultSlingFormula *string `toml:"default_sling_formula,omitempty"`
 	// InjectFragments overrides the agent's inject_fragments list.
 	InjectFragments []string `toml:"inject_fragments,omitempty"`
+	// PreStartAppend appends commands to the agent's pre_start list
+	// (instead of replacing). Applied after PreStart if both are set.
+	PreStartAppend []string `toml:"pre_start_append,omitempty"`
+	// SessionSetupAppend appends commands to the agent's session_setup list.
+	SessionSetupAppend []string `toml:"session_setup_append,omitempty"`
+	// InstallAgentHooksAppend appends to the agent's install_agent_hooks list.
+	InstallAgentHooksAppend []string `toml:"install_agent_hooks_append,omitempty"`
+	// InjectFragmentsAppend appends to the agent's inject_fragments list.
+	InjectFragmentsAppend []string `toml:"inject_fragments_append,omitempty"`
 }
 
 // PoolOverride modifies pool configuration fields. Nil fields are not changed.
@@ -164,6 +173,9 @@ func applyAgentPatchFields(a *Agent, p *AgentPatch) {
 	if len(p.PreStart) > 0 {
 		a.PreStart = append([]string(nil), p.PreStart...)
 	}
+	if len(p.PreStartAppend) > 0 {
+		a.PreStart = append(a.PreStart, p.PreStartAppend...)
+	}
 	if p.PromptTemplate != nil {
 		a.PromptTemplate = *p.PromptTemplate
 	}
@@ -182,11 +194,17 @@ func applyAgentPatchFields(a *Agent, p *AgentPatch) {
 	if len(p.InstallAgentHooks) > 0 {
 		a.InstallAgentHooks = append([]string(nil), p.InstallAgentHooks...)
 	}
+	if len(p.InstallAgentHooksAppend) > 0 {
+		a.InstallAgentHooks = append(a.InstallAgentHooks, p.InstallAgentHooksAppend...)
+	}
 	if p.HooksInstalled != nil {
 		a.HooksInstalled = p.HooksInstalled
 	}
 	if len(p.SessionSetup) > 0 {
 		a.SessionSetup = append([]string(nil), p.SessionSetup...)
+	}
+	if len(p.SessionSetupAppend) > 0 {
+		a.SessionSetup = append(a.SessionSetup, p.SessionSetupAppend...)
 	}
 	if p.SessionSetupScript != nil {
 		a.SessionSetupScript = *p.SessionSetupScript
@@ -199,6 +217,9 @@ func applyAgentPatchFields(a *Agent, p *AgentPatch) {
 	}
 	if len(p.InjectFragments) > 0 {
 		a.InjectFragments = append([]string(nil), p.InjectFragments...)
+	}
+	if len(p.InjectFragmentsAppend) > 0 {
+		a.InjectFragments = append(a.InjectFragments, p.InjectFragmentsAppend...)
 	}
 	// Env: additive merge.
 	if len(p.Env) > 0 {

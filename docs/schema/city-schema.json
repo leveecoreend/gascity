@@ -260,6 +260,34 @@
           },
           "type": "array",
           "description": "InjectFragments overrides the agent's inject_fragments list."
+        },
+        "pre_start_append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "PreStartAppend appends commands to the agent's pre_start list\n(instead of replacing). Applied after PreStart if both are set."
+        },
+        "session_setup_append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "SessionSetupAppend appends commands to the agent's session_setup list."
+        },
+        "install_agent_hooks_append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "InstallAgentHooksAppend appends to the agent's install_agent_hooks list."
+        },
+        "inject_fragments_append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "InjectFragmentsAppend appends to the agent's inject_fragments list."
         }
       },
       "additionalProperties": false,
@@ -368,6 +396,34 @@
           },
           "type": "array",
           "description": "InjectFragments overrides the agent's inject_fragments list."
+        },
+        "pre_start_append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "PreStartAppend appends commands to the agent's pre_start list\n(instead of replacing). Applied after PreStart if both are set."
+        },
+        "session_setup_append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "SessionSetupAppend appends commands to the agent's session_setup list."
+        },
+        "install_agent_hooks_append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "InstallAgentHooksAppend appends to the agent's install_agent_hooks list."
+        },
+        "inject_fragments_append": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "description": "InjectFragmentsAppend appends to the agent's inject_fragments list."
         }
       },
       "additionalProperties": false,
