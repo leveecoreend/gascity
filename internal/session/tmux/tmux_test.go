@@ -3,6 +3,7 @@
 package tmux
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -479,7 +480,7 @@ func TestIsRuntimeRunning_ShellWithNodeChild(t *testing.T) {
 	// Give the node process time to start
 	// WaitForCommand waits until NOT running bash/zsh/sh
 	shellsToExclude := []string{"bash", "zsh", "sh"}
-	err := tm.WaitForCommand(sessionName, shellsToExclude, 2000*1000000) // 2 second timeout
+	err := tm.WaitForCommand(context.Background(), sessionName, shellsToExclude, 2000*1000000) // 2 second timeout
 	if err != nil {
 		// If we timeout waiting, it means the pane command is still a shell
 		// This is the case we're testing - shell with a node child

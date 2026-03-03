@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -73,7 +74,7 @@ func (f *fakeStartOps) killSession(name string) error {
 	return f.killErr
 }
 
-func (f *fakeStartOps) waitForCommand(name string, timeout time.Duration) error {
+func (f *fakeStartOps) waitForCommand(_ context.Context, name string, timeout time.Duration) error {
 	f.calls = append(f.calls, startCall{
 		method:  "waitForCommand",
 		name:    name,
@@ -82,12 +83,12 @@ func (f *fakeStartOps) waitForCommand(name string, timeout time.Duration) error 
 	return f.waitCommandErr
 }
 
-func (f *fakeStartOps) acceptStartupDialogs(name string) error {
+func (f *fakeStartOps) acceptStartupDialogs(_ context.Context, name string) error {
 	f.calls = append(f.calls, startCall{method: "acceptStartupDialogs", name: name})
 	return f.acceptStartupDialogsErr
 }
 
-func (f *fakeStartOps) waitForReady(name string, rc *RuntimeConfig, timeout time.Duration) error {
+func (f *fakeStartOps) waitForReady(_ context.Context, name string, rc *RuntimeConfig, timeout time.Duration) error {
 	f.calls = append(f.calls, startCall{
 		method:  "waitForReady",
 		name:    name,
@@ -112,7 +113,7 @@ func (f *fakeStartOps) setRemainOnExit(name string) error {
 	return f.setRemainOnExitErr
 }
 
-func (f *fakeStartOps) runSetupCommand(cmd string, env map[string]string, timeout time.Duration) error {
+func (f *fakeStartOps) runSetupCommand(_ context.Context, cmd string, env map[string]string, timeout time.Duration) error {
 	f.calls = append(f.calls, startCall{
 		method:  "runSetupCommand",
 		command: cmd,
@@ -155,7 +156,7 @@ func assertCallSequence(t *testing.T, ops *fakeStartOps, want []string) {
 func TestDoStartSession_FireAndForget(t *testing.T) {
 	ops := &fakeStartOps{}
 
-	err := doStartSession(ops, "test-sess", session.Config{
+	err := doStartSession(context.Background(), ops, "test-sess", session.Config{
 		WorkDir: "/w",
 		Command: "sleep 300",
 	}, DefaultConfig().SetupTimeout)
@@ -194,7 +195,7 @@ func TestDoStartSession_FullSequence(t *testing.T) {
 		EmitsPermissionWarning: true,
 	}
 
-	err := doStartSession(ops, "gc-city-mayor", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "gc-city-mayor", cfg, DefaultConfig().SetupTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -257,7 +258,7 @@ func TestDoStartSession_CreateFails(t *testing.T) {
 		createErrs: []error{errors.New("tmux not found")},
 	}
 
-	err := doStartSession(ops, "test", session.Config{Command: "sleep 300"}, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", session.Config{Command: "sleep 300"}, DefaultConfig().SetupTimeout)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -278,7 +279,7 @@ func TestDoStartSession_SessionDiesDuringStartup(t *testing.T) {
 		ProcessNames: []string{"claude"},
 	}
 
-	err := doStartSession(ops, "test", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -297,7 +298,7 @@ func TestDoStartSession_HasSessionError(t *testing.T) {
 		ProcessNames: []string{"claude"},
 	}
 
-	err := doStartSession(ops, "test", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -320,7 +321,7 @@ func TestDoStartSession_ProcessNamesOnly(t *testing.T) {
 		ProcessNames: []string{"codex"},
 	}
 
-	err := doStartSession(ops, "test", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -349,7 +350,7 @@ func TestDoStartSession_ReadyPromptPrefixOnly(t *testing.T) {
 		ReadyPromptPrefix: "❯ ",
 	}
 
-	err := doStartSession(ops, "test", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -380,7 +381,7 @@ func TestDoStartSession_ReadyDelayOnly(t *testing.T) {
 		ReadyDelayMs: 3000,
 	}
 
-	err := doStartSession(ops, "test", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -409,7 +410,7 @@ func TestDoStartSession_EmitsPermissionWarningOnly(t *testing.T) {
 		EmitsPermissionWarning: true,
 	}
 
-	err := doStartSession(ops, "test", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -435,7 +436,7 @@ func TestDoStartSession_ProcessNamesAndReadyPrefix(t *testing.T) {
 		ReadyPromptPrefix: "> ",
 	}
 
-	err := doStartSession(ops, "test", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -455,7 +456,7 @@ func TestDoStartSession_SetRemainOnExit(t *testing.T) {
 	// Even fire-and-forget agents get remain-on-exit.
 	ops := &fakeStartOps{}
 
-	err := doStartSession(ops, "test-sess", session.Config{
+	err := doStartSession(context.Background(), ops, "test-sess", session.Config{
 		WorkDir: "/w",
 		Command: "sleep 300",
 	}, DefaultConfig().SetupTimeout)
@@ -478,7 +479,7 @@ func TestDoStartSession_SetRemainOnExitErrorIgnored(t *testing.T) {
 		setRemainOnExitErr: errors.New("tmux option not supported"),
 	}
 
-	err := doStartSession(ops, "test", session.Config{
+	err := doStartSession(context.Background(), ops, "test", session.Config{
 		WorkDir: "/w",
 		Command: "sleep 300",
 	}, DefaultConfig().SetupTimeout)
@@ -511,7 +512,7 @@ func TestDoStartSession_SessionSetupRunsAfterAlive(t *testing.T) {
 		},
 	}
 
-	err := doStartSession(ops, "test", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -556,7 +557,7 @@ func TestDoStartSession_SessionSetupScriptRunsAfterCommands(t *testing.T) {
 		Nudge:              "start working",
 	}
 
-	err := doStartSession(ops, "test", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -597,7 +598,7 @@ func TestDoStartSession_NoSetupConfigured(t *testing.T) {
 		ProcessNames: []string{"claude"},
 	}
 
-	err := doStartSession(ops, "test", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -623,7 +624,7 @@ func TestDoStartSession_SetupFailureNonFatal(t *testing.T) {
 		Nudge:        "continue",
 	}
 
-	err := doStartSession(ops, "test", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
 	if err != nil {
 		t.Fatalf("setup failure should be non-fatal, got: %v", err)
 	}
@@ -647,7 +648,7 @@ func TestDoStartSession_SetupOnlyTriggersHints(t *testing.T) {
 		SessionSetup: []string{"tmux set mouse on"},
 	}
 
-	err := doStartSession(ops, "test", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -680,7 +681,7 @@ func TestDoStartSession_SetupScriptOnlyTriggersHints(t *testing.T) {
 		SessionSetupScript: "/city/scripts/setup.sh",
 	}
 
-	err := doStartSession(ops, "test", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -708,7 +709,7 @@ func TestDoStartSession_SetupEnvPassthrough(t *testing.T) {
 		SessionSetup: []string{"echo setup"},
 	}
 
-	err := doStartSession(ops, "test-sess", cfg, DefaultConfig().SetupTimeout)
+	err := doStartSession(context.Background(), ops, "test-sess", cfg, DefaultConfig().SetupTimeout)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

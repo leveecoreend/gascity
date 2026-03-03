@@ -3,6 +3,7 @@ package tmux
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -1179,8 +1180,8 @@ func (t *Tmux) NudgePane(pane, message string) error {
 //
 // Call this after starting Claude and waiting for it to initialize (WaitForCommand),
 // but before sending any prompts. Idempotent: safe to call on sessions without dialogs.
-func (t *Tmux) AcceptStartupDialogs(sess string) error {
-	return session.AcceptStartupDialogs(
+func (t *Tmux) AcceptStartupDialogs(ctx context.Context, sess string) error {
+	return session.AcceptStartupDialogs(ctx,
 		func(lines int) (string, error) { return t.CapturePane(sess, lines) },
 		func(keys ...string) error {
 			for _, k := range keys {
@@ -1759,12 +1760,21 @@ func (t *Tmux) resolveSessionProcessNames(session string) []string {
 // (e.g., "bash"), the agent may be running as a descendant process via a
 // wrapper script (e.g., "bash -c 'exec claude'"). In this case, pane_current_command
 // never changes from "bash", but IsAgentAlive detects the descendant.
-func (t *Tmux) WaitForCommand(session string, excludeCommands []string, timeout time.Duration) error {
+func (t *Tmux) WaitForCommand(ctx context.Context, session string, excludeCommands []string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		cmd, err := t.GetPaneCommand(session)
 		if err != nil {
-			time.Sleep(pollInterval)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(pollInterval):
+			}
 			continue
 		}
 		// Check if current command is NOT in the exclude list
@@ -1783,7 +1793,11 @@ func (t *Tmux) WaitForCommand(session string, excludeCommands []string, timeout 
 		if t.IsAgentAlive(session) {
 			return nil
 		}
-		time.Sleep(pollInterval)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollInterval):
+		}
 	}
 	return fmt.Errorf("timeout waiting for command (still running excluded command)")
 }
@@ -1849,7 +1863,7 @@ func matchesPromptPrefix(line, readyPromptPrefix string) bool {
 
 // WaitForRuntimeReady polls until the agent runtime's ready prompt appears in
 // the pane. Falls back to a fixed delay when prompt detection is unavailable.
-func (t *Tmux) WaitForRuntimeReady(session string, rc *RuntimeConfig, timeout time.Duration) error {
+func (t *Tmux) WaitForRuntimeReady(ctx context.Context, session string, rc *RuntimeConfig, timeout time.Duration) error {
 	if rc == nil || rc.Tmux == nil {
 		return nil
 	}
@@ -1863,16 +1877,29 @@ func (t *Tmux) WaitForRuntimeReady(session string, rc *RuntimeConfig, timeout ti
 		if delay > timeout {
 			delay = timeout
 		}
-		time.Sleep(delay)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
 		return nil
 	}
 
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
 		// Capture last few lines of the pane
 		lines, err := t.CapturePaneLines(session, 10)
 		if err != nil {
-			time.Sleep(200 * time.Millisecond)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(200 * time.Millisecond):
+			}
 			continue
 		}
 		// Look for runtime prompt indicator at start of line
@@ -1881,7 +1908,11 @@ func (t *Tmux) WaitForRuntimeReady(session string, rc *RuntimeConfig, timeout ti
 				return nil
 			}
 		}
-		time.Sleep(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
 	return fmt.Errorf("timeout waiting for runtime prompt")
 }

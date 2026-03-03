@@ -97,12 +97,10 @@ func newProviderWithOps(ops k8sOps) *Provider {
 }
 
 // Start creates a new K8s pod running a tmux session with the agent command.
-func (p *Provider) Start(_ context.Context, name string, cfg session.Config) error {
+func (p *Provider) Start(ctx context.Context, name string, cfg session.Config) error {
 	if p.image == "" {
 		return fmt.Errorf("starting session %q: GC_K8S_IMAGE is required", name)
 	}
-
-	ctx := context.Background()
 	podName := SanitizeName(name)
 	label := SanitizeLabel(name)
 

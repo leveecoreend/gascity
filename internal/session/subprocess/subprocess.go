@@ -7,7 +7,9 @@
 //
 // Process tracking uses two layers:
 //   - In-memory: for the same gc process (Start followed by Stop/IsRunning)
-//   - PID files: for cross-process persistence (gc start → gc stop)
+//   - Unix sockets: for cross-process persistence (gc start → gc stop).
+//     Each session gets a per-session unix socket (<name>.sock) that serves
+//     as both proof of liveness and control channel (stop/interrupt/ping).
 //
 // Limitations compared to tmux:
 //   - No interactive attach (Attach always returns an error)
@@ -15,14 +17,15 @@
 package subprocess
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -35,33 +38,34 @@ import (
 // Provider manages agent sessions as child processes.
 type Provider struct {
 	mu       sync.Mutex
-	dir      string            // PID file directory
-	procs    map[string]*proc  // in-process tracking
-	workDirs map[string]string // session name → workDir (for CopyTo)
+	dir      string                  // socket/meta file directory
+	procs    map[string]*sessionConn // in-process tracking
+	workDirs map[string]string       // session name → workDir (for CopyTo)
 }
 
-// proc tracks a running child process.
-type proc struct {
-	cmd  *exec.Cmd
-	done chan struct{} // closed when process exits
+// sessionConn tracks a running child process and its control socket.
+type sessionConn struct {
+	cmd      *exec.Cmd
+	done     chan struct{} // closed when process exits
+	listener net.Listener  // unix socket listener
 }
 
 // Compile-time check.
 var _ session.Provider = (*Provider)(nil)
 
-// NewProvider returns a subprocess [Provider] that stores PID files in
+// NewProvider returns a subprocess [Provider] that stores socket files in
 // a default temporary directory. Suitable for production use.
 func NewProvider() *Provider {
 	dir := filepath.Join(os.TempDir(), "gc-subprocess")
 	_ = os.MkdirAll(dir, 0o755)
-	return &Provider{dir: dir, procs: make(map[string]*proc), workDirs: make(map[string]string)}
+	return &Provider{dir: dir, procs: make(map[string]*sessionConn), workDirs: make(map[string]string)}
 }
 
-// NewProviderWithDir returns a subprocess [Provider] that stores PID files
+// NewProviderWithDir returns a subprocess [Provider] that stores socket files
 // in the given directory. Useful for tests that need isolated state.
 func NewProviderWithDir(dir string) *Provider {
 	_ = os.MkdirAll(dir, 0o755)
-	return &Provider{dir: dir, procs: make(map[string]*proc), workDirs: make(map[string]string)}
+	return &Provider{dir: dir, procs: make(map[string]*sessionConn), workDirs: make(map[string]string)}
 }
 
 // Start spawns a child process for the given session name and config.
@@ -80,8 +84,8 @@ func (p *Provider) Start(_ context.Context, name string, cfg session.Config) err
 		delete(p.procs, name)
 	}
 
-	// Check PID file for cross-process case.
-	if p.pidAlive(name) {
+	// Check socket for cross-process case.
+	if p.socketAlive(name) {
 		return fmt.Errorf("session %q already exists", name)
 	}
 
@@ -135,18 +139,25 @@ func (p *Provider) Start(_ context.Context, name string, cfg session.Config) err
 		return fmt.Errorf("starting session %q: %w", name, err)
 	}
 
-	// Write PID file for cross-process discovery.
-	_ = p.writePID(name, cmd.Process.Pid)
+	// Create control socket for cross-process discovery.
+	lis, err := p.startControlSocket(name, cmd)
+	if err != nil {
+		// Socket creation failed — kill the process and bail.
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return fmt.Errorf("creating control socket for %q: %w", name, err)
+	}
 
 	done := make(chan struct{})
 	go func() {
 		_ = cmd.Wait()
 		close(done)
-		// Clean up PID file when process exits.
-		_ = os.Remove(p.pidPath(name))
+		// Clean up socket when process exits.
+		lis.Close()                 //nolint:errcheck
+		os.Remove(p.sockPath(name)) //nolint:errcheck
 	}()
 
-	p.procs[name] = &proc{cmd: cmd, done: done}
+	p.procs[name] = &sessionConn{cmd: cmd, done: done, listener: lis}
 	return nil
 }
 
@@ -154,7 +165,7 @@ func (p *Provider) Start(_ context.Context, name string, cfg session.Config) err
 // (idempotent). Sends SIGTERM first, then SIGKILL after a grace period.
 func (p *Provider) Stop(name string) error {
 	p.mu.Lock()
-	pr, ok := p.procs[name]
+	sc, ok := p.procs[name]
 	if ok {
 		delete(p.procs, name)
 	}
@@ -162,50 +173,42 @@ func (p *Provider) Stop(name string) error {
 
 	// Try in-memory process first.
 	if ok {
-		_ = os.Remove(p.pidPath(name))
-		if !pr.alive() {
+		if !sc.alive() {
 			return nil
 		}
-		return terminateProc(pr)
+		return terminateSessionConn(sc)
 	}
 
-	// Fall back to PID file (cross-process case: gc stop after gc start).
-	return p.stopByPID(name)
+	// Fall back to socket (cross-process case: gc stop after gc start).
+	return p.stopBySocket(name)
 }
 
 // Interrupt sends SIGINT to the named session's process.
 // Best-effort: returns nil if the session doesn't exist.
 func (p *Provider) Interrupt(name string) error {
 	p.mu.Lock()
-	pr, ok := p.procs[name]
+	sc, ok := p.procs[name]
 	p.mu.Unlock()
 	if ok {
-		return pr.cmd.Process.Signal(syscall.SIGINT)
+		return sc.cmd.Process.Signal(syscall.SIGINT)
 	}
 
-	// Fall back to PID file (cross-process case).
-	pid, err := p.readPID(name)
-	if err != nil {
-		return nil // no PID file — nothing to interrupt (idempotent)
-	}
-	if syscall.Kill(pid, 0) != nil {
-		return nil // process already dead
-	}
-	return syscall.Kill(pid, syscall.SIGINT)
+	// Fall back to socket (cross-process case).
+	return p.sendSocketCommand(name, "interrupt", 2*time.Second)
 }
 
 // IsRunning reports whether the named session has a live process.
 func (p *Provider) IsRunning(name string) bool {
 	p.mu.Lock()
-	pr, ok := p.procs[name]
+	sc, ok := p.procs[name]
 	p.mu.Unlock()
 
 	if ok {
-		return pr.alive()
+		return sc.alive()
 	}
 
-	// Fall back to PID file.
-	return p.pidAlive(name)
+	// Fall back to socket liveness check.
+	return p.socketAlive(name)
 }
 
 // Attach is not supported by the subprocess provider.
@@ -306,7 +309,7 @@ func (p *Provider) CopyTo(name, src, relDst string) error {
 }
 
 // ListRunning returns the names of all running sessions whose names
-// match the given prefix, discovered via PID files.
+// match the given prefix, discovered via socket files.
 func (p *Provider) ListRunning(prefix string) ([]string, error) {
 	entries, err := os.ReadDir(p.dir)
 	if err != nil {
@@ -318,14 +321,14 @@ func (p *Provider) ListRunning(prefix string) ([]string, error) {
 	var names []string
 	for _, e := range entries {
 		n := e.Name()
-		if !strings.HasSuffix(n, ".pid") {
+		if !strings.HasSuffix(n, ".sock") {
 			continue
 		}
-		sn := strings.TrimSuffix(n, ".pid")
+		sn := strings.TrimSuffix(n, ".sock")
 		if !strings.HasPrefix(sn, prefix) {
 			continue
 		}
-		if p.pidAlive(sn) {
+		if p.socketAlive(sn) {
 			names = append(names, sn)
 		}
 	}
@@ -336,87 +339,143 @@ func (p *Provider) metaPath(name, key string) string {
 	return filepath.Join(p.dir, name+".meta."+key)
 }
 
-// --- PID file helpers ---
+// --- Unix socket helpers ---
 
-func (p *Provider) pidPath(name string) string {
-	return filepath.Join(p.dir, name+".pid")
+func (p *Provider) sockPath(name string) string {
+	return filepath.Join(p.dir, name+".sock")
 }
 
-func (p *Provider) writePID(name string, pid int) error {
-	return os.WriteFile(p.pidPath(name), []byte(strconv.Itoa(pid)), 0o644)
-}
-
-func (p *Provider) readPID(name string) (int, error) {
-	data, err := os.ReadFile(p.pidPath(name))
+// startControlSocket creates a unix socket for the session and starts
+// a goroutine to handle commands. The socket handler supports:
+//   - "stop" — SIGTERM then SIGKILL; replies "ok"
+//   - "interrupt" — SIGINT; replies "ok"
+//   - "ping" — replies "ok"
+//   - "pid" — replies with the PID (diagnostics)
+func (p *Provider) startControlSocket(name string, cmd *exec.Cmd) (net.Listener, error) {
+	sp := p.sockPath(name)
+	// Remove stale socket from a previous crash.
+	os.Remove(sp) //nolint:errcheck
+	lis, err := net.Listen("unix", sp)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return strconv.Atoi(strings.TrimSpace(string(data)))
+	go func() {
+		for {
+			conn, err := lis.Accept()
+			if err != nil {
+				return // listener closed
+			}
+			go handleSessionConn(conn, cmd)
+		}
+	}()
+	return lis, nil
 }
 
-// pidAlive checks if a process tracked by PID file is still alive.
-func (p *Provider) pidAlive(name string) bool {
-	pid, err := p.readPID(name)
-	if err != nil {
-		return false
+// handleSessionConn reads a command from the connection and acts on the process.
+func handleSessionConn(conn net.Conn, cmd *exec.Cmd) {
+	defer conn.Close()                                     //nolint:errcheck
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second)) //nolint:errcheck
+	scanner := bufio.NewScanner(conn)
+	if !scanner.Scan() {
+		return
 	}
-	// Signal 0 checks if process exists without actually signaling.
-	return syscall.Kill(pid, 0) == nil
+	switch scanner.Text() {
+	case "stop":
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		// Wait up to 5s for graceful exit, then SIGKILL.
+		done := make(chan struct{})
+		go func() {
+			_ = cmd.Process.Signal(syscall.Signal(0)) // dummy, just to not use cmd.Wait here
+			close(done)
+		}()
+		deadline := time.After(5 * time.Second)
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		alive := true
+		for alive {
+			select {
+			case <-deadline:
+				_ = cmd.Process.Kill()
+				alive = false
+			case <-ticker.C:
+				if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+					alive = false
+				}
+			}
+		}
+		conn.Write([]byte("ok\n")) //nolint:errcheck
+	case "interrupt":
+		_ = cmd.Process.Signal(syscall.SIGINT)
+		conn.Write([]byte("ok\n")) //nolint:errcheck
+	case "ping":
+		conn.Write([]byte("ok\n")) //nolint:errcheck
+	case "pid":
+		fmt.Fprintf(conn, "%d\n", cmd.Process.Pid) //nolint:errcheck
+	}
 }
 
-// stopByPID reads a PID file and terminates the process.
-func (p *Provider) stopByPID(name string) error {
-	pid, err := p.readPID(name)
+// socketAlive checks if a session is alive by pinging its control socket.
+func (p *Provider) socketAlive(name string) bool {
+	return p.sendSocketCommand(name, "ping", 500*time.Millisecond) == nil
+}
+
+// sendSocketCommand connects to the session's control socket, sends a
+// command, and waits for "ok". Returns nil on success.
+func (p *Provider) sendSocketCommand(name, command string, timeout time.Duration) error {
+	sp := p.sockPath(name)
+	conn, err := net.DialTimeout("unix", sp, timeout)
 	if err != nil {
-		// No PID file — nothing to stop (idempotent).
+		return err // socket doesn't exist or can't connect
+	}
+	defer conn.Close()                        //nolint:errcheck
+	conn.SetDeadline(time.Now().Add(timeout)) //nolint:errcheck
+	_, err = fmt.Fprintf(conn, "%s\n", command)
+	if err != nil {
+		return err
+	}
+	scanner := bufio.NewScanner(conn)
+	if scanner.Scan() && scanner.Text() == "ok" {
 		return nil
 	}
-	defer func() { _ = os.Remove(p.pidPath(name)) }()
-
-	// Check if process is alive.
-	if syscall.Kill(pid, 0) != nil {
-		return nil // already dead
+	if err := scanner.Err(); err != nil {
+		return err
 	}
+	return fmt.Errorf("unexpected response from socket")
+}
 
-	// Graceful shutdown: SIGTERM → wait → SIGKILL.
-	_ = syscall.Kill(pid, syscall.SIGTERM)
-
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if syscall.Kill(pid, 0) != nil {
-			return nil // died
-		}
-		time.Sleep(50 * time.Millisecond)
+// stopBySocket connects to a session's control socket and asks it to stop.
+func (p *Provider) stopBySocket(name string) error {
+	err := p.sendSocketCommand(name, "stop", 7*time.Second)
+	if err != nil {
+		// Socket doesn't exist or can't connect — session is dead (idempotent).
+		// Clean up stale socket file if it exists.
+		os.Remove(p.sockPath(name)) //nolint:errcheck
+		return nil
 	}
-
-	// Force kill.
-	_ = syscall.Kill(pid, syscall.SIGKILL)
-	// Brief wait for kernel cleanup.
-	time.Sleep(100 * time.Millisecond)
 	return nil
 }
 
 // --- In-memory process helpers ---
 
-// terminateProc sends SIGTERM then SIGKILL to an in-memory tracked process.
-func terminateProc(pr *proc) error {
-	_ = pr.cmd.Process.Signal(syscall.SIGTERM)
+// terminateSessionConn sends SIGTERM then SIGKILL to an in-memory tracked process.
+func terminateSessionConn(sc *sessionConn) error {
+	_ = sc.cmd.Process.Signal(syscall.SIGTERM)
 
 	select {
-	case <-pr.done:
+	case <-sc.done:
 		return nil
 	case <-time.After(5 * time.Second):
 	}
 
-	_ = pr.cmd.Process.Kill()
-	<-pr.done
+	_ = sc.cmd.Process.Kill()
+	<-sc.done
 	return nil
 }
 
 // alive reports whether the process is still running.
-func (pr *proc) alive() bool {
+func (sc *sessionConn) alive() bool {
 	select {
-	case <-pr.done:
+	case <-sc.done:
 		return false
 	default:
 		return true

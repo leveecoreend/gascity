@@ -47,7 +47,7 @@ func NewProviderWithConfig(cfg Config) *Provider {
 // detection, command launch verification, permission warning dismissal,
 // and runtime readiness polling. Steps are conditional on Config fields
 // being set; an agent with no startup hints gets fire-and-forget.
-func (p *Provider) Start(_ context.Context, name string, cfg session.Config) error {
+func (p *Provider) Start(ctx context.Context, name string, cfg session.Config) error {
 	// Store workDir for CopyTo.
 	if cfg.WorkDir != "" {
 		p.mu.Lock()
@@ -74,7 +74,7 @@ func (p *Provider) Start(_ context.Context, name string, cfg session.Config) err
 		_ = overlay.CopyFileOrDir(cf.Src, dst, io.Discard)
 	}
 
-	return doStartSession(&tmuxStartOps{tm: p.tm}, name, cfg, p.cfg.SetupTimeout)
+	return doStartSession(ctx, &tmuxStartOps{tm: p.tm}, name, cfg, p.cfg.SetupTimeout)
 }
 
 // RunLive re-applies session_live commands to a running session.
@@ -259,13 +259,13 @@ type startOps interface {
 	createSession(name, workDir, command string, env map[string]string) error
 	isRuntimeRunning(name string, processNames []string) bool
 	killSession(name string) error
-	waitForCommand(name string, timeout time.Duration) error
-	acceptStartupDialogs(name string) error
-	waitForReady(name string, rc *RuntimeConfig, timeout time.Duration) error
+	waitForCommand(ctx context.Context, name string, timeout time.Duration) error
+	acceptStartupDialogs(ctx context.Context, name string) error
+	waitForReady(ctx context.Context, name string, rc *RuntimeConfig, timeout time.Duration) error
 	hasSession(name string) (bool, error)
 	sendKeys(name, text string) error
 	setRemainOnExit(name string) error
-	runSetupCommand(cmd string, env map[string]string, timeout time.Duration) error
+	runSetupCommand(ctx context.Context, cmd string, env map[string]string, timeout time.Duration) error
 }
 
 // tmuxStartOps adapts [*Tmux] to the [startOps] interface.
@@ -286,16 +286,16 @@ func (o *tmuxStartOps) killSession(name string) error {
 	return o.tm.KillSessionWithProcesses(name)
 }
 
-func (o *tmuxStartOps) waitForCommand(name string, timeout time.Duration) error {
-	return o.tm.WaitForCommand(name, supportedShells, timeout)
+func (o *tmuxStartOps) waitForCommand(ctx context.Context, name string, timeout time.Duration) error {
+	return o.tm.WaitForCommand(ctx, name, supportedShells, timeout)
 }
 
-func (o *tmuxStartOps) acceptStartupDialogs(name string) error {
-	return o.tm.AcceptStartupDialogs(name)
+func (o *tmuxStartOps) acceptStartupDialogs(ctx context.Context, name string) error {
+	return o.tm.AcceptStartupDialogs(ctx, name)
 }
 
-func (o *tmuxStartOps) waitForReady(name string, rc *RuntimeConfig, timeout time.Duration) error {
-	return o.tm.WaitForRuntimeReady(name, rc, timeout)
+func (o *tmuxStartOps) waitForReady(ctx context.Context, name string, rc *RuntimeConfig, timeout time.Duration) error {
+	return o.tm.WaitForRuntimeReady(ctx, name, rc, timeout)
 }
 
 func (o *tmuxStartOps) hasSession(name string) (bool, error) {
@@ -310,8 +310,8 @@ func (o *tmuxStartOps) setRemainOnExit(name string) error {
 	return o.tm.SetRemainOnExit(name, true)
 }
 
-func (o *tmuxStartOps) runSetupCommand(cmd string, env map[string]string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func (o *tmuxStartOps) runSetupCommand(ctx context.Context, cmd string, env map[string]string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	c := exec.CommandContext(ctx, "sh", "-c", cmd)
 	c.Env = os.Environ()
@@ -330,9 +330,9 @@ func (o *tmuxStartOps) runSetupCommand(cmd string, env map[string]string, timeou
 // Testable via fakeStartOps without a real tmux server.
 // The setupTimeout parameter controls the per-command timeout for
 // session_setup, session_setup_script, and pre_start commands.
-func doStartSession(ops startOps, name string, cfg session.Config, setupTimeout time.Duration) error {
+func doStartSession(ctx context.Context, ops startOps, name string, cfg session.Config, setupTimeout time.Duration) error {
 	// Step 0: Run pre-start commands (directory/worktree preparation).
-	runPreStart(ops, name, cfg, os.Stderr, setupTimeout)
+	runPreStart(ctx, ops, name, cfg, os.Stderr, setupTimeout)
 
 	// Step 1: Ensure fresh session (zombie detection).
 	if err := ensureFreshSession(ops, name, cfg); err != nil {
@@ -353,14 +353,14 @@ func doStartSession(ops startOps, name string, cfg session.Config, setupTimeout 
 
 	// Step 2: Wait for agent command to appear (not still in shell).
 	if len(cfg.ProcessNames) > 0 {
-		_ = ops.waitForCommand(name, 30*time.Second) // best-effort, non-fatal
+		_ = ops.waitForCommand(ctx, name, 30*time.Second) // best-effort, non-fatal
 	}
 
 	// Step 3: Accept startup dialogs (workspace trust + bypass permissions).
 	// Always attempted when process names are set, since any Claude-like
 	// agent may show a trust dialog regardless of EmitsPermissionWarning.
 	if len(cfg.ProcessNames) > 0 || cfg.EmitsPermissionWarning {
-		_ = ops.acceptStartupDialogs(name) // best-effort
+		_ = ops.acceptStartupDialogs(ctx, name) // best-effort
 	}
 
 	// Step 4: Wait for runtime readiness.
@@ -370,7 +370,7 @@ func doStartSession(ops startOps, name string, cfg session.Config, setupTimeout 
 			ReadyDelayMs:      cfg.ReadyDelayMs,
 			ProcessNames:      cfg.ProcessNames,
 		}}
-		_ = ops.waitForReady(name, rc, 60*time.Second) // best-effort
+		_ = ops.waitForReady(ctx, name, rc, 60*time.Second) // best-effort
 	}
 
 	// Step 5: Verify session survived startup.
@@ -383,7 +383,7 @@ func doStartSession(ops startOps, name string, cfg session.Config, setupTimeout 
 	}
 
 	// Step 5.5: Run session setup commands and script.
-	runSessionSetup(ops, name, cfg, os.Stderr, setupTimeout)
+	runSessionSetup(ctx, ops, name, cfg, os.Stderr, setupTimeout)
 
 	// Step 6: Send nudge text if configured.
 	if cfg.Nudge != "" {
@@ -398,7 +398,7 @@ func doStartSession(ops startOps, name string, cfg session.Config, setupTimeout 
 
 // runSessionSetup runs session_setup commands then session_setup_script.
 // Non-fatal: warnings on failure, session still works.
-func runSessionSetup(ops startOps, name string, cfg session.Config, stderr io.Writer, setupTimeout time.Duration) {
+func runSessionSetup(ctx context.Context, ops startOps, name string, cfg session.Config, stderr io.Writer, setupTimeout time.Duration) {
 	if len(cfg.SessionSetup) == 0 && cfg.SessionSetupScript == "" {
 		return
 	}
@@ -412,14 +412,14 @@ func runSessionSetup(ops startOps, name string, cfg session.Config, stderr io.Wr
 
 	// Run inline commands in order.
 	for i, cmd := range cfg.SessionSetup {
-		if err := ops.runSetupCommand(cmd, setupEnv, setupTimeout); err != nil {
+		if err := ops.runSetupCommand(ctx, cmd, setupEnv, setupTimeout); err != nil {
 			_, _ = fmt.Fprintf(stderr, "gc: session_setup[%d] warning: %v\n", i, err)
 		}
 	}
 
 	// Run script if configured.
 	if cfg.SessionSetupScript != "" {
-		if err := ops.runSetupCommand(cfg.SessionSetupScript, setupEnv, setupTimeout); err != nil {
+		if err := ops.runSetupCommand(ctx, cfg.SessionSetupScript, setupEnv, setupTimeout); err != nil {
 			_, _ = fmt.Fprintf(stderr, "gc: session_setup_script warning: %v\n", err)
 		}
 	}
@@ -449,7 +449,7 @@ func runSessionLive(ops startOps, name string, cfg session.Config, stderr io.Wri
 
 // runPreStart runs pre_start commands before session creation.
 // Used for directory/worktree preparation. Non-fatal: warnings on failure.
-func runPreStart(ops startOps, _ string, cfg session.Config, stderr io.Writer, setupTimeout time.Duration) {
+func runPreStart(ctx context.Context, ops startOps, _ string, cfg session.Config, stderr io.Writer, setupTimeout time.Duration) {
 	if len(cfg.PreStart) == 0 {
 		return
 	}
@@ -458,7 +458,7 @@ func runPreStart(ops startOps, _ string, cfg session.Config, stderr io.Writer, s
 		setupEnv[k] = v
 	}
 	for i, cmd := range cfg.PreStart {
-		if err := ops.runSetupCommand(cmd, setupEnv, setupTimeout); err != nil {
+		if err := ops.runSetupCommand(ctx, cmd, setupEnv, setupTimeout); err != nil {
 			_, _ = fmt.Fprintf(stderr, "gc: pre_start[%d] warning: %v\n", i, err)
 		}
 	}

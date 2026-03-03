@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -16,13 +17,17 @@ import (
 //
 // Idempotent: safe to call on sessions without dialogs.
 func AcceptStartupDialogs(
+	ctx context.Context,
 	peek func(lines int) (string, error),
 	sendKeys func(keys ...string) error,
 ) error {
-	if err := acceptWorkspaceTrustDialog(peek, sendKeys); err != nil {
+	if err := acceptWorkspaceTrustDialog(ctx, peek, sendKeys); err != nil {
 		return fmt.Errorf("workspace trust dialog: %w", err)
 	}
-	if err := acceptBypassPermissionsWarning(peek, sendKeys); err != nil {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := acceptBypassPermissionsWarning(ctx, peek, sendKeys); err != nil {
 		return fmt.Errorf("bypass permissions warning: %w", err)
 	}
 	return nil
@@ -33,10 +38,15 @@ func AcceptStartupDialogs(
 // first launch in a workspace. Option 1 ("Yes, I trust this folder") is
 // pre-selected, so pressing Enter accepts.
 func acceptWorkspaceTrustDialog(
+	ctx context.Context,
 	peek func(lines int) (string, error),
 	sendKeys func(keys ...string) error,
 ) error {
-	time.Sleep(1 * time.Second)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(1 * time.Second):
+	}
 
 	content, err := peek(30)
 	if err != nil {
@@ -51,7 +61,11 @@ func acceptWorkspaceTrustDialog(
 		return err
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(500 * time.Millisecond):
+	}
 	return nil
 }
 
@@ -59,10 +73,15 @@ func acceptWorkspaceTrustDialog(
 // warning. When Claude starts with --dangerously-skip-permissions, it shows a
 // warning requiring Down arrow to select "Yes, I accept" and then Enter.
 func acceptBypassPermissionsWarning(
+	ctx context.Context,
 	peek func(lines int) (string, error),
 	sendKeys func(keys ...string) error,
 ) error {
-	time.Sleep(1 * time.Second)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(1 * time.Second):
+	}
 
 	content, err := peek(30)
 	if err != nil {
@@ -77,7 +96,11 @@ func acceptBypassPermissionsWarning(
 		return err
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(200 * time.Millisecond):
+	}
 
 	return sendKeys("Enter")
 }

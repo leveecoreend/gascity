@@ -49,7 +49,13 @@ func (p *Provider) run(stdinData []byte, args ...string) (string, error) {
 // Exit code 2 is treated as success (unknown operation — forward compatible).
 // Any other non-zero exit code returns an error wrapping stderr.
 func (p *Provider) runWithTimeout(dur time.Duration, stdinData []byte, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), dur)
+	return p.runWithContext(context.Background(), dur, stdinData, args...)
+}
+
+// runWithContext executes the script using the given parent context with
+// the specified timeout, optionally piping stdinData to its stdin.
+func (p *Provider) runWithContext(parent context.Context, dur time.Duration, stdinData []byte, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, dur)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, p.script, args...)
@@ -101,18 +107,18 @@ func (p *Provider) runWithTTY(args ...string) error {
 // After the script returns, Start handles startup dialogs (workspace
 // trust, bypass permissions) in Go using Peek + SendKeys, sharing the
 // same logic as the tmux provider via [session.AcceptStartupDialogs].
-func (p *Provider) Start(_ context.Context, name string, cfg session.Config) error {
+func (p *Provider) Start(ctx context.Context, name string, cfg session.Config) error {
 	data, err := marshalStartConfig(cfg)
 	if err != nil {
 		return fmt.Errorf("exec provider: marshaling start config: %w", err)
 	}
-	if _, err = p.runWithTimeout(p.startTimeout, data, "start", name); err != nil {
+	if _, err = p.runWithContext(ctx, p.startTimeout, data, "start", name); err != nil {
 		return err
 	}
 
 	// Dismiss startup dialogs using the same shared Go logic as tmux.
 	if cfg.EmitsPermissionWarning || len(cfg.ProcessNames) > 0 {
-		_ = session.AcceptStartupDialogs(
+		_ = session.AcceptStartupDialogs(ctx,
 			func(lines int) (string, error) { return p.Peek(name, lines) },
 			func(keys ...string) error { return p.SendKeys(name, keys...) },
 		)

@@ -4,8 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strconv"
-	"syscall"
 	"testing"
 	"time"
 
@@ -14,7 +12,7 @@ import (
 
 func newTestProvider(t *testing.T) *Provider {
 	t.Helper()
-	return NewProviderWithDir(filepath.Join(t.TempDir(), "pids"))
+	return NewProviderWithDir(filepath.Join(t.TempDir(), "socks"))
 }
 
 func TestStartCreatesProcess(t *testing.T) {
@@ -180,24 +178,19 @@ func TestWorkDirSet(t *testing.T) {
 	t.Fatal("timed out waiting for workdir marker file")
 }
 
-func TestPIDFileWritten(t *testing.T) {
+func TestSocketCreated(t *testing.T) {
 	p := newTestProvider(t)
-	if err := p.Start(context.Background(), "pid-check", session.Config{Command: "sleep 3600"}); err != nil {
+	if err := p.Start(context.Background(), "sock-check", session.Config{Command: "sleep 3600"}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer p.Stop("pid-check") //nolint:errcheck
+	defer p.Stop("sock-check") //nolint:errcheck
 
-	data, err := os.ReadFile(p.pidPath("pid-check"))
-	if err != nil {
-		t.Fatalf("reading PID file: %v", err)
-	}
-	pid, err := strconv.Atoi(string(data))
-	if err != nil || pid <= 0 {
-		t.Errorf("PID file contains %q, want a positive integer", string(data))
+	if _, err := os.Stat(p.sockPath("sock-check")); err != nil {
+		t.Fatalf("socket file should exist: %v", err)
 	}
 }
 
-func TestPIDFileRemovedAfterStop(t *testing.T) {
+func TestSocketRemovedAfterStop(t *testing.T) {
 	p := newTestProvider(t)
 	if err := p.Start(context.Background(), "cleanup", session.Config{Command: "sleep 3600"}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -206,42 +199,136 @@ func TestPIDFileRemovedAfterStop(t *testing.T) {
 		t.Fatalf("Stop: %v", err)
 	}
 
-	if _, err := os.Stat(p.pidPath("cleanup")); !os.IsNotExist(err) {
-		t.Error("PID file should be removed after Stop")
+	// Wait a bit for the background goroutine to clean up.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(p.sockPath("cleanup")); os.IsNotExist(err) {
+			return // success
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
+	t.Error("socket file should be removed after Stop")
 }
 
-func TestCrossProcessStopByPID(t *testing.T) {
+func TestSocketGoneAfterProcessDeath(t *testing.T) {
+	p := newTestProvider(t)
+	if err := p.Start(context.Background(), "short-lived", session.Config{Command: "true"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// Wait for process to exit and socket cleanup.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(p.sockPath("short-lived")); os.IsNotExist(err) {
+			return // success
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Error("socket file should be removed after process exits naturally")
+}
+
+func TestCrossProcessStopBySocket(t *testing.T) {
 	// Simulate the gc start → gc stop cross-process pattern:
 	// Provider 1 starts a process, Provider 2 (same dir) stops it.
-	dir := filepath.Join(t.TempDir(), "pids")
+	dir := filepath.Join(t.TempDir(), "socks")
 
 	p1 := NewProviderWithDir(dir)
 	if err := p1.Start(context.Background(), "cross", session.Config{Command: "sleep 3600"}); err != nil {
 		t.Fatalf("p1.Start: %v", err)
 	}
 
-	// Read the PID to verify the process is alive.
-	pid, err := p1.readPID("cross")
-	if err != nil {
-		t.Fatalf("reading PID: %v", err)
-	}
-	if syscall.Kill(pid, 0) != nil {
-		t.Fatal("process should be alive")
+	// Verify the process is alive via socket.
+	if !p1.socketAlive("cross") {
+		t.Fatal("socket should be alive")
 	}
 
 	// New provider (simulates gc stop in a separate process).
 	p2 := NewProviderWithDir(dir)
 	if !p2.IsRunning("cross") {
-		t.Fatal("p2.IsRunning should be true via PID file")
+		t.Fatal("p2.IsRunning should be true via socket")
 	}
 	if err := p2.Stop("cross"); err != nil {
 		t.Fatalf("p2.Stop: %v", err)
 	}
 
 	// Process should be dead.
-	time.Sleep(100 * time.Millisecond)
-	if syscall.Kill(pid, 0) == nil {
+	time.Sleep(200 * time.Millisecond)
+	if p2.IsRunning("cross") {
 		t.Error("process should be dead after cross-process Stop")
+	}
+}
+
+func TestCrossProcessInterruptBySocket(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "socks")
+
+	p1 := NewProviderWithDir(dir)
+	// Use a command that traps SIGINT.
+	if err := p1.Start(context.Background(), "intr", session.Config{Command: "sleep 3600"}); err != nil {
+		t.Fatalf("p1.Start: %v", err)
+	}
+	defer p1.Stop("intr") //nolint:errcheck
+
+	// Cross-process interrupt via socket.
+	p2 := NewProviderWithDir(dir)
+	if err := p2.Interrupt("intr"); err != nil {
+		t.Fatalf("p2.Interrupt: %v", err)
+	}
+
+	// sleep may or may not die on SIGINT depending on shell;
+	// just verify the interrupt was sent without error.
+}
+
+func TestIsRunningViaSocket(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "socks")
+
+	p1 := NewProviderWithDir(dir)
+	if err := p1.Start(context.Background(), "live", session.Config{Command: "sleep 3600"}); err != nil {
+		t.Fatalf("p1.Start: %v", err)
+	}
+	defer p1.Stop("live") //nolint:errcheck
+
+	// Different provider instance discovers liveness via socket.
+	p2 := NewProviderWithDir(dir)
+	if !p2.IsRunning("live") {
+		t.Error("p2.IsRunning should be true via socket")
+	}
+
+	// Non-existent session.
+	if p2.IsRunning("nonexistent") {
+		t.Error("IsRunning should be false for non-existent session")
+	}
+}
+
+func TestListRunningViaSocket(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "socks")
+
+	p := NewProviderWithDir(dir)
+	if err := p.Start(context.Background(), "gc-test-a", session.Config{Command: "sleep 3600"}); err != nil {
+		t.Fatalf("Start a: %v", err)
+	}
+	defer p.Stop("gc-test-a") //nolint:errcheck
+	if err := p.Start(context.Background(), "gc-test-b", session.Config{Command: "sleep 3600"}); err != nil {
+		t.Fatalf("Start b: %v", err)
+	}
+	defer p.Stop("gc-test-b") //nolint:errcheck
+	if err := p.Start(context.Background(), "other-x", session.Config{Command: "sleep 3600"}); err != nil {
+		t.Fatalf("Start x: %v", err)
+	}
+	defer p.Stop("other-x") //nolint:errcheck
+
+	names, err := p.ListRunning("gc-test-")
+	if err != nil {
+		t.Fatalf("ListRunning: %v", err)
+	}
+	if len(names) != 2 {
+		t.Errorf("ListRunning(gc-test-) = %v, want 2 results", names)
+	}
+
+	all, err := p.ListRunning("")
+	if err != nil {
+		t.Fatalf("ListRunning all: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("ListRunning('') = %v, want 3 results", all)
 	}
 }
