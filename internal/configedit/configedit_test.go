@@ -780,3 +780,147 @@ func TestDeleteProvider_NotFound(t *testing.T) {
 		t.Error("expected error for nonexistent provider")
 	}
 }
+
+// --- Patch resource tests ---
+
+func TestSetAgentPatch(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTOML(t, dir, minimalCity())
+	ed := configedit.NewEditor(fsys.OSFS{}, path)
+
+	suspended := true
+	err := ed.SetAgentPatch(config.AgentPatch{
+		Dir: "rig1", Name: "worker", Suspended: &suspended,
+	})
+	if err != nil {
+		t.Fatalf("SetAgentPatch: %v", err)
+	}
+
+	cfg := readTOML(t, path)
+	if len(cfg.Patches.Agents) != 1 {
+		t.Fatalf("patches.agents count = %d, want 1", len(cfg.Patches.Agents))
+	}
+	if cfg.Patches.Agents[0].Name != "worker" {
+		t.Errorf("name = %q, want %q", cfg.Patches.Agents[0].Name, "worker")
+	}
+}
+
+func TestSetAgentPatch_Replaces(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTOML(t, dir, minimalCity())
+	ed := configedit.NewEditor(fsys.OSFS{}, path)
+
+	// Set initial patch.
+	suspended := true
+	_ = ed.SetAgentPatch(config.AgentPatch{Dir: "rig1", Name: "worker", Suspended: &suspended})
+
+	// Replace with different values.
+	suspended = false
+	err := ed.SetAgentPatch(config.AgentPatch{Dir: "rig1", Name: "worker", Suspended: &suspended})
+	if err != nil {
+		t.Fatalf("SetAgentPatch: %v", err)
+	}
+
+	cfg := readTOML(t, path)
+	if len(cfg.Patches.Agents) != 1 {
+		t.Fatalf("patches.agents count = %d, want 1 (should replace, not append)", len(cfg.Patches.Agents))
+	}
+}
+
+func TestDeleteAgentPatch(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTOML(t, dir, minimalCity())
+	ed := configedit.NewEditor(fsys.OSFS{}, path)
+
+	suspended := true
+	_ = ed.SetAgentPatch(config.AgentPatch{Dir: "rig1", Name: "worker", Suspended: &suspended})
+
+	if err := ed.DeleteAgentPatch("rig1/worker"); err != nil {
+		t.Fatalf("DeleteAgentPatch: %v", err)
+	}
+
+	cfg := readTOML(t, path)
+	if len(cfg.Patches.Agents) != 0 {
+		t.Error("patches.agents should be empty after delete")
+	}
+}
+
+func TestDeleteAgentPatch_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTOML(t, dir, minimalCity())
+	ed := configedit.NewEditor(fsys.OSFS{}, path)
+
+	if err := ed.DeleteAgentPatch("nonexistent"); err == nil {
+		t.Error("expected error for nonexistent agent patch")
+	}
+}
+
+func TestSetRigPatch(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTOML(t, dir, minimalCity())
+	ed := configedit.NewEditor(fsys.OSFS{}, path)
+
+	suspended := true
+	err := ed.SetRigPatch(config.RigPatch{Name: "myrig", Suspended: &suspended})
+	if err != nil {
+		t.Fatalf("SetRigPatch: %v", err)
+	}
+
+	cfg := readTOML(t, path)
+	if len(cfg.Patches.Rigs) != 1 {
+		t.Fatalf("patches.rigs count = %d, want 1", len(cfg.Patches.Rigs))
+	}
+}
+
+func TestDeleteRigPatch(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTOML(t, dir, minimalCity())
+	ed := configedit.NewEditor(fsys.OSFS{}, path)
+
+	suspended := true
+	_ = ed.SetRigPatch(config.RigPatch{Name: "myrig", Suspended: &suspended})
+
+	if err := ed.DeleteRigPatch("myrig"); err != nil {
+		t.Fatalf("DeleteRigPatch: %v", err)
+	}
+
+	cfg := readTOML(t, path)
+	if len(cfg.Patches.Rigs) != 0 {
+		t.Error("patches.rigs should be empty after delete")
+	}
+}
+
+func TestSetProviderPatch(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTOML(t, dir, minimalCity())
+	ed := configedit.NewEditor(fsys.OSFS{}, path)
+
+	cmd := "my-claude"
+	err := ed.SetProviderPatch(config.ProviderPatch{Name: "claude", Command: &cmd})
+	if err != nil {
+		t.Fatalf("SetProviderPatch: %v", err)
+	}
+
+	cfg := readTOML(t, path)
+	if len(cfg.Patches.Providers) != 1 {
+		t.Fatalf("patches.providers count = %d, want 1", len(cfg.Patches.Providers))
+	}
+}
+
+func TestDeleteProviderPatch(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTOML(t, dir, minimalCity())
+	ed := configedit.NewEditor(fsys.OSFS{}, path)
+
+	cmd := "my-claude"
+	_ = ed.SetProviderPatch(config.ProviderPatch{Name: "claude", Command: &cmd})
+
+	if err := ed.DeleteProviderPatch("claude"); err != nil {
+		t.Fatalf("DeleteProviderPatch: %v", err)
+	}
+
+	cfg := readTOML(t, path)
+	if len(cfg.Patches.Providers) != 0 {
+		t.Error("patches.providers should be empty after delete")
+	}
+}

@@ -504,3 +504,96 @@ func (e *Editor) DeleteProvider(name string) error {
 		return nil
 	})
 }
+
+// --- Patch resource mutations ---
+
+// SetAgentPatch creates or replaces an agent patch in [[patches.agents]].
+func (e *Editor) SetAgentPatch(patch config.AgentPatch) error {
+	return e.Edit(func(cfg *config.City) error {
+		if patch.Name == "" {
+			return fmt.Errorf("agent patch: name is required")
+		}
+		for i := range cfg.Patches.Agents {
+			if cfg.Patches.Agents[i].Dir == patch.Dir && cfg.Patches.Agents[i].Name == patch.Name {
+				cfg.Patches.Agents[i] = patch
+				return nil
+			}
+		}
+		cfg.Patches.Agents = append(cfg.Patches.Agents, patch)
+		return nil
+	})
+}
+
+// DeleteAgentPatch removes an agent patch from [[patches.agents]].
+func (e *Editor) DeleteAgentPatch(name string) error {
+	return e.Edit(func(cfg *config.City) error {
+		dir, base := config.ParseQualifiedName(name)
+		for i := range cfg.Patches.Agents {
+			if cfg.Patches.Agents[i].Dir == dir && cfg.Patches.Agents[i].Name == base {
+				cfg.Patches.Agents = append(cfg.Patches.Agents[:i], cfg.Patches.Agents[i+1:]...)
+				return nil
+			}
+		}
+		return fmt.Errorf("agent patch %q not found", name)
+	})
+}
+
+// SetRigPatch creates or replaces a rig patch in [[patches.rigs]].
+func (e *Editor) SetRigPatch(patch config.RigPatch) error {
+	return e.Edit(func(cfg *config.City) error {
+		if patch.Name == "" {
+			return fmt.Errorf("rig patch: name is required")
+		}
+		for i := range cfg.Patches.Rigs {
+			if cfg.Patches.Rigs[i].Name == patch.Name {
+				cfg.Patches.Rigs[i] = patch
+				return nil
+			}
+		}
+		cfg.Patches.Rigs = append(cfg.Patches.Rigs, patch)
+		return nil
+	})
+}
+
+// DeleteRigPatch removes a rig patch from [[patches.rigs]].
+func (e *Editor) DeleteRigPatch(name string) error {
+	return e.Edit(func(cfg *config.City) error {
+		for i := range cfg.Patches.Rigs {
+			if cfg.Patches.Rigs[i].Name == name {
+				cfg.Patches.Rigs = append(cfg.Patches.Rigs[:i], cfg.Patches.Rigs[i+1:]...)
+				return nil
+			}
+		}
+		return fmt.Errorf("rig patch %q not found", name)
+	})
+}
+
+// SetProviderPatch creates or replaces a provider patch in [[patches.providers]].
+func (e *Editor) SetProviderPatch(patch config.ProviderPatch) error {
+	return e.Edit(func(cfg *config.City) error {
+		if patch.Name == "" {
+			return fmt.Errorf("provider patch: name is required")
+		}
+		for i := range cfg.Patches.Providers {
+			if cfg.Patches.Providers[i].Name == patch.Name {
+				cfg.Patches.Providers[i] = patch
+				return nil
+			}
+		}
+		cfg.Patches.Providers = append(cfg.Patches.Providers, patch)
+		return nil
+	})
+}
+
+// DeleteProviderPatch removes a provider patch from [[patches.providers]].
+func (e *Editor) DeleteProviderPatch(name string) error {
+	return e.Edit(func(cfg *config.City) error {
+		for i := range cfg.Patches.Providers {
+			if cfg.Patches.Providers[i].Name == name {
+				cfg.Patches.Providers = append(cfg.Patches.Providers[:i], cfg.Patches.Providers[i+1:]...)
+				return nil
+			}
+		}
+		return fmt.Errorf("provider patch %q not found", name)
+	})
+}

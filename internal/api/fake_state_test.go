@@ -283,3 +283,67 @@ func (f *fakeMutatorState) DeleteProvider(name string) error {
 	delete(f.cfg.Providers, name)
 	return nil
 }
+
+func (f *fakeMutatorState) SetAgentPatch(patch config.AgentPatch) error {
+	for i := range f.cfg.Patches.Agents {
+		if f.cfg.Patches.Agents[i].Dir == patch.Dir && f.cfg.Patches.Agents[i].Name == patch.Name {
+			f.cfg.Patches.Agents[i] = patch
+			return nil
+		}
+	}
+	f.cfg.Patches.Agents = append(f.cfg.Patches.Agents, patch)
+	return nil
+}
+
+func (f *fakeMutatorState) DeleteAgentPatch(name string) error {
+	dir, base := config.ParseQualifiedName(name)
+	for i := range f.cfg.Patches.Agents {
+		if f.cfg.Patches.Agents[i].Dir == dir && f.cfg.Patches.Agents[i].Name == base {
+			f.cfg.Patches.Agents = append(f.cfg.Patches.Agents[:i], f.cfg.Patches.Agents[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("agent patch %q not found", name)
+}
+
+func (f *fakeMutatorState) SetRigPatch(patch config.RigPatch) error {
+	for i := range f.cfg.Patches.Rigs {
+		if f.cfg.Patches.Rigs[i].Name == patch.Name {
+			f.cfg.Patches.Rigs[i] = patch
+			return nil
+		}
+	}
+	f.cfg.Patches.Rigs = append(f.cfg.Patches.Rigs, patch)
+	return nil
+}
+
+func (f *fakeMutatorState) DeleteRigPatch(name string) error {
+	for i := range f.cfg.Patches.Rigs {
+		if f.cfg.Patches.Rigs[i].Name == name {
+			f.cfg.Patches.Rigs = append(f.cfg.Patches.Rigs[:i], f.cfg.Patches.Rigs[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("rig patch %q not found", name)
+}
+
+func (f *fakeMutatorState) SetProviderPatch(patch config.ProviderPatch) error {
+	for i := range f.cfg.Patches.Providers {
+		if f.cfg.Patches.Providers[i].Name == patch.Name {
+			f.cfg.Patches.Providers[i] = patch
+			return nil
+		}
+	}
+	f.cfg.Patches.Providers = append(f.cfg.Patches.Providers, patch)
+	return nil
+}
+
+func (f *fakeMutatorState) DeleteProviderPatch(name string) error {
+	for i := range f.cfg.Patches.Providers {
+		if f.cfg.Patches.Providers[i].Name == name {
+			f.cfg.Patches.Providers = append(f.cfg.Patches.Providers[:i], f.cfg.Patches.Providers[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("provider patch %q not found", name)
+}

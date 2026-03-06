@@ -363,3 +363,33 @@ func (cs *controllerState) UpdateProvider(name string, patch api.ProviderUpdate)
 func (cs *controllerState) DeleteProvider(name string) error {
 	return cs.editor.DeleteProvider(name)
 }
+
+// SetAgentPatch creates or replaces an agent patch in city.toml.
+func (cs *controllerState) SetAgentPatch(patch config.AgentPatch) error {
+	return cs.editor.SetAgentPatch(patch)
+}
+
+// DeleteAgentPatch removes an agent patch from city.toml.
+func (cs *controllerState) DeleteAgentPatch(name string) error {
+	return cs.editor.DeleteAgentPatch(name)
+}
+
+// SetRigPatch creates or replaces a rig patch in city.toml.
+func (cs *controllerState) SetRigPatch(patch config.RigPatch) error {
+	return cs.editor.SetRigPatch(patch)
+}
+
+// DeleteRigPatch removes a rig patch from city.toml.
+func (cs *controllerState) DeleteRigPatch(name string) error {
+	return cs.editor.DeleteRigPatch(name)
+}
+
+// SetProviderPatch creates or replaces a provider patch in city.toml.
+func (cs *controllerState) SetProviderPatch(patch config.ProviderPatch) error {
+	return cs.editor.SetProviderPatch(patch)
+}
+
+// DeleteProviderPatch removes a provider patch from city.toml.
+func (cs *controllerState) DeleteProviderPatch(name string) error {
+	return cs.editor.DeleteProviderPatch(name)
+}

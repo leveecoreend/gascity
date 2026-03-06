@@ -95,6 +95,22 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v0/config/explain", s.handleConfigExplain)
 	s.mux.HandleFunc("GET /v0/config/validate", s.handleConfigValidate)
 
+	// Patches — agent patches
+	s.mux.HandleFunc("GET /v0/patches/agents", s.handleAgentPatchList)
+	s.mux.HandleFunc("GET /v0/patches/agent/{name...}", s.handleAgentPatchGet)
+	s.mux.HandleFunc("PUT /v0/patches/agents", s.handleAgentPatchSet)
+	s.mux.HandleFunc("DELETE /v0/patches/agent/{name...}", s.handleAgentPatchDelete)
+	// Patches — rig patches
+	s.mux.HandleFunc("GET /v0/patches/rigs", s.handleRigPatchList)
+	s.mux.HandleFunc("GET /v0/patches/rig/{name}", s.handleRigPatchGet)
+	s.mux.HandleFunc("PUT /v0/patches/rigs", s.handleRigPatchSet)
+	s.mux.HandleFunc("DELETE /v0/patches/rig/{name}", s.handleRigPatchDelete)
+	// Patches — provider patches
+	s.mux.HandleFunc("GET /v0/patches/providers", s.handleProviderPatchList)
+	s.mux.HandleFunc("GET /v0/patches/provider/{name}", s.handleProviderPatchGet)
+	s.mux.HandleFunc("PUT /v0/patches/providers", s.handleProviderPatchSet)
+	s.mux.HandleFunc("DELETE /v0/patches/provider/{name}", s.handleProviderPatchDelete)
+
 	// Providers — read
 	s.mux.HandleFunc("GET /v0/providers", s.handleProviderList)
 	s.mux.HandleFunc("GET /v0/provider/{name}", s.handleProviderGet)

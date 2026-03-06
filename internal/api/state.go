@@ -137,6 +137,26 @@ type StateMutator interface {
 	// DeleteProvider removes a city-level provider from city.toml.
 	DeleteProvider(name string) error
 
+	// --- Patch resource mutations ---
+
+	// SetAgentPatch creates or replaces an agent patch.
+	SetAgentPatch(patch config.AgentPatch) error
+
+	// DeleteAgentPatch removes an agent patch by qualified name.
+	DeleteAgentPatch(name string) error
+
+	// SetRigPatch creates or replaces a rig patch.
+	SetRigPatch(patch config.RigPatch) error
+
+	// DeleteRigPatch removes a rig patch by name.
+	DeleteRigPatch(name string) error
+
+	// SetProviderPatch creates or replaces a provider patch.
+	SetProviderPatch(patch config.ProviderPatch) error
+
+	// DeleteProviderPatch removes a provider patch by name.
+	DeleteProviderPatch(name string) error
+
 	// --- Runtime actions (ephemeral session operations) ---
 
 	// KillAgent force-kills an agent's session (reconciler restarts it).
