@@ -123,7 +123,7 @@ func buildOneAgent(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName st
 			SlingQuery:    cfgAgent.EffectiveSlingQuery(),
 			Env:           cfgAgent.Env,
 		}, p.sessionTemplate, p.stderr, p.packDirs, fragments)
-		hasHooks := config.AgentHasHooks(cfgAgent, p.workspace, resolved.Name, resolved.SupportsHooks)
+		hasHooks := config.AgentHasHooks(cfgAgent, p.workspace, resolved.Name)
 		beacon := session.FormatBeaconAt(p.cityName, qualifiedName, !hasHooks, p.beaconTime)
 		if prompt != "" {
 			prompt = beacon + "\n\n" + prompt

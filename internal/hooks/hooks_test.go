@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/fsys"
 )
 
@@ -225,6 +226,25 @@ func TestInstallOmp(t *testing.T) {
 	}
 	if !strings.Contains(s, "gc hook --inject") {
 		t.Error("omp hooks should contain gc hook --inject")
+	}
+}
+
+// TestSupportsHooksSyncWithProviderSpec verifies that the hooks supported/unsupported
+// lists stay in sync with ProviderSpec.SupportsHooks across all builtin providers.
+func TestSupportsHooksSyncWithProviderSpec(t *testing.T) {
+	sup := make(map[string]bool, len(SupportedProviders()))
+	for _, p := range SupportedProviders() {
+		sup[p] = true
+	}
+
+	providers := config.BuiltinProviders()
+	for name, spec := range providers {
+		if spec.SupportsHooks && !sup[name] {
+			t.Errorf("provider %q has SupportsHooks=true but is not in hooks.SupportedProviders()", name)
+		}
+		if !spec.SupportsHooks && sup[name] {
+			t.Errorf("provider %q is in hooks.SupportedProviders() but has SupportsHooks=false", name)
+		}
 	}
 }
 

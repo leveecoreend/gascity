@@ -9,9 +9,16 @@
 
 const { execSync } = require("child_process");
 
+const PATH_PREFIX =
+  `${process.env.HOME}/go/bin:${process.env.HOME}/.local/bin:`;
+
 function run(cmd) {
   try {
-    return execSync(cmd, { encoding: "utf-8", timeout: 30000 }).trim();
+    return execSync(cmd, {
+      encoding: "utf-8",
+      timeout: 30000,
+      env: { ...process.env, PATH: PATH_PREFIX + (process.env.PATH || "") },
+    }).trim();
   } catch {
     return "";
   }

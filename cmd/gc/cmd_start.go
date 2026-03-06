@@ -692,11 +692,13 @@ func settingsArgs(cityPath, providerName string) string {
 // Docker doesn't need this (bind-mount), but the extra entries are harmless.
 // Avoids duplicating .gc/settings.json if settingsArgs already added it.
 func stageHookFiles(copyFiles []session.CopyEntry, cityPath, workDir string) []session.CopyEntry {
-	// workDir-based hooks: gemini, opencode, copilot.
+	// workDir-based hooks: gemini, opencode, copilot, pi, omp.
 	for _, rel := range []string{
 		filepath.Join(".gemini", "settings.json"),
 		filepath.Join(".opencode", "plugins", "gascity.js"),
 		filepath.Join(".github", "copilot-instructions.md"),
+		filepath.Join(".pi", "extensions", "gc-hooks.js"),
+		filepath.Join(".omp", "hooks", "gc-hook.ts"),
 	} {
 		abs := filepath.Join(workDir, rel)
 		if _, err := os.Stat(abs); err == nil {

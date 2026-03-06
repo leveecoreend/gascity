@@ -455,23 +455,18 @@ func TestResolveInstallHooksNeitherSet(t *testing.T) {
 
 // --- AgentHasHooks tests ---
 
-func TestAgentHasHooks_SupportsHooksDefault(t *testing.T) {
+func TestAgentHasHooks_ClaudeAlways(t *testing.T) {
 	agent := &Agent{Name: "mayor"}
 	ws := &Workspace{Name: "test"}
-	// Provider with SupportsHooks=true → hooks assumed present.
-	if !AgentHasHooks(agent, ws, "claude", true) {
-		t.Error("provider with SupportsHooks=true should have hooks")
-	}
-	// Provider with SupportsHooks=false → no hooks by default.
-	if AgentHasHooks(agent, ws, "codex", false) {
-		t.Error("provider with SupportsHooks=false should not have hooks")
+	if !AgentHasHooks(agent, ws, "claude") {
+		t.Error("claude should always have hooks")
 	}
 }
 
 func TestAgentHasHooks_InstallHooksMatch(t *testing.T) {
 	agent := &Agent{Name: "worker"}
 	ws := &Workspace{InstallAgentHooks: []string{"gemini", "opencode"}}
-	if !AgentHasHooks(agent, ws, "gemini", false) {
+	if !AgentHasHooks(agent, ws, "gemini") {
 		t.Error("gemini with install_agent_hooks should have hooks")
 	}
 }
@@ -479,7 +474,7 @@ func TestAgentHasHooks_InstallHooksMatch(t *testing.T) {
 func TestAgentHasHooks_InstallHooksNoMatch(t *testing.T) {
 	agent := &Agent{Name: "worker"}
 	ws := &Workspace{InstallAgentHooks: []string{"claude"}}
-	if AgentHasHooks(agent, ws, "codex", false) {
+	if AgentHasHooks(agent, ws, "codex") {
 		t.Error("codex not in install_agent_hooks should not have hooks")
 	}
 }
@@ -487,7 +482,7 @@ func TestAgentHasHooks_InstallHooksNoMatch(t *testing.T) {
 func TestAgentHasHooks_NoHooksByDefault(t *testing.T) {
 	agent := &Agent{Name: "worker"}
 	ws := &Workspace{Name: "test"}
-	if AgentHasHooks(agent, ws, "codex", false) {
+	if AgentHasHooks(agent, ws, "codex") {
 		t.Error("codex with no install_agent_hooks should not have hooks")
 	}
 }
@@ -496,7 +491,7 @@ func TestAgentHasHooks_ExplicitOverrideTrue(t *testing.T) {
 	yes := true
 	agent := &Agent{Name: "worker", HooksInstalled: &yes}
 	ws := &Workspace{Name: "test"}
-	if !AgentHasHooks(agent, ws, "codex", false) {
+	if !AgentHasHooks(agent, ws, "codex") {
 		t.Error("hooks_installed=true should override to true")
 	}
 }
@@ -505,9 +500,9 @@ func TestAgentHasHooks_ExplicitOverrideFalse(t *testing.T) {
 	no := false
 	agent := &Agent{Name: "worker", HooksInstalled: &no}
 	ws := &Workspace{Name: "test"}
-	// Even a provider with SupportsHooks=true should be overridden to false.
-	if AgentHasHooks(agent, ws, "claude", true) {
-		t.Error("hooks_installed=false should override even SupportsHooks=true")
+	// Even claude should be overridden to false when explicit.
+	if AgentHasHooks(agent, ws, "claude") {
+		t.Error("hooks_installed=false should override even claude")
 	}
 }
 
@@ -515,10 +510,39 @@ func TestAgentHasHooks_AgentLevelInstallHooks(t *testing.T) {
 	agent := &Agent{Name: "worker", InstallAgentHooks: []string{"copilot"}}
 	ws := &Workspace{InstallAgentHooks: []string{"claude"}}
 	// Agent-level overrides workspace — only copilot in list.
-	if !AgentHasHooks(agent, ws, "copilot", false) {
+	if !AgentHasHooks(agent, ws, "copilot") {
 		t.Error("agent install_agent_hooks should be checked")
 	}
-	if AgentHasHooks(agent, ws, "opencode", false) {
+	if AgentHasHooks(agent, ws, "opencode") {
 		t.Error("opencode not in agent install_agent_hooks")
+	}
+}
+
+// --- InstructionsFile default ---
+
+func TestResolveProviderInstructionsFileDefault(t *testing.T) {
+	// A provider with no InstructionsFile should default to "AGENTS.md".
+	agent := &Agent{Name: "worker", Provider: "custom"}
+	cityProviders := map[string]ProviderSpec{
+		"custom": {Command: "custom-agent"},
+	}
+	rp, err := ResolveProvider(agent, nil, cityProviders, lookPathOnly("custom-agent"))
+	if err != nil {
+		t.Fatalf("ResolveProvider: %v", err)
+	}
+	if rp.InstructionsFile != "AGENTS.md" {
+		t.Errorf("InstructionsFile = %q, want %q", rp.InstructionsFile, "AGENTS.md")
+	}
+}
+
+func TestResolveProviderInstructionsFileExplicit(t *testing.T) {
+	// Claude's explicit InstructionsFile should be preserved.
+	agent := &Agent{Name: "mayor", Provider: "claude"}
+	rp, err := ResolveProvider(agent, nil, nil, lookPathOnly("claude"))
+	if err != nil {
+		t.Fatalf("ResolveProvider: %v", err)
+	}
+	if rp.InstructionsFile != "CLAUDE.md" {
+		t.Errorf("InstructionsFile = %q, want %q", rp.InstructionsFile, "CLAUDE.md")
 	}
 }
