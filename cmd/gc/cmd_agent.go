@@ -68,10 +68,12 @@ func loadCityConfigForEditFS(fs fsys.FS, tomlPath string) (*config.City, error) 
 }
 
 // resolveAgentIdentity resolves an agent input string to a config.Agent using
-// 2-step resolution:
+// 3-step resolution:
 //  1. Literal: try the input as-is (e.g., "mayor" or "hello-world/polecat").
 //  2. Contextual: if input has no "/" and currentRigDir is set, try
 //     "{currentRigDir}/{input}" to resolve rig-scoped agents from context.
+//  3. Unambiguous bare name: scan all agents by Name (ignoring Dir).
+//     Succeeds only when exactly one agent matches.
 func resolveAgentIdentity(cfg *config.City, input, currentRigDir string) (config.Agent, bool) {
 	// Step 1: literal match.
 	if a, ok := findAgentByQualified(cfg, input); ok {
@@ -81,6 +83,33 @@ func resolveAgentIdentity(cfg *config.City, input, currentRigDir string) (config
 	if !strings.Contains(input, "/") && currentRigDir != "" {
 		if a, ok := findAgentByQualified(cfg, currentRigDir+"/"+input); ok {
 			return a, true
+		}
+	}
+	// Step 3: unambiguous bare name — scan all agents by Name (ignoring Dir).
+	// Succeeds only when exactly one agent matches. Handles pool instances too.
+	if !strings.Contains(input, "/") {
+		var matches []config.Agent
+		for _, a := range cfg.Agents {
+			if a.Name == input {
+				matches = append(matches, a)
+				continue
+			}
+			// Pool instance: "polecat-2" matches pool "polecat" with Max >= 2.
+			if a.Pool != nil && a.Pool.Max > 1 {
+				prefix := a.Name + "-"
+				if strings.HasPrefix(input, prefix) {
+					suffix := input[len(prefix):]
+					if n, err := strconv.Atoi(suffix); err == nil && n >= 1 && n <= a.Pool.Max {
+						instance := a
+						instance.Name = input
+						instance.Pool = nil
+						matches = append(matches, instance)
+					}
+				}
+			}
+		}
+		if len(matches) == 1 {
+			return matches[0], true
 		}
 	}
 	return config.Agent{}, false

@@ -641,12 +641,16 @@ func TestResolveAgentIdentityQualified(t *testing.T) {
 		// Bare name with rig context.
 		{"bare polecat + frontend context", "polecat", "frontend", true, "frontend", "polecat"},
 		{"bare polecat + backend context", "polecat", "backend", true, "backend", "polecat"},
-		// Bare name with no matching context — falls back to city-wide (not found here).
+		// Bare name with no matching context — ambiguous (2 polecats), not found.
 		{"bare polecat no context", "polecat", "", false, "", ""},
 		// Pool instance with qualified name.
 		{"qualified pool frontend/worker-2", "frontend/worker-2", "", true, "frontend", "worker-2"},
 		// Pool instance with rig context.
 		{"bare pool worker-1 + frontend context", "worker-1", "frontend", true, "frontend", "worker-1"},
+		// Step 3: unambiguous bare name — worker is unique across all agents.
+		{"unambiguous bare worker", "worker", "", true, "frontend", "worker"},
+		// Step 3: unambiguous pool instance via bare name.
+		{"unambiguous bare worker-2", "worker-2", "", true, "frontend", "worker-2"},
 	}
 
 	for _, tt := range tests {
@@ -654,6 +658,53 @@ func TestResolveAgentIdentityQualified(t *testing.T) {
 			got, found := resolveAgentIdentity(cfg, tt.input, tt.rigContext)
 			if found != tt.wantFound {
 				t.Fatalf("resolveAgentIdentity(%q, %q) found = %v, want %v", tt.input, tt.rigContext, found, tt.wantFound)
+			}
+			if !found {
+				return
+			}
+			if got.Dir != tt.wantDir {
+				t.Errorf("Dir = %q, want %q", got.Dir, tt.wantDir)
+			}
+			if got.Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", got.Name, tt.wantName)
+			}
+		})
+	}
+}
+
+func TestResolveAgentIdentityUnambiguous(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{
+			{Name: "mayor"},
+			{Name: "polecat", Dir: "myrig"},
+			{Name: "builder", Dir: "frontend", Pool: &config.PoolConfig{Min: 0, Max: 3, Check: "echo 2"}},
+		},
+	}
+
+	tests := []struct {
+		name      string
+		input     string
+		wantFound bool
+		wantDir   string
+		wantName  string
+	}{
+		// Unique bare name resolves via step 3.
+		{"unambiguous polecat", "polecat", true, "myrig", "polecat"},
+		// Unique pool template resolves via step 3.
+		{"unambiguous builder", "builder", true, "frontend", "builder"},
+		// Pool instance, unambiguous.
+		{"unambiguous builder-2", "builder-2", true, "frontend", "builder-2"},
+		// Pool instance out of range.
+		{"builder-4 out of range", "builder-4", false, "", ""},
+		// City-wide agent resolves via step 1, before step 3.
+		{"mayor step 1", "mayor", true, "", "mayor"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, found := resolveAgentIdentity(cfg, tt.input, "")
+			if found != tt.wantFound {
+				t.Fatalf("resolveAgentIdentity(%q) found = %v, want %v", tt.input, found, tt.wantFound)
 			}
 			if !found {
 				return
