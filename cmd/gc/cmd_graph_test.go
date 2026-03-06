@@ -256,3 +256,30 @@ func TestGraphDeduplicate(t *testing.T) {
 		t.Errorf("duplicate ID should be deduplicated:\n%s", stdout.String())
 	}
 }
+
+func TestGraphNonBlockingDepIgnored(t *testing.T) {
+	store := beads.NewMemStore()
+	_, _ = store.Create(beads.Bead{Title: "task A"}) // gc-1
+	_, _ = store.Create(beads.Bead{Title: "task B"}) // gc-2
+
+	// "tracks" is non-blocking — gc-2 should still be ready.
+	_ = store.DepAdd("gc-2", "gc-1", "tracks")
+
+	var stdout, stderr bytes.Buffer
+	code := doGraph(store, []string{"gc-1", "gc-2"}, graphOpts{}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doGraph = %d, want 0; stderr: %s", code, stderr.String())
+	}
+	out := stdout.String()
+
+	// Both should be ready — "tracks" doesn't block.
+	if !strings.Contains(out, "2 ready") {
+		t.Errorf("non-blocking dep should not affect readiness:\n%s", out)
+	}
+	// No beads should show "blocked" in the READY column.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "gc-2") && strings.Contains(line, "blocked") {
+			t.Errorf("gc-2 should not be blocked by non-blocking dep:\n%s", out)
+		}
+	}
+}

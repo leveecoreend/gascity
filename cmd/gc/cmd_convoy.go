@@ -113,17 +113,17 @@ func doConvoyCreateWith(store beads.Store, rec events.Recorder, args []string, f
 		}
 	}
 
-	if err := setConvoyFields(store, convoy.ID, fields); err != nil {
-		fmt.Fprintf(stderr, "gc convoy create: setting fields: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
-	}
-
 	rec.Record(events.Event{
 		Type:    events.ConvoyCreated,
 		Actor:   eventActor(),
 		Subject: convoy.ID,
 		Message: name,
 	})
+
+	if err := setConvoyFields(store, convoy.ID, fields); err != nil {
+		fmt.Fprintf(stderr, "gc convoy create: setting fields: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
+	}
 
 	if len(issueIDs) > 0 {
 		fmt.Fprintf(stdout, "Created convoy %s %q tracking %d issue(s)\n", convoy.ID, name, len(issueIDs)) //nolint:errcheck // best-effort stdout
@@ -577,7 +577,7 @@ via "gc sling --owned". It verifies all children are closed (or uses
 		Example: `  gc convoy land gc-42
   gc convoy land gc-42 --force
   gc convoy land gc-42 --dry-run`,
-		Args: cobra.ArbitraryArgs,
+		Args: cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			opts := landOpts{
 				Force:  force,

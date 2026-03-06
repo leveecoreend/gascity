@@ -2,6 +2,7 @@ package beads
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 	"time"
 )
@@ -31,11 +32,14 @@ func NewMemStoreFrom(seq int, existing []Bead, deps []Dep) *MemStore {
 	return &MemStore{seq: seq, beads: b, deps: d}
 }
 
-// snapshot returns the current sequence counter, a copy of all beads, and a
-// copy of all deps. Used by FileStore for serialization. Caller must hold m.mu.
+// snapshot returns the current sequence counter, a deep copy of all beads, and
+// a copy of all deps. Used by FileStore for serialization. Caller must hold m.mu.
 func (m *MemStore) snapshot() (int, []Bead, []Dep) {
 	b := make([]Bead, len(m.beads))
 	copy(b, m.beads)
+	for i := range b {
+		b[i].Metadata = maps.Clone(b[i].Metadata)
+	}
 	d := make([]Dep, len(m.deps))
 	copy(d, m.deps)
 	return m.seq, b, d
@@ -140,6 +144,7 @@ func (m *MemStore) Get(id string) (Bead, error) {
 
 	for _, b := range m.beads {
 		if b.ID == id {
+			b.Metadata = maps.Clone(b.Metadata)
 			return b, nil
 		}
 	}

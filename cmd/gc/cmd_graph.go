@@ -61,6 +61,18 @@ type graphNode struct {
 	openBlocker []string // IDs of open beads in the set that block this one
 }
 
+// isBlockingDep reports whether a dependency type represents a blocking
+// relationship for readiness computation. Non-blocking types like "tracks"
+// or "relates-to" do not affect whether a bead is ready.
+func isBlockingDep(depType string) bool {
+	switch depType {
+	case "blocks", "":
+		return true
+	default:
+		return false
+	}
+}
+
 // doGraph resolves beads and their dependencies, then prints the graph.
 func doGraph(store beads.Store, args []string, opts graphOpts, stdout, stderr io.Writer) int {
 	if len(args) < 1 {
@@ -68,39 +80,34 @@ func doGraph(store beads.Store, args []string, opts graphOpts, stdout, stderr io
 		return 1
 	}
 
-	// Resolve input — expand containers.
-	beadIDs, err := resolveGraphInput(store, args)
+	// Resolve input — expand containers, returning beads directly.
+	resolved, err := resolveGraphInput(store, args)
 	if err != nil {
 		fmt.Fprintf(stderr, "gc graph: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
-	if len(beadIDs) == 0 {
+	if len(resolved) == 0 {
 		fmt.Fprintln(stdout, "No beads to graph") //nolint:errcheck // best-effort stdout
 		return 0
 	}
 
 	// Build set for filtering edges to within-set only.
-	inSet := make(map[string]bool, len(beadIDs))
-	for _, id := range beadIDs {
-		inSet[id] = true
+	inSet := make(map[string]bool, len(resolved))
+	for _, b := range resolved {
+		inSet[b.ID] = true
 	}
 
-	// Fetch beads and their dependencies.
-	nodes := make([]graphNode, 0, len(beadIDs))
-	for _, id := range beadIDs {
-		b, err := store.Get(id)
+	// Fetch dependencies for each bead.
+	nodes := make([]graphNode, 0, len(resolved))
+	for _, b := range resolved {
+		deps, err := store.DepList(b.ID, "down")
 		if err != nil {
-			fmt.Fprintf(stderr, "gc graph: %v\n", err) //nolint:errcheck // best-effort stderr
-			return 1
-		}
-		deps, err := store.DepList(id, "down")
-		if err != nil {
-			fmt.Fprintf(stderr, "gc graph: listing deps for %s: %v\n", id, err) //nolint:errcheck // best-effort stderr
+			fmt.Fprintf(stderr, "gc graph: listing deps for %s: %v\n", b.ID, err) //nolint:errcheck // best-effort stderr
 			return 1
 		}
 		var blockedBy []string
 		for _, d := range deps {
-			if inSet[d.DependsOnID] {
+			if inSet[d.DependsOnID] && isBlockingDep(d.Type) {
 				blockedBy = append(blockedBy, d.DependsOnID)
 			}
 		}
@@ -133,14 +140,14 @@ func doGraph(store beads.Store, args []string, opts graphOpts, stdout, stderr io
 
 // resolveGraphInput expands container types (convoy, epic) to their children.
 // Non-containers are passed through. Multiple args are resolved individually.
-// Duplicate IDs are removed.
-func resolveGraphInput(store beads.Store, args []string) ([]string, error) {
+// Duplicate IDs are removed. Returns the full Bead objects to avoid re-fetching.
+func resolveGraphInput(store beads.Store, args []string) ([]beads.Bead, error) {
 	seen := make(map[string]bool)
-	var ids []string
-	add := func(id string) {
-		if !seen[id] {
-			seen[id] = true
-			ids = append(ids, id)
+	var result []beads.Bead
+	add := func(b beads.Bead) {
+		if !seen[b.ID] {
+			seen[b.ID] = true
+			result = append(result, b)
 		}
 	}
 	for _, arg := range args {
@@ -154,13 +161,13 @@ func resolveGraphInput(store beads.Store, args []string) ([]string, error) {
 				return nil, fmt.Errorf("expanding %s %s: %w", b.Type, b.ID, err)
 			}
 			for _, ch := range children {
-				add(ch.ID)
+				add(ch)
 			}
 		} else {
-			add(b.ID)
+			add(b)
 		}
 	}
-	return ids, nil
+	return result, nil
 }
 
 // printTable prints the graph as a table with blocked-by and ready columns.
