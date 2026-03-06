@@ -57,6 +57,9 @@ type Fake struct {
 	// FakeEvents is returned by Events(). Set it per-test.
 	FakeEvents chan Event
 
+	// OnStop callbacks run after a successful Stop (mirrors managed.onStop).
+	OnStop []func() error
+
 	// Set these to inject errors per-test.
 	StartErr     error
 	StopErr      error
@@ -133,7 +136,8 @@ func (f *Fake) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop records the call. Returns StopErr if set; otherwise sets Running=false.
+// Stop records the call. Returns StopErr if set; otherwise sets Running=false
+// and runs OnStop callbacks (best-effort).
 func (f *Fake) Stop() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -142,6 +146,9 @@ func (f *Fake) Stop() error {
 		return f.StopErr
 	}
 	f.Running = false
+	for _, fn := range f.OnStop {
+		_ = fn()
+	}
 	return nil
 }
 

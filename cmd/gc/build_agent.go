@@ -45,7 +45,7 @@ type agentBuildParams struct {
 // qualifiedName is the agent's canonical identity (e.g., "mayor" or
 // "hello-world/polecat-2"). fpExtra carries additional data for config
 // fingerprinting (e.g., pool bounds); pass nil for pool instances.
-func buildOneAgent(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName string, fpExtra map[string]string) (agent.Agent, error) {
+func buildOneAgent(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName string, fpExtra map[string]string, onStop ...func() error) (agent.Agent, error) {
 	// Resolve provider preset.
 	resolved, err := config.ResolveProvider(cfgAgent, p.workspace, p.providers, p.lookPath)
 	if err != nil {
@@ -167,7 +167,7 @@ func buildOneAgent(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName st
 		OverlayDir:             overlayDir,
 		CopyFiles:              copyFiles,
 	}
-	return agent.New(qualifiedName, p.cityName, command, prompt, env, hints, workDir, p.sessionTemplate, fpExtra, p.sp), nil
+	return agent.New(qualifiedName, p.cityName, command, prompt, env, hints, workDir, p.sessionTemplate, fpExtra, p.sp, onStop...), nil
 }
 
 // newAgentBuildParams constructs agentBuildParams from the common startup values.

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gastownhall/gascity/internal/agent"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/spf13/cobra"
@@ -129,16 +130,19 @@ func cmdAgentStop(input string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	// Kill the session.
 	cityName := cfg.Workspace.Name
 	if cityName == "" {
 		cityName = filepath.Base(cityPath)
 	}
 	instanceQN := templateQN + "/" + instanceName
-	sn := sessionName(cityName, instanceQN, cfg.Workspace.SessionTemplate)
 	sp := newSessionProvider()
-	if sp.IsRunning(sn) {
-		if err := sp.Stop(sn); err != nil {
+
+	onStop := func() error {
+		return reg.stop(templateQN, instanceName)
+	}
+	h := agent.HandleFor(instanceQN, cityName, cfg.Workspace.SessionTemplate, sp, onStop)
+	if h.IsRunning() {
+		if err := h.Stop(); err != nil {
 			fmt.Fprintf(stderr, "gc agent stop: killing session: %v\n", err) //nolint:errcheck // best-effort stderr
 		}
 		rec := openCityRecorder(stderr)
@@ -147,12 +151,12 @@ func cmdAgentStop(input string, stdout, stderr io.Writer) int {
 			Actor:   eventActor(),
 			Subject: instanceQN,
 		})
-	}
-
-	// Update registry.
-	if err := reg.stop(templateQN, instanceName); err != nil {
-		fmt.Fprintf(stderr, "gc agent stop: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
+	} else {
+		// Session not running — still update registry.
+		if err := reg.stop(templateQN, instanceName); err != nil {
+			fmt.Fprintf(stderr, "gc agent stop: %v\n", err) //nolint:errcheck // best-effort stderr
+			return 1
+		}
 	}
 	fmt.Fprintf(stdout, "Stopped instance '%s/%s'\n", templateQN, instanceName) //nolint:errcheck // best-effort stdout
 	return 0

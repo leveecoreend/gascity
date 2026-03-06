@@ -213,6 +213,7 @@ func New(name, cityName, command, prompt string,
 	sessionTemplate string,
 	fpExtra map[string]string,
 	sp session.Provider,
+	onStop ...func() error,
 ) Agent {
 	return &managed{
 		name:        name,
@@ -224,17 +225,19 @@ func New(name, cityName, command, prompt string,
 		workDir:     workDir,
 		fpExtra:     fpExtra,
 		sp:          sp,
+		onStop:      onStop,
 	}
 }
 
 // HandleFor creates a lightweight Handle for an agent. Use this when you
 // only need to query, nudge, peek, or stop an agent — not manage its
 // full lifecycle. Takes 4 params vs New()'s 10.
-func HandleFor(name, cityName, sessionTemplate string, sp session.Provider) Handle {
+func HandleFor(name, cityName, sessionTemplate string, sp session.Provider, onStop ...func() error) Handle {
 	return &managed{
 		name:        name,
 		sessionName: SessionNameFor(cityName, name, sessionTemplate),
 		sp:          sp,
+		onStop:      onStop,
 	}
 }
 
@@ -251,6 +254,7 @@ type managed struct {
 	fpExtra     map[string]string
 	sp          session.Provider
 	observer    ObservationStrategy // nil = no structured observation
+	onStop      []func() error      // cleanup callbacks run after session stop
 }
 
 func (a *managed) Name() string        { return a.name }
@@ -269,7 +273,14 @@ func (a *managed) Stop() error {
 		a.observer.Close() //nolint:errcheck // best-effort cleanup
 		a.observer = nil
 	}
-	return a.sp.Stop(a.sessionName)
+	if err := a.sp.Stop(a.sessionName); err != nil {
+		return err
+	}
+	// Best-effort cleanup callbacks (session is dead).
+	for _, fn := range a.onStop {
+		_ = fn()
+	}
+	return nil
 }
 func (a *managed) Attach() error              { return a.sp.Attach(a.sessionName) }
 func (a *managed) Nudge(message string) error { return a.sp.Nudge(a.sessionName, message) }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -834,6 +835,83 @@ func TestManagedDoubleStopSafe(t *testing.T) {
 	// Second stop should not panic (observer already nil).
 	if err := a.Stop(); err != nil {
 		t.Fatalf("second Stop() = %v, want nil", err)
+	}
+}
+
+func TestManagedStopRunsOnStopCallbacks(t *testing.T) {
+	sp := session.NewFake()
+	_ = sp.Start(context.Background(), "worker", session.Config{})
+
+	var called1, called2 bool
+	cb1 := func() error { called1 = true; return nil }
+	cb2 := func() error { called2 = true; return nil }
+
+	a := New("worker", "city", "", "", nil, StartupHints{}, "", "", nil, sp, cb1, cb2)
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop() = %v, want nil", err)
+	}
+	if !called1 || !called2 {
+		t.Errorf("onStop callbacks: called1=%v called2=%v, want both true", called1, called2)
+	}
+}
+
+func TestManagedStopSkipsCallbacksOnError(t *testing.T) {
+	sp := session.NewFailFake()
+
+	var called bool
+	cb := func() error { called = true; return nil }
+
+	a := New("worker", "city", "", "", nil, StartupHints{}, "", "", nil, sp, cb)
+	if err := a.Stop(); err == nil {
+		t.Fatal("Stop() = nil, want error")
+	}
+	if called {
+		t.Error("onStop callback should NOT run when sp.Stop fails")
+	}
+}
+
+func TestHandleForWithOnStop(t *testing.T) {
+	sp := session.NewFake()
+	_ = sp.Start(context.Background(), "worker", session.Config{})
+
+	var called bool
+	cb := func() error { called = true; return nil }
+
+	h := HandleFor("worker", "city", "", sp, cb)
+	if err := h.Stop(); err != nil {
+		t.Fatalf("Stop() = %v, want nil", err)
+	}
+	if !called {
+		t.Error("onStop callback should run after HandleFor().Stop()")
+	}
+}
+
+func TestFakeStopRunsOnStopCallbacks(t *testing.T) {
+	var called bool
+	f := NewFake("worker", "worker")
+	f.Running = true
+	f.OnStop = []func() error{func() error { called = true; return nil }}
+
+	if err := f.Stop(); err != nil {
+		t.Fatalf("Stop() = %v, want nil", err)
+	}
+	if !called {
+		t.Error("Fake.OnStop callback should run on successful Stop")
+	}
+}
+
+func TestFakeStopSkipsOnStopOnError(t *testing.T) {
+	var called bool
+	f := NewFake("worker", "worker")
+	f.Running = true
+	f.StopErr = fmt.Errorf("injected")
+	f.OnStop = []func() error{func() error { called = true; return nil }}
+
+	if err := f.Stop(); err == nil {
+		t.Fatal("Stop() = nil, want error")
+	}
+	if called {
+		t.Error("Fake.OnStop should NOT run when StopErr is set")
 	}
 }
 

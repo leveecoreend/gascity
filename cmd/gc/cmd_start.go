@@ -485,7 +485,13 @@ func doStart(args []string, controllerMode bool, stdout, stderr io.Writer) int {
 						instanceAgent.PoolName = c.Agents[i].QualifiedName()
 						instanceQN := c.Agents[i].QualifiedName() + "/" + mi.Name
 						fpExtra := buildFingerprintExtra(&instanceAgent)
-						a, bErr := buildOneAgent(bp, &instanceAgent, instanceQN, fpExtra)
+						// Capture loop variables for closure.
+						templateQN := c.Agents[i].QualifiedName()
+						instName := mi.Name
+						onStop := func() error {
+							return multiReg.stop(templateQN, instName)
+						}
+						a, bErr := buildOneAgent(bp, &instanceAgent, instanceQN, fpExtra, onStop)
 						if bErr != nil {
 							fmt.Fprintf(stderr, "gc start: multi instance %q: %v (skipping)\n", instanceQN, bErr) //nolint:errcheck // best-effort stderr
 							continue
