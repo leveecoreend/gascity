@@ -183,9 +183,9 @@ func (sm *SupervisorMux) getCityServer(name string, state State) *Server {
 	}
 	sm.cacheMu.RUnlock()
 
-	// Cache miss or stale — create new Server.
-	srv := &Server{state: state, mux: http.NewServeMux()}
-	srv.registerRoutes()
+	// Cache miss or stale — create new Server via New() to stay in sync
+	// with any future initialization added to the constructor.
+	srv := New(state)
 
 	sm.cacheMu.Lock()
 	sm.cache[name] = cachedCityServer{state: state, srv: srv}

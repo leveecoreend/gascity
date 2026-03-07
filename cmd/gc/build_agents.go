@@ -65,7 +65,9 @@ func buildAgentsFromConfig(
 
 		// Multi-instance template: build an agent for each running instance.
 		if c.Agents[i].IsMulti() {
-			if multiReg != nil {
+			if multiReg == nil {
+				fmt.Fprintf(stderr, "%s: multi agent %q skipped (not supported in this mode)\n", logPrefix, c.Agents[i].QualifiedName()) //nolint:errcheck
+			} else {
 				instances, mErr := multiReg.instancesForTemplate(c.Agents[i].QualifiedName())
 				if mErr != nil {
 					fmt.Fprintf(stderr, "%s: multi %q: %v (skipping)\n", logPrefix, c.Agents[i].QualifiedName(), mErr) //nolint:errcheck
