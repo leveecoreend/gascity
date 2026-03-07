@@ -486,6 +486,13 @@ func controllerLoop(
 					// Update API server state if running.
 					if cs != nil {
 						cs.update(cfg, sp)
+					} else if standaloneCityStore != nil {
+						// Refresh standalone city store for auto-suspend.
+						if s, err := openCityStoreAt(cityRoot); err != nil {
+							fmt.Fprintf(stderr, "gc start: city bead store reload: %v\n", err) //nolint:errcheck // best-effort stderr
+						} else {
+							standaloneCityStore = s
+						}
 					}
 					fmt.Fprintf(stdout, "Config reloaded: %s (rev %s)\n", //nolint:errcheck // best-effort stdout
 						configReloadSummary(oldAgentCount, oldRigCount, len(cfg.Agents), len(cfg.Rigs)),
