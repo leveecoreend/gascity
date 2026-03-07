@@ -7,6 +7,7 @@ import (
 	"io"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -480,16 +481,30 @@ func cmdSessionPrune(beforeStr string, stdout, stderr io.Writer) int {
 
 // parsePruneDuration parses a duration string like "7d", "24h", "30m".
 // Extends time.ParseDuration with support for "d" (days).
+// Rejects negative and zero durations.
 func parsePruneDuration(s string) (time.Duration, error) {
+	var dur time.Duration
 	if strings.HasSuffix(s, "d") {
 		numStr := strings.TrimSuffix(s, "d")
-		var n int
-		if _, err := fmt.Sscanf(numStr, "%d", &n); err != nil {
+		n, err := strconv.Atoi(numStr)
+		if err != nil {
 			return 0, fmt.Errorf("invalid duration %q", s)
 		}
-		return time.Duration(n) * 24 * time.Hour, nil
+		if n <= 0 {
+			return 0, fmt.Errorf("duration must be positive, got %q", s)
+		}
+		dur = time.Duration(n) * 24 * time.Hour
+	} else {
+		var err error
+		dur, err = time.ParseDuration(s)
+		if err != nil {
+			return 0, err
+		}
+		if dur <= 0 {
+			return 0, fmt.Errorf("duration must be positive, got %q", s)
+		}
 	}
-	return time.ParseDuration(s)
+	return dur, nil
 }
 
 // newSessionPeekCmd creates the "gc session peek <id>" command.

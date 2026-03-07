@@ -227,9 +227,12 @@ func (m *Manager) Suspend(id string) error {
 		}
 	}
 
-	// Update state.
+	// Update state and record suspension timestamp.
 	if err := m.store.SetMetadata(id, "state", string(StateSuspended)); err != nil {
 		return fmt.Errorf("updating session state: %w", err)
+	}
+	if err := m.store.SetMetadata(id, "suspended_at", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		return fmt.Errorf("storing suspension timestamp: %w", err)
 	}
 
 	return nil
@@ -272,8 +275,9 @@ func (m *Manager) Rename(id, title string) error {
 	return m.store.Update(id, beads.UpdateOpts{Title: &title})
 }
 
-// Prune closes all sessions that have been closed or suspended before the
-// given cutoff time. Returns the number of sessions pruned.
+// Prune closes suspended sessions whose suspension time is before the given
+// cutoff. Active and already-closed sessions are never pruned.
+// Returns the number of sessions pruned.
 func (m *Manager) Prune(before time.Time) (int, error) {
 	all, err := m.store.ListByLabel(LabelSession, 0)
 	if err != nil {
@@ -287,12 +291,19 @@ func (m *Manager) Prune(before time.Time) (int, error) {
 		if b.Status == "closed" {
 			continue // already closed
 		}
-		// Prune suspended sessions created before the cutoff.
 		state := State(b.Metadata["state"])
 		if state != StateSuspended {
 			continue // only prune suspended sessions
 		}
-		if !b.CreatedAt.Before(before) {
+		// Use suspended_at timestamp if available, fall back to CreatedAt
+		// for beads created before suspended_at was introduced.
+		ts := b.CreatedAt
+		if raw := b.Metadata["suspended_at"]; raw != "" {
+			if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+				ts = parsed
+			}
+		}
+		if !ts.Before(before) {
 			continue
 		}
 		if err := m.store.Close(b.ID); err != nil {

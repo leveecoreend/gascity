@@ -609,6 +609,23 @@ func TestRename(t *testing.T) {
 	}
 }
 
+func TestRenameNonSessionBead(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := session.NewFake()
+	mgr := NewManager(store, sp)
+
+	// Create a plain bead (not a session).
+	b, err := store.Create(beads.Bead{Title: "not a session", Type: "task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = mgr.Rename(b.ID, "new title")
+	if err == nil {
+		t.Error("Rename on non-session bead should error")
+	}
+}
+
 func TestRenameNotFound(t *testing.T) {
 	store := beads.NewMemStore()
 	sp := session.NewFake()
@@ -661,6 +678,94 @@ func TestPrune(t *testing.T) {
 				t.Errorf("session %s state = %q after prune, want empty (closed)", s.ID, s.State)
 			}
 		}
+	}
+}
+
+func TestPruneUsesSuspendedAt(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := session.NewFake()
+	mgr := NewManager(store, sp)
+
+	// Create two sessions and suspend them.
+	old, err := mgr.Create(context.Background(), "default", "Old", "echo old", "/tmp", "test", nil, ProviderResume{}, session.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recent, err := mgr.Create(context.Background(), "default", "Recent", "echo recent", "/tmp", "test", nil, ProviderResume{}, session.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mgr.Suspend(old.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Suspend(recent.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Backdate the "old" session's suspended_at to 10 days ago.
+	tenDaysAgo := time.Now().Add(-10 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	if err := store.SetMetadata(old.ID, "suspended_at", tenDaysAgo); err != nil {
+		t.Fatal(err)
+	}
+
+	// Cutoff at 7 days ago should prune only the old one.
+	cutoff := time.Now().Add(-7 * 24 * time.Hour)
+	pruned, err := mgr.Prune(cutoff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pruned != 1 {
+		t.Errorf("pruned = %d, want 1", pruned)
+	}
+
+	// Old should be closed, recent should still be suspended.
+	gotOld, err := mgr.Get(old.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotOld.State != "" {
+		t.Errorf("old session state = %q, want empty (closed)", gotOld.State)
+	}
+
+	gotRecent, err := mgr.Get(recent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotRecent.State != StateSuspended {
+		t.Errorf("recent session state = %q, want %q", gotRecent.State, StateSuspended)
+	}
+}
+
+func TestSuspendSetsSuspendedAt(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := session.NewFake()
+	mgr := NewManager(store, sp)
+
+	info, err := mgr.Create(context.Background(), "helper", "", "claude", "/tmp", "claude", nil, ProviderResume{}, session.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	before := time.Now().Add(-time.Second)
+	if err := mgr.Suspend(info.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := store.Get(info.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := b.Metadata["suspended_at"]
+	if raw == "" {
+		t.Fatal("suspended_at metadata not set")
+	}
+	ts, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		t.Fatalf("suspended_at not valid RFC3339: %v", err)
+	}
+	if ts.Before(before) {
+		t.Errorf("suspended_at = %v, expected after %v", ts, before)
 	}
 }
 

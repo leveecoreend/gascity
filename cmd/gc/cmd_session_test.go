@@ -25,6 +25,39 @@ func TestFormatDuration(t *testing.T) {
 	}
 }
 
+func TestParsePruneDuration(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"7d", 7 * 24 * time.Hour, false},
+		{"1d", 24 * time.Hour, false},
+		{"24h", 24 * time.Hour, false},
+		{"30m", 30 * time.Minute, false},
+		{"-5d", 0, true},
+		{"0d", 0, true},
+		{"-24h", 0, true},
+		{"0h", 0, true},
+		{"1.5d", 0, true},
+		{"7dd", 0, true},
+		{"abc", 0, true},
+		{"d", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := parsePruneDuration(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parsePruneDuration(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("parsePruneDuration(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveWorkDir(t *testing.T) {
 	tests := []struct {
 		name     string
