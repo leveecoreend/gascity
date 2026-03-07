@@ -10,6 +10,7 @@ import (
 	"github.com/gastownhall/gascity/internal/agent"
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/clock"
+	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/runtime"
 )
 
@@ -24,12 +25,17 @@ const sessionBeadType = "agent_session"
 // them and updates metadata for those that do. It does NOT change agent behavior;
 // the existing reconciler continues to manage agent lifecycle.
 //
+// configuredNames is the set of ALL configured agent session names (including
+// suspended agents). Beads for names not in this set are marked "orphaned".
+// Beads for names in configuredNames but not in the agents slice are marked
+// "suspended" (the agent exists in config but isn't currently runnable).
+//
 // This is Phase 1 of the unified session model: beads record reality alongside
 // the existing reconciler. Phase 2 switches to a bead-driven reconciler.
 func syncSessionBeads(
 	store beads.Store,
 	agents []agent.Agent,
-	sp runtime.Provider,
+	configuredNames map[string]bool,
 	clk clock.Clock,
 	stderr io.Writer,
 ) {
@@ -70,6 +76,13 @@ func syncSessionBeads(
 		coreHash := runtime.CoreFingerprint(agentCfg)
 		liveHash := runtime.LiveFingerprint(agentCfg)
 
+		// Use agent-level IsRunning which checks process liveness,
+		// not just session existence.
+		state := "stopped"
+		if a.IsRunning() {
+			state = "active"
+		}
+
 		b, exists := bySessionName[sn]
 		if !exists {
 			// Create a new session bead.
@@ -84,7 +97,7 @@ func syncSessionBeads(
 					"live_hash":      liveHash,
 					"generation":     "1",
 					"instance_token": generateToken(),
-					"state":          agentState(sp, sn),
+					"state":          state,
 					"synced_at":      now.Format("2006-01-02T15:04:05Z07:00"),
 				},
 			})
@@ -97,17 +110,19 @@ func syncSessionBeads(
 		}
 
 		// Update existing bead — check for drift.
-		// TODO(phase2): replace per-field SetMetadata calls with a single
-		// batch update to avoid inconsistent state on partial failure.
+		// Write config_hash LAST so it serves as the "commit" signal.
+		// If an earlier write fails, the stale config_hash ensures the
+		// next tick retries the full update.
 		changed := false
 
 		if b.Metadata["config_hash"] != coreHash {
-			// Core config changed — bump generation and token.
+			// Core config changed — bump generation and token first,
+			// then write config_hash last to commit atomically.
 			gen, _ := strconv.Atoi(b.Metadata["generation"])
 			gen++
-			setMeta(store, b.ID, "config_hash", coreHash, stderr)
 			setMeta(store, b.ID, "generation", strconv.Itoa(gen), stderr)
 			setMeta(store, b.ID, "instance_token", generateToken(), stderr)
+			setMeta(store, b.ID, "config_hash", coreHash, stderr) // commit signal
 			changed = true
 		}
 
@@ -117,9 +132,8 @@ func syncSessionBeads(
 		}
 
 		// Update state.
-		currentState := agentState(sp, sn)
-		if b.Metadata["state"] != currentState {
-			setMeta(store, b.ID, "state", currentState, stderr)
+		if b.Metadata["state"] != state {
+			setMeta(store, b.ID, "state", state, stderr)
 			changed = true
 		}
 
@@ -128,8 +142,12 @@ func syncSessionBeads(
 		setMeta(store, b.ID, "synced_at", now.Format("2006-01-02T15:04:05Z07:00"), stderr)
 	}
 
-	// Mark orphans — beads with no matching agent. Do NOT close them
-	// (that's Phase 2). Just update state to "orphaned".
+	// Classify beads with no matching runnable agent.
+	// - If the session name is in configuredNames but not in desired (runnable),
+	//   the agent is suspended/disabled — mark "suspended".
+	// - If the session name is not in configuredNames at all, the agent was
+	//   removed from config — mark "orphaned".
+	// Do NOT close beads (that's Phase 2).
 	for _, b := range existing {
 		sn := b.Metadata["session_name"]
 		if sn == "" || desired[sn] {
@@ -138,18 +156,30 @@ func syncSessionBeads(
 		if b.Status == "closed" {
 			continue
 		}
-		if b.Metadata["state"] != "orphaned" {
-			setMeta(store, b.ID, "state", "orphaned", stderr)
+		if configuredNames[sn] {
+			// Still in config but not runnable (suspended/disabled).
+			if b.Metadata["state"] != "suspended" {
+				setMeta(store, b.ID, "state", "suspended", stderr)
+			}
+		} else {
+			// Not in config at all — orphaned.
+			if b.Metadata["state"] != "orphaned" {
+				setMeta(store, b.ID, "state", "orphaned", stderr)
+			}
 		}
 	}
 }
 
-// agentState returns "active" if the agent's session is running, "stopped" otherwise.
-func agentState(sp runtime.Provider, sessionName string) string {
-	if sp != nil && sp.IsRunning(sessionName) {
-		return "active"
+// configuredSessionNames builds the set of ALL configured agent session names
+// from the config, including suspended agents. Used to distinguish "orphaned"
+// (removed from config) from "suspended" (still in config, not runnable).
+func configuredSessionNames(cfg *config.City, cityName string) map[string]bool {
+	st := cfg.Workspace.SessionTemplate
+	names := make(map[string]bool, len(cfg.Agents))
+	for _, a := range cfg.Agents {
+		names[agent.SessionNameFor(cityName, a.QualifiedName(), st)] = true
 	}
-	return "stopped"
+	return names
 }
 
 // setMeta wraps store.SetMetadata with error logging.

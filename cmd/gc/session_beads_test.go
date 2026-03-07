@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"testing"
 	"time"
 
@@ -12,10 +11,17 @@ import (
 	"github.com/gastownhall/gascity/internal/runtime"
 )
 
+// allConfigured is a helper that builds configuredNames from agent session names.
+func allConfigured(agents []agent.Agent) map[string]bool {
+	m := make(map[string]bool, len(agents))
+	for _, a := range agents {
+		m[a.SessionName()] = true
+	}
+	return m
+}
+
 func TestSyncSessionBeads_CreatesNewBeads(t *testing.T) {
 	store := beads.NewMemStore()
-	sp := runtime.NewFake()
-	_ = sp.Start(context.Background(), "mayor", runtime.Config{Command: "claude"})
 	clk := &clock.Fake{Time: time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)}
 
 	agents := []agent.Agent{
@@ -28,7 +34,7 @@ func TestSyncSessionBeads_CreatesNewBeads(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	syncSessionBeads(store, agents, sp, clk, &stderr)
+	syncSessionBeads(store, agents, allConfigured(agents), clk, &stderr)
 
 	if stderr.Len() > 0 {
 		t.Fatalf("unexpected stderr: %s", stderr.String())
@@ -65,8 +71,6 @@ func TestSyncSessionBeads_CreatesNewBeads(t *testing.T) {
 
 func TestSyncSessionBeads_Idempotent(t *testing.T) {
 	store := beads.NewMemStore()
-	sp := runtime.NewFake()
-	_ = sp.Start(context.Background(), "mayor", runtime.Config{Command: "claude"})
 	clk := &clock.Fake{Time: time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)}
 
 	agents := []agent.Agent{
@@ -79,7 +83,7 @@ func TestSyncSessionBeads_Idempotent(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	syncSessionBeads(store, agents, sp, clk, &stderr)
+	syncSessionBeads(store, agents, allConfigured(agents), clk, &stderr)
 
 	// Get the created bead's token and generation.
 	all, _ := store.ListByLabel(sessionBeadLabel, 0)
@@ -88,7 +92,7 @@ func TestSyncSessionBeads_Idempotent(t *testing.T) {
 
 	// Run again — should be idempotent.
 	clk.Advance(5 * time.Second)
-	syncSessionBeads(store, agents, sp, clk, &stderr)
+	syncSessionBeads(store, agents, allConfigured(agents), clk, &stderr)
 
 	all, _ = store.ListByLabel(sessionBeadLabel, 0)
 	if len(all) != 1 {
@@ -106,8 +110,6 @@ func TestSyncSessionBeads_Idempotent(t *testing.T) {
 
 func TestSyncSessionBeads_ConfigDrift(t *testing.T) {
 	store := beads.NewMemStore()
-	sp := runtime.NewFake()
-	_ = sp.Start(context.Background(), "mayor", runtime.Config{Command: "claude"})
 	clk := &clock.Fake{Time: time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)}
 
 	agents := []agent.Agent{
@@ -120,7 +122,7 @@ func TestSyncSessionBeads_ConfigDrift(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	syncSessionBeads(store, agents, sp, clk, &stderr)
+	syncSessionBeads(store, agents, allConfigured(agents), clk, &stderr)
 
 	all, _ := store.ListByLabel(sessionBeadLabel, 0)
 	token1 := all[0].Metadata["instance_token"]
@@ -128,7 +130,7 @@ func TestSyncSessionBeads_ConfigDrift(t *testing.T) {
 	// Change config — different command.
 	agents[0].(*agent.Fake).FakeSessionConfig = runtime.Config{Command: "gemini"}
 	clk.Advance(5 * time.Second)
-	syncSessionBeads(store, agents, sp, clk, &stderr)
+	syncSessionBeads(store, agents, allConfigured(agents), clk, &stderr)
 
 	all, _ = store.ListByLabel(sessionBeadLabel, 0)
 	if all[0].Metadata["generation"] != "2" {
@@ -141,7 +143,6 @@ func TestSyncSessionBeads_ConfigDrift(t *testing.T) {
 
 func TestSyncSessionBeads_OrphanDetection(t *testing.T) {
 	store := beads.NewMemStore()
-	sp := runtime.NewFake()
 	clk := &clock.Fake{Time: time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)}
 
 	// Create a bead for "old-agent".
@@ -154,9 +155,9 @@ func TestSyncSessionBeads_OrphanDetection(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	syncSessionBeads(store, agents, sp, clk, &stderr)
+	syncSessionBeads(store, agents, allConfigured(agents), clk, &stderr)
 
-	// Now sync with a different agent list (old-agent removed).
+	// Now sync with a different agent list (old-agent removed from config too).
 	agents = []agent.Agent{
 		&agent.Fake{
 			FakeName:          "new-agent",
@@ -165,7 +166,8 @@ func TestSyncSessionBeads_OrphanDetection(t *testing.T) {
 		},
 	}
 	clk.Advance(5 * time.Second)
-	syncSessionBeads(store, agents, sp, clk, &stderr)
+	// configuredNames only has new-agent — old-agent is truly orphaned.
+	syncSessionBeads(store, agents, allConfigured(agents), clk, &stderr)
 
 	// old-agent's bead should be marked orphaned.
 	all, _ := store.ListByLabel(sessionBeadLabel, 0)
@@ -192,8 +194,6 @@ func TestSyncSessionBeads_NilStore(t *testing.T) {
 
 func TestSyncSessionBeads_StoppedAgent(t *testing.T) {
 	store := beads.NewMemStore()
-	sp := runtime.NewFake()
-	// NOT running.
 	clk := &clock.Fake{Time: time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)}
 
 	agents := []agent.Agent{
@@ -206,7 +206,7 @@ func TestSyncSessionBeads_StoppedAgent(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	syncSessionBeads(store, agents, sp, clk, &stderr)
+	syncSessionBeads(store, agents, allConfigured(agents), clk, &stderr)
 
 	all, _ := store.ListByLabel(sessionBeadLabel, 0)
 	if len(all) != 1 {
@@ -219,8 +219,6 @@ func TestSyncSessionBeads_StoppedAgent(t *testing.T) {
 
 func TestSyncSessionBeads_ClosedBeadCreatesNew(t *testing.T) {
 	store := beads.NewMemStore()
-	sp := runtime.NewFake()
-	_ = sp.Start(context.Background(), "mayor", runtime.Config{Command: "claude"})
 	clk := &clock.Fake{Time: time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)}
 
 	agents := []agent.Agent{
@@ -235,7 +233,7 @@ func TestSyncSessionBeads_ClosedBeadCreatesNew(t *testing.T) {
 	var stderr bytes.Buffer
 
 	// First sync creates the bead.
-	syncSessionBeads(store, agents, sp, clk, &stderr)
+	syncSessionBeads(store, agents, allConfigured(agents), clk, &stderr)
 
 	all, _ := store.ListByLabel(sessionBeadLabel, 0)
 	if len(all) != 1 {
@@ -247,7 +245,7 @@ func TestSyncSessionBeads_ClosedBeadCreatesNew(t *testing.T) {
 
 	// Re-sync should create a NEW bead, not reuse the closed one.
 	clk.Advance(5 * time.Second)
-	syncSessionBeads(store, agents, sp, clk, &stderr)
+	syncSessionBeads(store, agents, allConfigured(agents), clk, &stderr)
 
 	all, _ = store.ListByLabel(sessionBeadLabel, 0)
 	if len(all) != 2 {
@@ -270,5 +268,51 @@ func TestSyncSessionBeads_ClosedBeadCreatesNew(t *testing.T) {
 	}
 	if openBead.Metadata["generation"] != "1" {
 		t.Errorf("generation = %q, want %q (fresh bead)", openBead.Metadata["generation"], "1")
+	}
+}
+
+func TestSyncSessionBeads_SuspendedAgentNotOrphaned(t *testing.T) {
+	store := beads.NewMemStore()
+	clk := &clock.Fake{Time: time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)}
+
+	// Create beads for both agents.
+	agents := []agent.Agent{
+		&agent.Fake{
+			FakeName:          "mayor",
+			FakeSessionName:   "mayor",
+			Running:           true,
+			FakeSessionConfig: runtime.Config{Command: "claude"},
+		},
+		&agent.Fake{
+			FakeName:          "worker",
+			FakeSessionName:   "worker",
+			Running:           true,
+			FakeSessionConfig: runtime.Config{Command: "claude"},
+		},
+	}
+
+	var stderr bytes.Buffer
+	syncSessionBeads(store, agents, allConfigured(agents), clk, &stderr)
+
+	// Now "suspend" worker: remove from runnable agents but keep in configuredNames.
+	runnableAgents := []agent.Agent{agents[0]} // only mayor
+	configuredNames := map[string]bool{
+		"mayor":  true,
+		"worker": true, // still configured, just suspended
+	}
+	clk.Advance(5 * time.Second)
+	syncSessionBeads(store, runnableAgents, configuredNames, clk, &stderr)
+
+	// Worker should be "suspended", not "orphaned".
+	all, _ := store.ListByLabel(sessionBeadLabel, 0)
+	var workerBead beads.Bead
+	for _, b := range all {
+		if b.Metadata["session_name"] == "worker" {
+			workerBead = b
+			break
+		}
+	}
+	if workerBead.Metadata["state"] != "suspended" {
+		t.Errorf("worker state = %q, want %q", workerBead.Metadata["state"], "suspended")
 	}
 }

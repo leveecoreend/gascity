@@ -212,7 +212,7 @@ type AgentOverride struct {
 	// DependsOn overrides the agent's dependency list.
 	DependsOn []string `toml:"depends_on,omitempty"`
 	// WakeMode overrides the agent's wake mode ("resume" or "fresh").
-	WakeMode *string `toml:"wake_mode,omitempty"`
+	WakeMode *string `toml:"wake_mode,omitempty" jsonschema:"enum=resume,enum=fresh"`
 	// InjectFragmentsAppend appends to the agent's inject_fragments list.
 	InjectFragmentsAppend []string `toml:"inject_fragments_append,omitempty"`
 }

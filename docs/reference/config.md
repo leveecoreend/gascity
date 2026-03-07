@@ -124,7 +124,7 @@ AgentOverride modifies a pack-stamped agent for a specific rig.
 | `attach` | boolean |  |  | Attach overrides the agent's attach setting. |
 | `multi` | boolean |  |  | Multi overrides the agent's multi-instance template flag. |
 | `depends_on` | []string |  |  | DependsOn overrides the agent's dependency list. |
-| `wake_mode` | string |  |  | WakeMode overrides the agent's wake mode ("resume" or "fresh"). |
+| `wake_mode` | string |  |  | WakeMode overrides the agent's wake mode ("resume" or "fresh"). Enum: `resume`, `fresh` |
 | `inject_fragments_append` | []string |  |  | InjectFragmentsAppend appends to the agent's inject_fragments list. |
 
 ## AgentPatch
@@ -158,7 +158,7 @@ AgentPatch modifies an existing agent identified by (Dir, Name).
 | `attach` | boolean |  |  | Attach overrides the agent's attach setting. |
 | `multi` | boolean |  |  | Multi overrides the agent's multi-instance template flag. |
 | `depends_on` | []string |  |  | DependsOn overrides the agent's dependency list. |
-| `wake_mode` | string |  |  | WakeMode overrides the agent's wake mode ("resume" or "fresh"). |
+| `wake_mode` | string |  |  | WakeMode overrides the agent's wake mode ("resume" or "fresh"). Enum: `resume`, `fresh` |
 | `pre_start_append` | []string |  |  | PreStartAppend appends commands to the agent's pre_start list (instead of replacing). Applied after PreStart if both are set. |
 | `session_setup_append` | []string |  |  | SessionSetupAppend appends commands to the agent's session_setup list. |
 | `session_live_append` | []string |  |  | SessionLiveAppend appends commands to the agent's session_live list. |

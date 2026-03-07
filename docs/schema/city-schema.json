@@ -391,6 +391,10 @@
         },
         "wake_mode": {
           "type": "string",
+          "enum": [
+            "resume",
+            "fresh"
+          ],
           "description": "WakeMode overrides the agent's wake mode (\"resume\" or \"fresh\")."
         },
         "inject_fragments_append": {
@@ -536,6 +540,10 @@
         },
         "wake_mode": {
           "type": "string",
+          "enum": [
+            "resume",
+            "fresh"
+          ],
           "description": "WakeMode overrides the agent's wake mode (\"resume\" or \"fresh\")."
         },
         "pre_start_append": {

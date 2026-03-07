@@ -170,6 +170,19 @@ func (cr *CityRuntime) run(ctx context.Context) {
 		cr.cfg.Daemon.DriftDrainTimeoutDuration(), cr.cfg.Session.StartupTimeoutDuration(),
 		cr.stdout, cr.stderr, ctx)
 	ensureObservers(agents, observePaths)
+
+	// Phase 1: initial session bead sync (before first patrol tick).
+	{
+		var store beads.Store
+		if cr.cs != nil {
+			store = cr.cs.CityBeadStore()
+		} else {
+			store = cr.standaloneCityStore
+		}
+		cfgNames := configuredSessionNames(cr.cfg, cr.cityName)
+		syncSessionBeads(store, agents, cfgNames, clock.Real{}, cr.stderr)
+	}
+
 	fmt.Fprintln(cr.stdout, "City started.") //nolint:errcheck // best-effort stdout
 
 	cityRoot := filepath.Dir(cr.tomlPath)
@@ -254,7 +267,8 @@ func (cr *CityRuntime) tick(
 		} else {
 			store = cr.standaloneCityStore
 		}
-		syncSessionBeads(store, agents, cr.sp, clock.Real{}, cr.stderr)
+		cfgNames := configuredSessionNames(cr.cfg, cr.cityName)
+		syncSessionBeads(store, agents, cfgNames, clock.Real{}, cr.stderr)
 	}
 
 	// Wisp GC: purge expired closed molecules.

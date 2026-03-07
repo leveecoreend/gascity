@@ -73,7 +73,7 @@ type AgentPatch struct {
 	// DependsOn overrides the agent's dependency list.
 	DependsOn []string `toml:"depends_on,omitempty"`
 	// WakeMode overrides the agent's wake mode ("resume" or "fresh").
-	WakeMode *string `toml:"wake_mode,omitempty"`
+	WakeMode *string `toml:"wake_mode,omitempty" jsonschema:"enum=resume,enum=fresh"`
 	// PreStartAppend appends commands to the agent's pre_start list
 	// (instead of replacing). Applied after PreStart if both are set.
 	PreStartAppend []string `toml:"pre_start_append,omitempty"`
