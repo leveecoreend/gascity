@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/gastownhall/gascity/internal/chatsession"
+	"github.com/gastownhall/gascity/internal/session"
 )
 
 // sessionResponse is the JSON representation of a chat session.
@@ -20,7 +20,7 @@ type sessionResponse struct {
 	Attached    bool   `json:"attached"`
 }
 
-func sessionToResponse(info chatsession.Info) sessionResponse {
+func sessionToResponse(info session.Info) sessionResponse {
 	r := sessionResponse{
 		ID:          info.ID,
 		Template:    info.Template,
@@ -44,7 +44,7 @@ func (s *Server) handleSessionList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sp := s.state.SessionProvider()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	q := r.URL.Query()
 	stateFilter := q.Get("state")
@@ -70,7 +70,7 @@ func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sp := s.state.SessionProvider()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	id := r.PathValue("id")
 	info, err := mgr.Get(id)
@@ -88,7 +88,7 @@ func (s *Server) handleSessionSuspend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sp := s.state.SessionProvider()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	id := r.PathValue("id")
 	if err := mgr.Suspend(id); err != nil {
@@ -105,7 +105,7 @@ func (s *Server) handleSessionClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sp := s.state.SessionProvider()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	id := r.PathValue("id")
 	if err := mgr.Close(id); err != nil {

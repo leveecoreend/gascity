@@ -6,9 +6,9 @@ import (
 	"io"
 	"path/filepath"
 
-	"github.com/gastownhall/gascity/internal/chatsession"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -214,14 +214,14 @@ func doCityStatus(
 
 	// Chat sessions count (best-effort — skip if store unavailable).
 	if store, err := openCityStoreAt(cityPath); err == nil {
-		mgr := chatsession.NewManager(store, sp)
+		mgr := session.NewManager(store, sp)
 		if sessions, err := mgr.List("", ""); err == nil && len(sessions) > 0 {
 			var active, suspended int
 			for _, s := range sessions {
 				switch s.State {
-				case chatsession.StateActive:
+				case session.StateActive:
 					active++
-				case chatsession.StateSuspended:
+				case session.StateSuspended:
 					suspended++
 				}
 			}
@@ -325,13 +325,13 @@ func doCityStatusJSON(
 
 	// Chat sessions count (best-effort).
 	if store, err := openCityStoreAt(cityPath); err == nil {
-		mgr := chatsession.NewManager(store, sp)
+		mgr := session.NewManager(store, sp)
 		if sessions, err := mgr.List("", ""); err == nil {
 			for _, s := range sessions {
 				switch s.State {
-				case chatsession.StateActive:
+				case session.StateActive:
 					summary.ActiveSessions++
-				case chatsession.StateSuspended:
+				case session.StateSuspended:
 					summary.SuspendedSessions++
 				}
 			}

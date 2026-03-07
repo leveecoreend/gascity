@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/beads"
-	"github.com/gastownhall/gascity/internal/chatsession"
 	"github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/session"
 )
 
 func newSessionFakeState(t *testing.T) *fakeState {
@@ -19,10 +19,10 @@ func newSessionFakeState(t *testing.T) *fakeState {
 	return fs
 }
 
-func createTestSession(t *testing.T, store beads.Store, sp *runtime.Fake, title string) chatsession.Info {
+func createTestSession(t *testing.T, store beads.Store, sp *runtime.Fake, title string) session.Info {
 	t.Helper()
-	mgr := chatsession.NewManager(store, sp)
-	info, err := mgr.Create(context.Background(), "default", title, "echo test", "/tmp", "test", nil, chatsession.ProviderResume{}, runtime.Config{})
+	mgr := session.NewManager(store, sp)
+	info, err := mgr.Create(context.Background(), "default", title, "echo test", "/tmp", "test", nil, session.ProviderResume{}, runtime.Config{})
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestHandleSessionListFilterByState(t *testing.T) {
 	createTestSession(t, fs.cityBeadStore, fs.sp, "Stay Active")
 
 	// Suspend one.
-	mgr := chatsession.NewManager(fs.cityBeadStore, fs.sp)
+	mgr := session.NewManager(fs.cityBeadStore, fs.sp)
 	if err := mgr.Suspend(info.ID); err != nil {
 		t.Fatalf("suspend: %v", err)
 	}
@@ -138,13 +138,13 @@ func TestHandleSessionSuspend(t *testing.T) {
 	}
 
 	// Verify the session is now suspended.
-	mgr := chatsession.NewManager(fs.cityBeadStore, fs.sp)
+	mgr := session.NewManager(fs.cityBeadStore, fs.sp)
 	got, err := mgr.Get(info.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.State != chatsession.StateSuspended {
-		t.Errorf("got state %q, want %q", got.State, chatsession.StateSuspended)
+	if got.State != session.StateSuspended {
+		t.Errorf("got state %q, want %q", got.State, session.StateSuspended)
 	}
 }
 
@@ -163,7 +163,7 @@ func TestHandleSessionClose(t *testing.T) {
 	}
 
 	// Session should no longer appear in default listing (excludes closed).
-	mgr := chatsession.NewManager(fs.cityBeadStore, fs.sp)
+	mgr := session.NewManager(fs.cityBeadStore, fs.sp)
 	sessions, err := mgr.List("", "")
 	if err != nil {
 		t.Fatalf("list: %v", err)

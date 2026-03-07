@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
-	"github.com/gastownhall/gascity/internal/chatsession"
 	"github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/session"
 )
 
 // autoSuspendChatSessions scans active chat sessions and suspends any that
@@ -18,7 +18,7 @@ func autoSuspendChatSessions(store beads.Store, sp runtime.Provider, idleTimeout
 		return // no store — nothing to suspend
 	}
 
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	sessions, err := mgr.List("active", "")
 	if err != nil {

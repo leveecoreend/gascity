@@ -12,9 +12,9 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/gastownhall/gascity/internal/chatsession"
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/session"
 	"github.com/spf13/cobra"
 )
 
@@ -111,7 +111,7 @@ func cmdSessionNew(args []string, title string, noAttach bool, stdout, stderr io
 	}
 
 	sp := newSessionProvider()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	// Build the work directory.
 	workDir := resolveWorkDir(cityPath, &found)
@@ -124,7 +124,7 @@ func cmdSessionNew(args []string, title string, noAttach bool, stdout, stderr io
 		EmitsPermissionWarning: resolved.EmitsPermissionWarning,
 	}
 
-	resume := chatsession.ProviderResume{
+	resume := session.ProviderResume{
 		ResumeFlag:    resolved.ResumeFlag,
 		ResumeStyle:   resolved.ResumeStyle,
 		SessionIDFlag: resolved.SessionIDFlag,
@@ -181,7 +181,7 @@ func cmdSessionList(stateFilter, templateFilter string, jsonOutput bool, stdout,
 	}
 
 	sp := newSessionProvider()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	sessions, err := mgr.List(stateFilter, templateFilter)
 	if err != nil {
@@ -267,7 +267,7 @@ func cmdSessionAttach(args []string, stdout, stderr io.Writer) int {
 	}
 
 	sp := newSessionProvider()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	// Get the session to find its template.
 	info, err := mgr.Get(sessionID)
@@ -290,10 +290,10 @@ func cmdSessionAttach(args []string, stdout, stderr io.Writer) int {
 // buildResumeCommand constructs the command and runtime.Config for resuming
 // a session. Uses provider resume if the session has a session key and the
 // provider supports resume; otherwise falls back to the stored command.
-func buildResumeCommand(cfg *config.City, info chatsession.Info) (string, runtime.Config) {
+func buildResumeCommand(cfg *config.City, info session.Info) (string, runtime.Config) {
 	// Build the resume command from stored session info.
 	// This handles --resume <key> for providers that support it.
-	cmd := chatsession.BuildResumeCommand(info)
+	cmd := session.BuildResumeCommand(info)
 
 	// Try to resolve the template for startup hints and env.
 	found, ok := resolveAgentIdentity(cfg, info.Template, "")
@@ -342,7 +342,7 @@ func cmdSessionSuspend(args []string, stdout, stderr io.Writer) int {
 	}
 
 	sp := newSessionProvider()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	if err := mgr.Suspend(sessionID); err != nil {
 		fmt.Fprintf(stderr, "gc session suspend: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -379,7 +379,7 @@ func cmdSessionClose(args []string, stdout, stderr io.Writer) int {
 	}
 
 	sp := newSessionProvider()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	if err := mgr.Close(sessionID); err != nil {
 		fmt.Fprintf(stderr, "gc session close: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -415,7 +415,7 @@ func cmdSessionRename(args []string, stdout, stderr io.Writer) int {
 	}
 
 	sp := newSessionProvider()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	if err := mgr.Rename(sessionID, title); err != nil {
 		fmt.Fprintf(stderr, "gc session rename: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -462,7 +462,7 @@ func cmdSessionPrune(beforeStr string, stdout, stderr io.Writer) int {
 	}
 
 	sp := newSessionProvider()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	cutoff := time.Now().Add(-dur)
 	pruned, err := mgr.Prune(cutoff)
@@ -535,7 +535,7 @@ func cmdSessionPeek(args []string, lines int, stdout, stderr io.Writer) int {
 	}
 
 	sp := newSessionProvider()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	output, err := mgr.Peek(sessionID, lines)
 	if err != nil {

@@ -1,4 +1,4 @@
-package chatsession
+package session
 
 import (
 	"context"

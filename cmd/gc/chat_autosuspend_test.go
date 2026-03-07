@@ -8,21 +8,21 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
-	"github.com/gastownhall/gascity/internal/chatsession"
 	"github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/session"
 )
 
 func TestAutoSuspendChatSessions(t *testing.T) {
 	store := beads.NewMemStore()
 	sp := runtime.NewFake()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
 	// Create two sessions.
-	s1, err := mgr.Create(context.Background(), "default", "S1", "echo s1", "/tmp", "test", nil, chatsession.ProviderResume{}, runtime.Config{})
+	s1, err := mgr.Create(context.Background(), "default", "S1", "echo s1", "/tmp", "test", nil, session.ProviderResume{}, runtime.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	s2, err := mgr.Create(context.Background(), "default", "S2", "echo s2", "/tmp", "test", nil, chatsession.ProviderResume{}, runtime.Config{})
+	s2, err := mgr.Create(context.Background(), "default", "S2", "echo s2", "/tmp", "test", nil, session.ProviderResume{}, runtime.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestAutoSuspendChatSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got1.State != chatsession.StateSuspended {
+	if got1.State != session.StateSuspended {
 		t.Errorf("s1 state = %q, want suspended", got1.State)
 	}
 
@@ -52,7 +52,7 @@ func TestAutoSuspendChatSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got2.State != chatsession.StateActive {
+	if got2.State != session.StateActive {
 		t.Errorf("s2 state = %q, want active", got2.State)
 	}
 
@@ -68,9 +68,9 @@ func TestAutoSuspendChatSessions(t *testing.T) {
 func TestAutoSuspendSkipsAttachedSessions(t *testing.T) {
 	store := beads.NewMemStore()
 	sp := runtime.NewFake()
-	mgr := chatsession.NewManager(store, sp)
+	mgr := session.NewManager(store, sp)
 
-	s1, err := mgr.Create(context.Background(), "default", "Attached", "echo a", "/tmp", "test", nil, chatsession.ProviderResume{}, runtime.Config{})
+	s1, err := mgr.Create(context.Background(), "default", "Attached", "echo a", "/tmp", "test", nil, session.ProviderResume{}, runtime.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestAutoSuspendSkipsAttachedSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.State != chatsession.StateActive {
+	if got.State != session.StateActive {
 		t.Errorf("attached session state = %q, want active", got.State)
 	}
 }

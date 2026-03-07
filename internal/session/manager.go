@@ -1,10 +1,10 @@
-// Package chatsession manages persistent, resumable chat sessions.
+// Package session manages persistent, resumable chat sessions.
 //
 // A chat session is a conversation between a human and an agent template
 // that can be started, suspended (freeing runtime resources), and resumed
 // later. Sessions are backed by beads (type "session") for persistence
 // and use runtime.Provider for runtime management.
-package chatsession
+package session
 
 import (
 	"context"
