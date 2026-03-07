@@ -37,6 +37,10 @@ const sessionBeadType = "agent_session"
 // Phase 3 (bead-driven): returns session_name → bead_id index for open beads,
 // enabling beadReconcileOps to store/retrieve config hashes from beads.
 //
+// When called pre-reconcile (the daemon tick pattern), bead state metadata
+// reflects the previous tick's reality — agents not yet started/stopped by
+// the current tick's reconciliation. State converges on the next tick.
+//
 // Returns a map of session_name → bead_id for all open session beads after
 // sync. Callers that don't need the index can ignore the return value.
 func syncSessionBeads(

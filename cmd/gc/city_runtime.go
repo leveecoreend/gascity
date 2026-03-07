@@ -423,8 +423,10 @@ func (cr *CityRuntime) reloadConfig(
 }
 
 // upgradeToBeadReconcileOps upgrades rops from providerReconcileOps to
-// beadReconcileOps when a bead store is available. Called once during run()
-// after the bead store is opened. No-op if no store is available.
+// beadReconcileOps when a bead store is available. Called during run()
+// after the bead store is opened, and again during reloadConfig() if the
+// store recovers from nil → non-nil. No-op if no store is available or
+// if rops is already a beadReconcileOps (double-wrap guard).
 func (cr *CityRuntime) upgradeToBeadReconcileOps() {
 	if cr.cityBeadStore() == nil || cr.rops == nil {
 		return

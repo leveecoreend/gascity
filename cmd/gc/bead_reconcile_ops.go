@@ -20,11 +20,11 @@ import (
 // reconciler detects drift by comparing started_config_hash to the
 // current config's fingerprint.
 //
-// Write methods mirror hashes to the underlying provider in addition
-// to the bead store. This ensures the provider always has current data,
-// making the read-side provider fallback safe in all cases: upgrade
-// path (started_* empty), store degradation (Get error), and store
-// unavailable (storeFunc returns nil).
+// Write methods write to the bead store first (primary), then mirror
+// to the provider. This ordering ensures the provider never has a hash
+// newer than the bead, so read-side provider fallback cannot cause
+// false drift on partial failure. When the store is unavailable
+// (storeFunc returns nil), writes go directly to the provider.
 //
 // Read methods fall back to the provider when the bead is missing,
 // the started_* key is empty, or the store is degraded/unavailable.
@@ -38,11 +38,12 @@ import (
 // listRunning and runLive delegate to the underlying provider — these
 // are session-level operations that beads cannot replace.
 //
-// Thread safety: beadReconcileOps is accessed only from the daemon's
-// tick goroutine (syncBeadsAndUpdateIndex → updateIndex, then
-// doReconcileAgents → configHash/storeConfigHash). The API server
-// does not call rops methods. If future code adds concurrent access,
-// the index field must be protected with a mutex.
+// Thread safety: beadReconcileOps is accessed sequentially from the
+// daemon's tick goroutine (syncBeadsAndUpdateIndex → updateIndex, then
+// doReconcileAgents → configHash/storeConfigHash) and from one-shot
+// gc start (doStart). The API server does not call rops methods. If
+// future code adds concurrent access, the index field must be protected
+// with a mutex.
 type beadReconcileOps struct {
 	provider  reconcileOps       // delegate for listRunning, runLive, hash fallback
 	storeFunc func() beads.Store // dynamic store resolution (handles reload)
@@ -77,14 +78,19 @@ func (o *beadReconcileOps) storeConfigHash(name, hash string) error {
 		// No bead for this session — fall back to provider.
 		return o.provider.storeConfigHash(name, hash)
 	}
-	// Mirror to provider so the upgrade-path fallback (hash == "" → provider)
-	// always returns the current hash, even if the bead write fails.
-	_ = o.provider.storeConfigHash(name, hash)
 	s := o.storeFunc()
 	if s == nil {
-		return nil // store not available; provider mirror is sufficient
+		// Store not available — provider is the sole persistence layer.
+		return o.provider.storeConfigHash(name, hash)
 	}
-	return s.SetMetadata(id, "started_config_hash", hash)
+	// Write bead first (primary store), then mirror to provider.
+	// This ordering ensures provider fallback never returns a hash
+	// newer than the bead, avoiding false drift on partial failure.
+	if err := s.SetMetadata(id, "started_config_hash", hash); err != nil {
+		return err
+	}
+	_ = o.provider.storeConfigHash(name, hash)
+	return nil
 }
 
 func (o *beadReconcileOps) configHash(name string) (string, error) {
@@ -117,13 +123,16 @@ func (o *beadReconcileOps) storeLiveHash(name, hash string) error {
 	if !ok {
 		return o.provider.storeLiveHash(name, hash)
 	}
-	// Mirror to provider (same rationale as storeConfigHash).
-	_ = o.provider.storeLiveHash(name, hash)
 	s := o.storeFunc()
 	if s == nil {
-		return nil
+		return o.provider.storeLiveHash(name, hash)
 	}
-	return s.SetMetadata(id, "started_live_hash", hash)
+	// Bead first, then mirror (same rationale as storeConfigHash).
+	if err := s.SetMetadata(id, "started_live_hash", hash); err != nil {
+		return err
+	}
+	_ = o.provider.storeLiveHash(name, hash)
+	return nil
 }
 
 func (o *beadReconcileOps) liveHash(name string) (string, error) {

@@ -492,6 +492,8 @@ func doStart(args []string, controllerMode bool, stdout, stderr io.Writer) int {
 			bro.updateIndex(idx)
 			rops = bro
 		}
+	} else {
+		fmt.Fprintf(stderr, "gc start: bead store unavailable, using provider hashes: %v\n", err) //nolint:errcheck
 	}
 	suspendedNames := computeSuspendedNames(cfg, cityName, cityPath, multiReg)
 	code := doReconcileAgents(agents, sp, rops, nil, nil, nil, recorder, nil, suspendedNames, 0, cfg.Session.StartupTimeoutDuration(), stdout, stderr, sigCtx)
