@@ -51,7 +51,6 @@ type CityRuntime struct {
 
 	// Bead-driven reconciler state (Phase 2f).
 	sessionDrains *drainTracker // in-memory drain tracker; nil when bead reconciler disabled
-	beaconTime    time.Time     // stable beacon timestamp; set once at run() start
 
 	convHandler      *convergence.Handler     // nil until bead store available
 	convStoreAdapter *convergenceStoreAdapter // typed reference; avoids type assertions in tick/reconcile
@@ -164,11 +163,6 @@ func (cr *CityRuntime) crashTrack() crashTracker {
 // the per-city main loop — it watches config, reconciles agents, runs
 // wisp GC, and dispatches automations.
 func (cr *CityRuntime) run(ctx context.Context) {
-	// Capture beacon time once so config fingerprints remain stable across
-	// ticks. Without this, FormatBeacon(time.Now()) would produce different
-	// prompt strings each tick, causing spurious drift detection.
-	cr.beaconTime = time.Now()
-
 	dirty := &atomic.Bool{}
 	if cr.tomlPath != "" {
 		dirs := cr.watchDirs
