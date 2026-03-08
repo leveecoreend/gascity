@@ -159,29 +159,8 @@ func (m *Manager) Attach(ctx context.Context, id string, resumeCommand string, h
 	if err != nil {
 		return err
 	}
-
-	state := State(b.Metadata["state"])
-
-	// If suspended or tmux session is dead, (re)start.
-	if state == StateSuspended || !m.sp.IsRunning(sessName) {
-		cmd := resumeCommand
-		if cmd == "" {
-			// Fallback: use no resume (fresh start). Caller should provide
-			// the resume command for conversation continuity.
-			return fmt.Errorf("%w: %s", ErrResumeRequired, id)
-		}
-
-		cfg := hints
-		cfg.Command = cmd
-		cfg.WorkDir = b.Metadata["work_dir"]
-
-		if err := m.sp.Start(ctx, sessName, cfg); err != nil {
-			return fmt.Errorf("resuming session: %w", err)
-		}
-		if err := m.store.SetMetadata(id, "state", string(StateActive)); err != nil {
-			_ = m.sp.Stop(sessName) // clean up orphan runtime
-			return fmt.Errorf("updating session state: %w", err)
-		}
+	if err := m.ensureRunning(ctx, id, b, sessName, resumeCommand, hints); err != nil {
+		return err
 	}
 
 	return m.sp.Attach(sessName)

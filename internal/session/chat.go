@@ -67,11 +67,21 @@ func (m *Manager) ensureRunning(ctx context.Context, id string, b beads.Bead, se
 	if cfg.WorkDir == "" {
 		cfg.WorkDir = b.Metadata["work_dir"]
 	}
+	started := false
 	if err := m.sp.Start(ctx, sessName, cfg); err != nil {
-		return fmt.Errorf("resuming session: %w", err)
+		// Another caller may have resumed the same session after we loaded the
+		// bead but before we reached Start. If the runtime is already up, treat
+		// the resume as converged and only persist active state below.
+		if !m.sp.IsRunning(sessName) {
+			return fmt.Errorf("resuming session: %w", err)
+		}
+	} else {
+		started = true
 	}
 	if err := m.store.SetMetadata(id, "state", string(StateActive)); err != nil {
-		_ = m.sp.Stop(sessName)
+		if started {
+			_ = m.sp.Stop(sessName)
+		}
 		return fmt.Errorf("updating session state: %w", err)
 	}
 	return nil

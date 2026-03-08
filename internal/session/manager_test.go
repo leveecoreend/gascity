@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -836,6 +837,83 @@ func TestSendResumesSuspendedSession(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("calls = %#v, want Nudge hello", sp.Calls)
+	}
+}
+
+func TestSendConvergesWhenSessionAlreadyResumed(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManager(store, sp)
+
+	info, err := mgr.Create(context.Background(), "helper", "", "claude", "/tmp", "claude", nil, ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.Suspend(info.ID); err != nil {
+		t.Fatalf("Suspend: %v", err)
+	}
+	if err := sp.Start(context.Background(), info.SessionName, runtime.Config{WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("fake concurrent Start: %v", err)
+	}
+
+	if err := mgr.Send(context.Background(), info.ID, "hello", "claude --resume", runtime.Config{WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	got, err := mgr.Get(info.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != StateActive {
+		t.Errorf("State = %q, want %q", got.State, StateActive)
+	}
+	found := false
+	for _, call := range sp.Calls {
+		if call.Method == "Nudge" && call.Name == info.SessionName && call.Message == "hello" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("calls = %#v, want Nudge hello after converged resume", sp.Calls)
+	}
+}
+
+func TestSendRequiresResumeCommandForSuspendedSession(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManager(store, sp)
+
+	info, err := mgr.Create(context.Background(), "helper", "", "claude", "/tmp", "claude", nil, ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.Suspend(info.ID); err != nil {
+		t.Fatalf("Suspend: %v", err)
+	}
+
+	err = mgr.Send(context.Background(), info.ID, "hello", "", runtime.Config{})
+	if !errors.Is(err, ErrResumeRequired) {
+		t.Fatalf("Send error = %v, want ErrResumeRequired", err)
+	}
+}
+
+func TestSendClosedSessionReturnsErrSessionClosed(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManager(store, sp)
+
+	info, err := mgr.Create(context.Background(), "helper", "", "claude", "/tmp", "claude", nil, ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.Close(info.ID); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	err = mgr.Send(context.Background(), info.ID, "hello", "claude --resume", runtime.Config{WorkDir: "/tmp"})
+	if !errors.Is(err, ErrSessionClosed) {
+		t.Fatalf("Send error = %v, want ErrSessionClosed", err)
 	}
 }
 
