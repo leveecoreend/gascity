@@ -65,6 +65,12 @@ type State interface {
 	// Automations returns the current set of scanned automations.
 	// Returns nil if automations are not configured.
 	Automations() []automations.Automation
+
+	// Poke signals the controller to trigger an immediate reconciler tick.
+	// Used after sling assigns work so WakeWork wakes the target without
+	// waiting for the next patrol interval. Best-effort: no-op if poke
+	// is not available (e.g., in tests).
+	Poke()
 }
 
 // AgentUpdate holds optional fields for a partial agent update. Pointer fields

@@ -113,6 +113,7 @@ type slingOpts struct {
 // slingDeps bundles infrastructure dependencies injected for testability.
 type slingDeps struct {
 	CityName string
+	CityPath string // city directory path; used to poke controller for wake
 	Cfg      *config.City
 	SP       runtime.Provider
 	Runner   SlingRunner
@@ -213,6 +214,7 @@ func cmdSling(args []string, isFormula, doNudge, force bool, title string, vars 
 	store := beads.NewBdStore(cityPath, beads.ExecCommandRunner())
 	deps := slingDeps{
 		CityName: cityName,
+		CityPath: cityPath,
 		Cfg:      cfg,
 		SP:       sp,
 		Runner:   shellSlingRunner,
@@ -398,7 +400,7 @@ func doSling(opts slingOpts, deps slingDeps, querier BeadQuerier) int {
 
 	// Nudge target if requested.
 	if opts.Nudge {
-		doSlingNudge(&a, deps.CityName, deps.Cfg, deps.SP, deps.Stdout, deps.Stderr)
+		doSlingNudge(&a, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Stdout, deps.Stderr)
 	}
 
 	return 0
@@ -556,7 +558,7 @@ func doSlingBatch(opts slingOpts, deps slingDeps, querier BeadChildQuerier) int 
 
 	// Nudge once after all children.
 	if opts.Nudge && routed > 0 {
-		doSlingNudge(&a, deps.CityName, deps.Cfg, deps.SP, deps.Stdout, deps.Stderr)
+		doSlingNudge(&a, deps.CityName, deps.CityPath, deps.Cfg, deps.SP, deps.Stdout, deps.Stderr)
 	}
 
 	if failed > 0 {
@@ -752,9 +754,10 @@ func checkBeadState(q BeadQuerier, beadID string, a config.Agent) beadCheckResul
 }
 
 // doSlingNudge sends a nudge to the target agent after routing.
-// For pools, nudges the first running instance. Warns and skips if
-// the target is not running.
-func doSlingNudge(a *config.Agent, cityName string, cfg *config.City,
+// For pools, nudges the first running instance. If the target is not
+// running, pokes the controller to trigger an immediate reconciler tick
+// so WakeWork can wake the session without waiting for the next patrol.
+func doSlingNudge(a *config.Agent, cityName, cityPath string, cfg *config.City,
 	sp runtime.Provider, stdout, stderr io.Writer,
 ) {
 	st := cfg.Workspace.SessionTemplate
@@ -779,14 +782,18 @@ func doSlingNudge(a *config.Agent, cityName string, cfg *config.City,
 				return
 			}
 		}
-		fmt.Fprintf(stderr, "cannot nudge: no running pool members for %q\n", a.QualifiedName()) //nolint:errcheck // best-effort
+		// No running pool member — poke controller for immediate wake.
+		pokeController(cityPath)
+		fmt.Fprintf(stdout, "No running pool members for %q — poked controller for wake\n", a.QualifiedName()) //nolint:errcheck // best-effort
 		return
 	}
 
 	// Fixed agent: nudge directly.
 	sn := agent.SessionNameFor(cityName, a.QualifiedName(), st)
 	if !sp.IsRunning(sn) {
-		fmt.Fprintf(stderr, "cannot nudge: agent %q has no running session\n", a.QualifiedName()) //nolint:errcheck // best-effort
+		// Session is asleep — poke controller for immediate wake.
+		pokeController(cityPath)
+		fmt.Fprintf(stdout, "Session %q is asleep — poked controller for wake\n", a.QualifiedName()) //nolint:errcheck // best-effort
 		return
 	}
 	h := agent.HandleFor(a.QualifiedName(), cityName, st, sp)
@@ -795,6 +802,13 @@ func doSlingNudge(a *config.Agent, cityName string, cfg *config.City,
 	} else {
 		fmt.Fprintf(stdout, "Nudged %s\n", a.QualifiedName()) //nolint:errcheck // best-effort
 	}
+}
+
+// pokeController sends a "poke" command to the controller socket to
+// trigger an immediate reconciler tick. Best-effort: failures are
+// silently ignored (the next patrol tick will catch the work).
+func pokeController(cityPath string) {
+	_, _ = sendControllerCommand(cityPath, "poke")
 }
 
 // dryRunSingle prints a step-by-step preview of what gc sling would do for a

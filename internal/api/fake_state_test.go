@@ -80,6 +80,7 @@ func (f *fakeState) StartedAt() time.Time                    { return f.startedA
 func (f *fakeState) IsQuarantined(sessionName string) bool   { return f.quarantined[sessionName] }
 func (f *fakeState) CityBeadStore() beads.Store              { return f.cityBeadStore }
 func (f *fakeState) Automations() []automations.Automation   { return f.autos }
+func (f *fakeState) Poke()                                   {} // no-op in tests
 func (f *fakeState) RawConfig() *config.City {
 	if f.rawCfg != nil {
 		return f.rawCfg

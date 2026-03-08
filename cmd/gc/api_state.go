@@ -38,7 +38,8 @@ type controllerState struct {
 	cityPath      string
 	version       string
 	startedAt     time.Time
-	ct            crashTracker // nil if crash tracking disabled
+	ct            crashTracker  // nil if crash tracking disabled
+	pokeCh        chan struct{} // nil when poke is not available; triggers immediate reconciler tick
 }
 
 // newControllerState creates a controllerState with per-rig stores.
@@ -491,4 +492,16 @@ func (cs *controllerState) SetProviderPatch(patch config.ProviderPatch) error {
 // DeleteProviderPatch removes a provider patch from city.toml.
 func (cs *controllerState) DeleteProviderPatch(name string) error {
 	return cs.editor.DeleteProviderPatch(name)
+}
+
+// Poke signals the controller to trigger an immediate reconciler tick.
+// Non-blocking: if a poke is already pending, additional pokes are dropped.
+func (cs *controllerState) Poke() {
+	if cs.pokeCh == nil {
+		return
+	}
+	select {
+	case cs.pokeCh <- struct{}{}:
+	default: // poke already pending
+	}
 }

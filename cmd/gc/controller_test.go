@@ -387,6 +387,70 @@ func TestConfigReloadSummary(t *testing.T) {
 	}
 }
 
+func TestControllerPokeTriggersImmediate(t *testing.T) {
+	sp := runtime.NewFake()
+
+	var reconcileCount atomic.Int32
+	buildFn := func(_ *config.City, _ runtime.Provider) []agent.Agent {
+		reconcileCount.Add(1)
+		return []agent.Agent{} //nolint:unparam // test helper
+	}
+
+	dir := t.TempDir()
+	gcDir := filepath.Join(dir, ".gc")
+	if err := os.MkdirAll(gcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.City{Workspace: config.Workspace{Name: "test"}}
+	var stdout, stderr bytes.Buffer
+
+	done := make(chan int, 1)
+	go func() {
+		done <- runController(dir, "", cfg, buildFn, sp, nil, nil, nil, nil, events.Discard, nil, &stdout, &stderr)
+	}()
+
+	// Wait for initial tick.
+	deadline := time.After(5 * time.Second)
+	for reconcileCount.Load() < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for initial reconcile")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	// Record count, then poke.
+	before := reconcileCount.Load()
+	resp, err := sendControllerCommand(dir, "poke")
+	if err != nil {
+		t.Fatalf("poke failed: %v", err)
+	}
+	if string(resp) != "ok" {
+		t.Errorf("poke response = %q, want %q", string(resp), "ok")
+	}
+
+	// Wait for an additional reconcile triggered by poke.
+	deadline = time.After(3 * time.Second)
+	for reconcileCount.Load() <= before {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for poke-triggered reconcile")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+
+	// Stop controller.
+	tryStopController(dir, &bytes.Buffer{})
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("controller did not exit")
+	}
+}
+
 // osFS is a minimal fsys.FS for test helpers that delegates to the os package.
 type osFS struct{}
 

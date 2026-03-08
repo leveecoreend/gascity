@@ -379,16 +379,16 @@ func TestDoSlingNudgeNoSession(t *testing.T) {
 	cfg := &config.City{Workspace: config.Workspace{Name: "test-city"}}
 	a := config.Agent{Name: "mayor"}
 
-	deps, _, stderr := testDeps(cfg, sp, runner.run)
+	deps, stdout, _ := testDeps(cfg, sp, runner.run)
 	opts := testOpts(a, "BL-1")
 	opts.Nudge = true
 	code := doSling(opts, deps, nil)
 
 	if code != 0 {
-		t.Fatalf("doSling returned %d, want 0 (sling succeeds, nudge warns)", code)
+		t.Fatalf("doSling returned %d, want 0 (sling succeeds, poke controller)", code)
 	}
-	if !strings.Contains(stderr.String(), "cannot nudge") {
-		t.Errorf("stderr = %q, want 'cannot nudge' warning", stderr.String())
+	if !strings.Contains(stdout.String(), "poked controller for wake") {
+		t.Errorf("stdout = %q, want 'poked controller for wake' message", stdout.String())
 	}
 }
 
@@ -456,16 +456,16 @@ func TestDoSlingNudgePoolNoMembers(t *testing.T) {
 		Pool: &config.PoolConfig{Min: 1, Max: 3},
 	}
 
-	deps, _, stderr := testDeps(cfg, sp, runner.run)
+	deps, stdout, _ := testDeps(cfg, sp, runner.run)
 	opts := testOpts(a, "BL-1")
 	opts.Nudge = true
 	code := doSling(opts, deps, nil)
 
 	if code != 0 {
-		t.Fatalf("doSling returned %d, want 0 (sling succeeds, nudge warns)", code)
+		t.Fatalf("doSling returned %d, want 0 (sling succeeds, poke controller)", code)
 	}
-	if !strings.Contains(stderr.String(), "no running pool members") {
-		t.Errorf("stderr = %q, want 'no running pool members' warning", stderr.String())
+	if !strings.Contains(stdout.String(), "poked controller for wake") {
+		t.Errorf("stdout = %q, want 'poked controller for wake' message", stdout.String())
 	}
 }
 

@@ -56,6 +56,7 @@ type CityRuntime struct {
 	convHandler      *convergence.Handler     // nil until bead store available
 	convStoreAdapter *convergenceStoreAdapter // typed reference; avoids type assertions in tick/reconcile
 	convergenceReqCh chan convergenceRequest  // receives CLI commands from controller.sock
+	pokeCh           chan struct{}            // non-blocking signal to trigger immediate reconciler tick
 
 	shutdownOnce   sync.Once
 	logPrefix      string // "gc start" or "gc supervisor"
@@ -82,6 +83,7 @@ type CityRuntimeParams struct {
 	PoolDeathHandlers map[string]poolDeathInfo
 
 	ConvergenceReqCh chan convergenceRequest // may be nil
+	PokeCh           chan struct{}           // may be nil; triggers immediate tick
 
 	LogPrefix      string // "gc start" or "gc supervisor"; defaults to "gc start"
 	Stdout, Stderr io.Writer
@@ -134,9 +136,15 @@ func newCityRuntime(p CityRuntimeParams) *CityRuntime {
 		poolDeathHandlers: p.PoolDeathHandlers,
 		suspendedNames:    suspendedNames,
 		convergenceReqCh:  p.ConvergenceReqCh,
-		logPrefix:         logPrefix,
-		stdout:            p.Stdout,
-		stderr:            p.Stderr,
+		pokeCh: func() chan struct{} {
+			if p.PokeCh != nil {
+				return p.PokeCh
+			}
+			return make(chan struct{}, 1)
+		}(),
+		logPrefix: logPrefix,
+		stdout:    p.Stdout,
+		stderr:    p.Stderr,
 	}
 }
 
@@ -257,6 +265,11 @@ func (cr *CityRuntime) run(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
+			cr.tick(ctx, dirty, &lastProviderName, &observePaths, cityRoot, &prevPoolRunning)
+		case <-cr.pokeCh:
+			// Event-driven wake path: sling or API assigned work to a sleeping
+			// session. Trigger an immediate tick so the reconciler computes
+			// workSet and wakes the target without waiting for the next patrol.
 			cr.tick(ctx, dirty, &lastProviderName, &observePaths, cityRoot, &prevPoolRunning)
 		case req := <-cr.convergenceReqCh:
 			// Low-latency path: process convergence commands between ticks.
