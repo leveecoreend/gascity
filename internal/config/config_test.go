@@ -1070,7 +1070,7 @@ func TestPoolRoundTrip(t *testing.T) {
 func TestEffectiveWorkQueryDefault(t *testing.T) {
 	a := Agent{Name: "mayor"}
 	got := a.EffectiveWorkQuery()
-	want := "bd ready --assignee=mayor"
+	want := "bd ready --assignee=$GC_SESSION_NAME"
 	if got != want {
 		t.Errorf("EffectiveWorkQuery() = %q, want %q", got, want)
 	}
@@ -1088,7 +1088,7 @@ func TestEffectiveWorkQueryCustom(t *testing.T) {
 func TestEffectiveWorkQueryWithDir(t *testing.T) {
 	a := Agent{Name: "polecat", Dir: "hello-world"}
 	got := a.EffectiveWorkQuery()
-	want := "bd ready --assignee=hello-world/polecat"
+	want := "bd ready --assignee=$GC_SESSION_NAME"
 	if got != want {
 		t.Errorf("EffectiveWorkQuery() = %q, want %q", got, want)
 	}
@@ -1106,7 +1106,7 @@ func TestEffectiveWorkQueryPoolDefault(t *testing.T) {
 func TestEffectiveSlingQueryFixedAgent(t *testing.T) {
 	a := Agent{Name: "mayor"}
 	got := a.EffectiveSlingQuery()
-	want := "bd update {} --assignee=mayor"
+	want := "bd update {} --assignee=$GC_SLING_TARGET"
 	if got != want {
 		t.Errorf("EffectiveSlingQuery() = %q, want %q", got, want)
 	}
@@ -1115,7 +1115,7 @@ func TestEffectiveSlingQueryFixedAgent(t *testing.T) {
 func TestEffectiveSlingQueryFixedAgentWithDir(t *testing.T) {
 	a := Agent{Name: "refinery", Dir: "hello-world"}
 	got := a.EffectiveSlingQuery()
-	want := "bd update {} --assignee=hello-world/refinery"
+	want := "bd update {} --assignee=$GC_SLING_TARGET"
 	if got != want {
 		t.Errorf("EffectiveSlingQuery() = %q, want %q", got, want)
 	}
@@ -2651,8 +2651,11 @@ func TestDaemonConfig_WispGCPartialNotEnabled(t *testing.T) {
 
 // TestEffectiveMethodsQualifyConsistently verifies that EffectiveWorkQuery,
 // EffectiveSlingQuery, and EffectivePool().Check all use the qualified name
-// (Dir/Name) for rig-scoped agents. This prevents the bug where one method
-// uses the unqualified name while others use the qualified form.
+// (Dir/Name) for rig-scoped pool agents. This prevents the bug where one
+// method uses the unqualified name while others use the qualified form.
+//
+// Fixed agents use env vars ($GC_SESSION_NAME / $GC_SLING_TARGET) instead
+// of hardcoded names, so this check only applies to pool agents.
 func TestEffectiveMethodsQualifyConsistently(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -2664,13 +2667,6 @@ func TestEffectiveMethodsQualifyConsistently(t *testing.T) {
 				Name: "polecat",
 				Dir:  "hello-world",
 				Pool: &PoolConfig{Min: 0, Max: 3},
-			},
-		},
-		{
-			name: "rig-scoped fixed agent",
-			agent: Agent{
-				Name: "refinery",
-				Dir:  "hello-world",
 			},
 		},
 		{
@@ -2689,8 +2685,11 @@ func TestEffectiveMethodsQualifyConsistently(t *testing.T) {
 			if tt.agent.Dir == "" {
 				t.Skip("test only applies to rig-scoped agents")
 			}
+			if !tt.agent.IsPool() {
+				t.Skip("fixed agents use env vars, not qualified names")
+			}
 
-			// All three methods must contain the qualified name.
+			// Pool agents must contain the qualified name in queries.
 			wq := tt.agent.EffectiveWorkQuery()
 			if !strings.Contains(wq, qn) {
 				t.Errorf("EffectiveWorkQuery() = %q, does not contain qualified name %q", wq, qn)
@@ -2702,19 +2701,16 @@ func TestEffectiveMethodsQualifyConsistently(t *testing.T) {
 			}
 
 			pool := tt.agent.EffectivePool()
-			// Pool check only uses qualified name for pool agents with default check.
-			if tt.agent.IsPool() && pool.Check != "echo 1" {
+			if pool.Check != "echo 1" {
 				if !strings.Contains(pool.Check, qn) {
 					t.Errorf("EffectivePool().Check = %q, does not contain qualified name %q", pool.Check, qn)
 				}
 			}
 
 			// None should contain the bare name without the dir prefix.
-			// (Unless Dir is empty, which we skip above.)
 			bareName := tt.agent.Name
 			dirPrefix := tt.agent.Dir + "/"
 
-			// WorkQuery: check that the bare name appears only as part of the qualified name.
 			wqWithoutQN := strings.ReplaceAll(wq, qn, "")
 			if strings.Contains(wqWithoutQN, bareName) {
 				t.Errorf("EffectiveWorkQuery() contains bare name %q outside qualified name", bareName)
@@ -2725,7 +2721,7 @@ func TestEffectiveMethodsQualifyConsistently(t *testing.T) {
 				t.Errorf("EffectiveSlingQuery() contains bare name %q outside qualified name", bareName)
 			}
 
-			if tt.agent.IsPool() && pool.Check != "echo 1" {
+			if pool.Check != "echo 1" {
 				checkWithoutQN := strings.ReplaceAll(pool.Check, qn, "")
 				if strings.Contains(checkWithoutQN, bareName) {
 					t.Errorf("EffectivePool().Check contains bare name %q outside qualified name", bareName)
@@ -2734,6 +2730,20 @@ func TestEffectiveMethodsQualifyConsistently(t *testing.T) {
 
 			_ = dirPrefix // used conceptually above
 		})
+	}
+}
+
+// TestEffectiveMethodsFixedAgentEnvVars verifies that fixed agents use
+// env vars ($GC_SESSION_NAME / $GC_SLING_TARGET) instead of hardcoded names.
+func TestEffectiveMethodsFixedAgentEnvVars(t *testing.T) {
+	a := Agent{Name: "refinery", Dir: "hello-world"}
+	wq := a.EffectiveWorkQuery()
+	if !strings.Contains(wq, "$GC_SESSION_NAME") {
+		t.Errorf("EffectiveWorkQuery() = %q, want $GC_SESSION_NAME", wq)
+	}
+	sq := a.EffectiveSlingQuery()
+	if !strings.Contains(sq, "$GC_SLING_TARGET") {
+		t.Errorf("EffectiveSlingQuery() = %q, want $GC_SLING_TARGET", sq)
 	}
 }
 

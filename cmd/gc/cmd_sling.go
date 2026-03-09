@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -121,19 +122,27 @@ type slingDeps struct {
 	Stderr   io.Writer
 }
 
-// SlingRunner executes a shell command in the given directory and returns
-// combined output. If dir is empty, the command inherits the caller's cwd.
-type SlingRunner func(dir, command string) (string, error)
+// SlingRunner executes a shell command in the given directory with optional
+// extra env vars and returns combined output. If dir is empty, the command
+// inherits the caller's cwd. The env map entries are added to the process env.
+type SlingRunner func(dir, command string, env map[string]string) (string, error)
 
 // shellSlingRunner runs a command via sh -c and returns stdout.
 // Times out after 30 seconds. If dir is non-empty, the command runs in
 // that directory (needed for rig-scoped beads whose .beads/ lives there).
-func shellSlingRunner(dir, command string) (string, error) {
+// Extra env vars are appended to the process environment.
+func shellSlingRunner(dir, command string, env map[string]string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	if dir != "" {
 		cmd.Dir = dir
+	}
+	if len(env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -342,9 +351,12 @@ func doSling(opts slingOpts, deps slingDeps, querier BeadQuerier) int {
 	}
 
 	// Build and execute sling command.
+	// For fixed agents, resolve the target's session name and inject it
+	// as GC_SLING_TARGET so the sling query can assign work per-session.
+	slingEnv := resolveSlingEnv(a, deps)
 	slingCmd := buildSlingCommand(a.EffectiveSlingQuery(), beadID)
 	rigDir := rigDirForBead(deps.Cfg, beadID)
-	if _, err := deps.Runner(rigDir, slingCmd); err != nil {
+	if _, err := deps.Runner(rigDir, slingCmd, slingEnv); err != nil {
 		fmt.Fprintf(deps.Stderr, "gc sling: %v\n", err) //nolint:errcheck // best-effort
 		telemetry.RecordSling(context.Background(), a.QualifiedName(), targetType(&a), method, err)
 		return 1
@@ -529,9 +541,10 @@ func doSlingBatch(opts slingOpts, deps slingDeps, querier BeadChildQuerier) int 
 			fmt.Fprintf(deps.Stdout, "  Attached wisp %s (default formula) → %s\n", wispRootID, child.ID) //nolint:errcheck // best-effort
 		}
 
+		childEnv := resolveSlingEnv(a, deps)
 		slingCmd := buildSlingCommand(a.EffectiveSlingQuery(), child.ID)
 		rigDir := rigDirForBead(deps.Cfg, child.ID)
-		if _, err := deps.Runner(rigDir, slingCmd); err != nil {
+		if _, err := deps.Runner(rigDir, slingCmd, childEnv); err != nil {
 			fmt.Fprintf(deps.Stderr, "  Failed %s: %v\n", child.ID, err) //nolint:errcheck // best-effort
 			telemetry.RecordSling(context.Background(), a.QualifiedName(), targetType(&a), batchMethod, err)
 			failed++
@@ -564,6 +577,18 @@ func doSlingBatch(opts slingOpts, deps slingDeps, querier BeadChildQuerier) int 
 		return 1
 	}
 	return 0
+}
+
+// resolveSlingEnv returns extra env vars for the sling command.
+// For fixed (non-pool) agents, resolves the target's session name from
+// the bead store and returns it as GC_SLING_TARGET. Pool agents don't
+// need this — they use label-based dispatch.
+func resolveSlingEnv(a config.Agent, deps slingDeps) map[string]string {
+	if a.IsPool() {
+		return nil
+	}
+	sn := lookupSessionNameOrLegacy(deps.Store, deps.CityName, a.QualifiedName(), deps.Cfg.Workspace.SessionTemplate)
+	return map[string]string{"GC_SLING_TARGET": sn}
 }
 
 // buildSlingCommand replaces {} in the sling query template with the bead ID.

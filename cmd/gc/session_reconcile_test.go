@@ -347,16 +347,16 @@ func TestComputeWorkSet_RunsWorkQuery(t *testing.T) {
 	cfg := &config.City{
 		Agents: []config.Agent{
 			{Name: "worker"},
-			{Name: "idle"},
+			{Name: "idle", WorkQuery: "bd ready --assignee=idle"},
 		},
 	}
 
 	runner := func(command, _ string) (string, error) {
-		// worker's default work_query will contain "worker"
-		if command == "bd ready --assignee=worker" {
+		// worker's default work_query uses $GC_SESSION_NAME env var.
+		if command == "bd ready --assignee=$GC_SESSION_NAME" {
 			return "BL-42\n", nil
 		}
-		return "", nil // empty = no work
+		return "", nil // empty = no work for idle's custom query
 	}
 
 	work := computeWorkSet(cfg, runner, "/tmp")

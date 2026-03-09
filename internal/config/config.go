@@ -1114,7 +1114,11 @@ func (a *Agent) IdleTimeoutDuration() time.Duration {
 // EffectiveWorkQuery returns the work query command for this agent.
 // If WorkQuery is set, returns it as-is. Otherwise returns the default:
 //   - Pool agents: "bd ready --label=pool:<pool-name> --limit=1"
-//   - Fixed agents: "bd ready --assignee=<qualified-name>"
+//   - Fixed agents: "bd ready --assignee=$GC_SESSION_NAME"
+//
+// Fixed agents use the $GC_SESSION_NAME env var (set by the reconciler)
+// so each session has its own work queue. Clones of a template don't
+// race for work — each checks only its own queue.
 //
 // Pool instances use PoolName (the template's qualified name) so all
 // instances in the pool search with the same label (e.g., pool:dog)
@@ -1130,14 +1134,18 @@ func (a *Agent) EffectiveWorkQuery() string {
 		}
 		return "bd ready --label=pool:" + label + " --limit=1"
 	}
-	return "bd ready --assignee=" + a.QualifiedName()
+	return "bd ready --assignee=$GC_SESSION_NAME"
 }
 
 // EffectiveSlingQuery returns the sling query command template for this agent.
 // The template uses {} as a placeholder for the bead ID.
 // If SlingQuery is set, returns it as-is. Otherwise returns the default:
 //   - Pool agents: "bd update {} --add-label=pool:<pool-name>"
-//   - Fixed agents: "bd update {} --assignee=<qualified-name>"
+//   - Fixed agents: "bd update {} --assignee=$GC_SLING_TARGET"
+//
+// Fixed agents use $GC_SLING_TARGET, which is set by gc sling to the
+// resolved session name of the target. This gives each session its own
+// work queue — clones don't race for the same assignments.
 //
 // Pool instances use PoolName (the template's qualified name) for label
 // consistency with EffectiveWorkQuery.
@@ -1152,7 +1160,7 @@ func (a *Agent) EffectiveSlingQuery() string {
 		}
 		return "bd update {} --add-label=pool:" + label
 	}
-	return "bd update {} --assignee=" + a.QualifiedName()
+	return "bd update {} --assignee=$GC_SLING_TARGET"
 }
 
 // EffectivePool returns the pool configuration for this agent, applying
