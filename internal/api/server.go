@@ -205,6 +205,8 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("POST /v0/session/{id}/close", s.handleSessionClose)
 	s.mux.HandleFunc("POST /v0/session/{id}/wake", s.handleSessionWake)
 	s.mux.HandleFunc("POST /v0/session/{id}/rename", s.handleSessionRename)
+	s.mux.HandleFunc("GET /v0/session/{id}/agents", s.handleSessionAgentList)
+	s.mux.HandleFunc("GET /v0/session/{id}/agents/{agentId}", s.handleSessionAgentGet)
 
 	// Packs
 	s.mux.HandleFunc("GET /v0/packs", s.handlePackList)
