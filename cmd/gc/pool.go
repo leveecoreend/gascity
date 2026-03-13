@@ -29,6 +29,7 @@ func shellScaleCheck(command, dir string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.WaitDelay = 2 * time.Second
 	if dir != "" {
 		cmd.Dir = dir
 	}
@@ -227,7 +228,7 @@ func deepCopyAgent(src *config.Agent, name, dir string) config.Agent {
 // Errors are logged but not fatal — the controller continues regardless.
 func runPoolOnBoot(cfg *config.City, cityPath string, runner ScaleCheckRunner, stderr io.Writer) {
 	for _, a := range cfg.Agents {
-		if !a.IsPool() {
+		if !a.IsPool() || a.Implicit {
 			continue
 		}
 		cmd := a.EffectiveOnBoot()
