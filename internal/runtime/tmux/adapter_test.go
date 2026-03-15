@@ -20,7 +20,9 @@ func TestTmuxConformance(t *testing.T) {
 		t.Skip("tmux not installed")
 	}
 
-	p := NewProviderWithConfig(Config{SocketName: testSocketName})
+	cfg := DefaultConfig()
+	cfg.SocketName = testSocketName
+	p := NewProviderWithConfig(cfg)
 	var counter int64
 
 	runtimetest.RunProviderTests(t, func(t *testing.T) (runtime.Provider, runtime.Config, string) {
@@ -40,7 +42,9 @@ func TestProvider_StartStopIsRunning(t *testing.T) {
 		t.Skip("tmux not installed")
 	}
 
-	p := NewProviderWithConfig(Config{SocketName: testSocketName})
+	cfg := DefaultConfig()
+	cfg.SocketName = testSocketName
+	p := NewProviderWithConfig(cfg)
 	name := "gc-test-adapter"
 
 	// Clean slate.
@@ -83,7 +87,9 @@ func TestProvider_StartWithEnv(t *testing.T) {
 		t.Skip("tmux not installed")
 	}
 
-	p := NewProviderWithConfig(Config{SocketName: testSocketName})
+	cfg := DefaultConfig()
+	cfg.SocketName = testSocketName
+	p := NewProviderWithConfig(cfg)
 	name := "gc-test-adapter-env"
 	_ = p.Stop(name)
 

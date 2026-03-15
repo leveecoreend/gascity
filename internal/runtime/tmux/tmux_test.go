@@ -26,7 +26,9 @@ func hasTmux() bool {
 
 // testTmux returns a Tmux instance that uses an isolated test socket.
 func testTmux() *Tmux {
-	return NewTmuxWithConfig(Config{SocketName: testSocketName})
+	cfg := DefaultConfig()
+	cfg.SocketName = testSocketName
+	return NewTmuxWithConfig(cfg)
 }
 
 func TestListSessionsNoServer(t *testing.T) {
