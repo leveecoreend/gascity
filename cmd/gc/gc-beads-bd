@@ -49,12 +49,14 @@ is_remote() {
     [ -n "$GC_DOLT_HOST" ] && [ "$GC_DOLT_HOST" != "0.0.0.0" ] && [ "$GC_DOLT_HOST" != "localhost" ] && [ "$GC_DOLT_HOST" != "127.0.0.1" ]
 }
 
-# connect_host returns the host to connect to (localhost for local servers).
+# connect_host returns the host to connect to (loopback IPv4 for local servers).
+# Using 127.0.0.1 avoids localhost -> ::1 resolution mismatches when the
+# managed Dolt server is only listening on IPv4.
 connect_host() {
     if is_remote; then
         echo "$GC_DOLT_HOST"
     else
-        echo "localhost"
+        echo "127.0.0.1"
     fi
 }
 
@@ -546,8 +548,8 @@ op_start() {
 
     ensure_dolt_identity
 
-    # Create data dir if needed.
-    mkdir -p "$DATA_DIR"
+    # Create data dir and runtime state dir if needed.
+    mkdir -p "$DATA_DIR" "$(dirname "$LOCK_FILE")"
 
     # Acquire exclusive start lock (prevents concurrent starts).
     # Use fd 9 for the lock.
@@ -674,6 +676,15 @@ YAML
     mv "$tmp" "$config_file"
 }
 
+# verify_root_store checks that bd can open the configured root .beads store.
+# This catches mismatches where the Dolt server is serving one data dir while
+# bd init wrote the database somewhere else.
+verify_root_store() {
+    local beads_dir="$1"
+
+    BEADS_DIR="$beads_dir" bd list --limit 1 --no-pager >/dev/null 2>&1
+}
+
 # op_init initializes beads in a directory.
 # Args: <dir> <prefix>
 op_init() {
@@ -703,10 +714,11 @@ op_init() {
         ensure_metadata "$dir/.beads/metadata.json" "$prefix"
         # Ensure issue_prefix is set (may be missing if bd init was run
         # manually or metadata was created without full initialization).
-        bd config set issue_prefix "$prefix" 2>/dev/null || true
-        bd config set types.custom "$custom_types" 2>/dev/null || true
+        (cd "$dir" && bd config set issue_prefix "$prefix") 2>/dev/null || true
+        (cd "$dir" && bd config set types.custom "$custom_types") 2>/dev/null || true
         ensure_config_yaml "$beads_dir" "$prefix"
         write_port_file "$beads_dir"
+        verify_root_store "$beads_dir" || die "bd init verification failed for $dir"
         exit 0
     fi
 
@@ -720,15 +732,15 @@ op_init() {
     ensure_database_registered "$prefix" || true
 
     # Run bd init in server mode.
-    bd init --server -p "$prefix" --skip-hooks \
+    (cd "$dir" && bd init --server -p "$prefix" --skip-hooks \
         --server-host "$host" --server-port "$DOLT_PORT" \
-        "$dir" || die "bd init failed for $dir"
+        "$dir") || die "bd init failed for $dir"
 
     # Set issue_prefix.
-    bd config set issue_prefix "$prefix" 2>/dev/null || true
+    (cd "$dir" && bd config set issue_prefix "$prefix") 2>/dev/null || true
 
     # Configure custom bead types (required since beads v0.46.0).
-    bd config set types.custom "$custom_types" 2>/dev/null || true
+    (cd "$dir" && bd config set types.custom "$custom_types") 2>/dev/null || true
 
     # Drop orphan database created by bd init (upstream gt-sv1h).
     # bd init --prefix creates beads_<prefix> on the Dolt server, but we
@@ -749,6 +761,8 @@ op_init() {
 
     # Patch metadata.json with SQL connection info and required fields.
     ensure_metadata "$dir/.beads/metadata.json" "$prefix"
+
+    verify_root_store "$beads_dir" || die "bd init verification failed for $dir"
 }
 
 # op_health checks if the dolt server is healthy (probe only, no recovery).
@@ -932,6 +946,7 @@ fi
 
 # Set derived paths.
 GC_DIR="$GC_CITY_PATH/.gc"
+BEADS_DIR_ROOT="$GC_CITY_PATH/.beads"
 if [ -n "$GC_PACK_STATE_DIR" ]; then
     PACK_STATE_DIR="$GC_PACK_STATE_DIR"
 elif [ -n "$GC_CITY_RUNTIME_DIR" ]; then
@@ -940,16 +955,31 @@ else
     PACK_STATE_DIR="$GC_DIR/runtime/packs/dolt"
 fi
 
+# Current beads stores live under .beads/dolt. Keep reading legacy .gc data
+# dirs so older cities continue to work, but default all new runtime state to
+# the live beads repository location so bd init and the managed Dolt server
+# operate on the same database tree.
+CANONICAL_DATA_DIR="$BEADS_DIR_ROOT/dolt"
+LEGACY_PACK_DATA_DIR="$PACK_STATE_DIR/dolt-data"
 LEGACY_DATA_DIR="$GC_DIR/dolt-data"
-if [ ! -d "$PACK_STATE_DIR" ] && [ -d "$LEGACY_DATA_DIR" ]; then
+if [ -d "$CANONICAL_DATA_DIR" ]; then
+    DATA_DIR="$CANONICAL_DATA_DIR"
+elif [ ! -d "$PACK_STATE_DIR" ] && [ -d "$LEGACY_DATA_DIR" ]; then
     DATA_DIR="$LEGACY_DATA_DIR"
     LOG_FILE="$GC_DIR/dolt.log"
     STATE_FILE="$GC_DIR/dolt-state.json"
     PID_FILE="$GC_DIR/dolt.pid"
     LOCK_FILE="$GC_DIR/dolt.lock"
     CONFIG_FILE="$GC_DIR/dolt-config.yaml"
+elif [ -d "$LEGACY_PACK_DATA_DIR" ]; then
+    DATA_DIR="$LEGACY_PACK_DATA_DIR"
+    LOG_FILE="$PACK_STATE_DIR/dolt.log"
+    STATE_FILE="$PACK_STATE_DIR/dolt-state.json"
+    PID_FILE="$PACK_STATE_DIR/dolt.pid"
+    LOCK_FILE="$PACK_STATE_DIR/dolt.lock"
+    CONFIG_FILE="$PACK_STATE_DIR/dolt-config.yaml"
 else
-    DATA_DIR="$PACK_STATE_DIR/dolt-data"
+    DATA_DIR="$CANONICAL_DATA_DIR"
     LOG_FILE="$PACK_STATE_DIR/dolt.log"
     STATE_FILE="$PACK_STATE_DIR/dolt-state.json"
     PID_FILE="$PACK_STATE_DIR/dolt.pid"

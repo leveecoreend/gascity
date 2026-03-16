@@ -3,7 +3,9 @@ package main
 import (
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gastownhall/gascity/internal/config"
@@ -198,6 +200,75 @@ func TestStartBeadsLifecycle_InstallsAgentHooks(t *testing.T) {
 	rigHook := filepath.Join(rigPath, ".gemini", "settings.json")
 	if _, err := os.Stat(rigHook); err != nil {
 		t.Errorf("rig gemini hook not created: %v", err)
+	}
+}
+
+func TestGcBeadsBdStartUsesRootBeadsDataDir(t *testing.T) {
+	doltPath, err := exec.LookPath("dolt")
+	if err != nil {
+		t.Skip("dolt not installed")
+	}
+
+	cityPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityPath, ".gc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"demo\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script, err := MaterializeBeadsBdScript(cityPath)
+	if err != nil {
+		t.Fatalf("MaterializeBeadsBdScript: %v", err)
+	}
+
+	homeDir := filepath.Join(t.TempDir(), "home")
+	if err := os.MkdirAll(homeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitConfig := filepath.Join(homeDir, ".gitconfig")
+	if err := os.WriteFile(gitConfig, []byte("[user]\n\tname = Test User\n\temail = test@example.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	scriptEnv := append(os.Environ(),
+		"HOME="+homeDir,
+		"GIT_CONFIG_GLOBAL="+gitConfig,
+		"GC_CITY_PATH="+cityPath,
+		"PATH="+strings.Join([]string{
+			filepath.Dir(doltPath),
+			os.Getenv("PATH"),
+		}, string(os.PathListSeparator)),
+	)
+
+	runScript := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(script, args...)
+		cmd.Env = scriptEnv
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	t.Cleanup(func() {
+		cmd := exec.Command(script, "stop")
+		cmd.Env = scriptEnv
+		_ = cmd.Run()
+	})
+
+	runScript("start")
+
+	stateFile := filepath.Join(cityPath, ".gc", "runtime", "packs", "dolt", "dolt-state.json")
+	state, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	if !strings.Contains(string(state), filepath.Join(cityPath, ".beads", "dolt")) {
+		t.Fatalf("state file should point at .beads/dolt, got:\n%s", state)
+	}
+
+	if _, err := os.Stat(filepath.Join(cityPath, ".beads", "dolt-server.port")); err != nil {
+		t.Fatalf("dolt-server.port missing: %v", err)
 	}
 }
 
