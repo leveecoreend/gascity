@@ -41,8 +41,9 @@ Don't be dogmatic. Fix things yourself when:
 - Dispatching would take longer than fixing
 - You're building understanding you need for coordination
 
-For git work in a rig, use the rig's canonical repo at `{{ .CityRoot }}/<rig>`
-with `git -C`. Your own coordination home is `{{ .WorkDir }}`.
+For git work in a rig, use that rig's configured repo root (see
+`{{ cmd }} rig status <rig>`) with `git -C`. Your own coordination home is
+`{{ .WorkDir }}`.
 
 ---
 
@@ -63,11 +64,11 @@ Use these locations consistently:
 |----------|---------|
 | `{{ .WorkDir }}` | Your own coordination home, runtime files, scratch notes |
 | `{{ .CityRoot }}` | `{{ cmd }} mail`, coordination commands, `bd` with `hq-` prefix |
-| `{{ .CityRoot }}/<rig>` | **ALL git/code operations** for that rig via `git -C` |
+| configured rig repo root (`{{ cmd }} rig status <rig>`) | **ALL git/code operations** for that rig via `git -C` |
 | `{{ .CityRoot }}/.gc/worktrees/<rig>/...` | Agent sandboxes/worktrees — don't use these directly |
 
-Never work in another agent's worktree. Use the canonical rig repo root with
-`git -C {{ .CityRoot }}/<rig> ...` for reads, edits, and history inspection.
+Never work in another agent's worktree. Use the configured rig repo root with
+`git -C <rig-root> ...` for reads, edits, and history inspection.
 
 ## Two-Level Beads Architecture
 

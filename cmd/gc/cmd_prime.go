@@ -319,6 +319,9 @@ func buildPrimeContext(cityPath string, a *config.Agent, rigs []config.Rig) Prom
 	if gcRig := os.Getenv("GC_RIG"); gcRig != "" {
 		ctx.RigName = gcRig
 		ctx.RigRoot = os.Getenv("GC_RIG_ROOT")
+		if ctx.RigRoot == "" {
+			ctx.RigRoot = rigRootForName(gcRig, rigs)
+		}
 		ctx.IssuePrefix = findRigPrefix(gcRig, rigs)
 	} else if rigName := configuredRigName(cityPath, a, rigs); rigName != "" {
 		ctx.RigName = rigName

@@ -278,18 +278,20 @@ func TestExpandSessionSetup_Basic(t *testing.T) {
 
 func TestExpandSessionSetup_AllVariables(t *testing.T) {
 	ctx := SessionSetupContext{
-		Session:  "hw--polecat",
-		Agent:    "hw/polecat",
-		Rig:      "hello-world",
-		CityRoot: "/city",
-		CityName: "bl",
-		WorkDir:  "/city/.gc/worktrees/polecat",
+		Session:   "hw--polecat",
+		Agent:     "hw/polecat",
+		AgentBase: "polecat",
+		Rig:       "hello-world",
+		RigRoot:   "/repos/hello-world",
+		CityRoot:  "/city",
+		CityName:  "bl",
+		WorkDir:   "/city/.gc/worktrees/polecat",
 	}
 	cmds := []string{
-		"echo {{.Session}} {{.Agent}} {{.Rig}} {{.CityRoot}} {{.CityName}} {{.WorkDir}}",
+		"echo {{.Session}} {{.Agent}} {{.AgentBase}} {{.Rig}} {{.RigRoot}} {{.CityRoot}} {{.CityName}} {{.WorkDir}}",
 	}
 	got := expandSessionSetup(cmds, ctx)
-	want := "echo hw--polecat hw/polecat hello-world /city bl /city/.gc/worktrees/polecat"
+	want := "echo hw--polecat hw/polecat polecat hello-world /repos/hello-world /city bl /city/.gc/worktrees/polecat"
 	if got[0] != want {
 		t.Errorf("got %q, want %q", got[0], want)
 	}

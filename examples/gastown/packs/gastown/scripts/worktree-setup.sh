@@ -3,9 +3,10 @@
 #
 # Usage: worktree-setup.sh <rig-root> <target-dir> <agent-name> [--sync]
 #
-# Ensures the target directory is a git worktree of the rig repo. Idempotent:
-# skips creation if the worktree already exists. Optional --sync flag runs
-# git fetch + pull --rebase after creation.
+# Ensures the target directory is a git worktree of the rig repo. For
+# backward compatibility, the older <repo-dir> <agent-name> <city-root>
+# signature still works and resolves the target under
+# <city-root>/.gc/worktrees/<rig>/<agent-name>.
 #
 # Called from pre_start in pack configs. Runs before the session is created
 # so the agent starts IN the worktree directory.
@@ -13,19 +14,55 @@
 set -eu
 
 RIG_ROOT="${1:?usage: worktree-setup.sh <rig-root> <target-dir> <agent-name> [--sync]}"
-WT="${2:?missing target-dir}"
-AGENT="${3:?missing agent-name}"
+ARG2="${2:?missing target-dir}"
+ARG3="${3:?missing agent-name}"
+
+case "$ARG2" in
+    */*|.*)
+        WT="$ARG2"
+        AGENT="$ARG3"
+        SYNC="${4:-}"
+        ;;
+    *)
+        AGENT="$ARG2"
+        CITY="$ARG3"
+        RIG=$(basename "$RIG_ROOT")
+        WT="$CITY/.gc/worktrees/$RIG/$AGENT"
+        SYNC="${4:-}"
+        ;;
+esac
 
 # Idempotent: skip if worktree already exists.
 if [ -d "$WT/.git" ] || [ -f "$WT/.git" ]; then
-    [ "${4:-}" = "--sync" ] && { git -C "$WT" fetch origin 2>/dev/null; git -C "$WT" pull --rebase 2>/dev/null || true; }
+    [ "$SYNC" = "--sync" ] && { git -C "$WT" fetch origin 2>/dev/null; git -C "$WT" pull --rebase 2>/dev/null || true; }
     exit 0
 fi
 
-# MkdirAll may have created an empty dir — remove it for git worktree.
-rmdir "$WT" 2>/dev/null || true
 mkdir -p "$(dirname "$WT")"
-GIT_LFS_SKIP_SMUDGE=1 git -C "$RIG_ROOT" worktree add "$WT" -b "gc-$AGENT" || exit 0
+
+STAGE=""
+if [ -d "$WT" ] && [ "$(find "$WT" -mindepth 1 -maxdepth 1 | head -n 1)" ]; then
+    STAGE=$(mktemp -d "$(dirname "$WT")/.gascity-worktree-stage.XXXXXX")
+    find "$WT" -mindepth 1 -maxdepth 1 -exec mv {} "$STAGE"/ \;
+fi
+
+restore_stage() {
+    [ -n "$STAGE" ] || return 0
+    mkdir -p "$WT"
+    find "$STAGE" -mindepth 1 -maxdepth 1 -exec mv {} "$WT"/ \;
+    rmdir "$STAGE" 2>/dev/null || true
+}
+
+rmdir "$WT" 2>/dev/null || true
+if ! GIT_LFS_SKIP_SMUDGE=1 git -C "$RIG_ROOT" worktree add "$WT" -b "gc-$AGENT"; then
+    restore_stage
+    exit 1
+fi
+
+if [ -n "$STAGE" ]; then
+    find "$STAGE" -mindepth 1 -maxdepth 1 -exec mv {} "$WT"/ \;
+    rmdir "$STAGE" 2>/dev/null || true
+fi
 
 # Bead redirect for filesystem beads.
 mkdir -p "$WT/.beads"
@@ -74,6 +111,6 @@ append_exclude ".github/copilot-instructions.md"
 append_exclude "state.json"
 
 # Optional sync.
-[ "${4:-}" = "--sync" ] && { git -C "$WT" fetch origin 2>/dev/null; git -C "$WT" pull --rebase 2>/dev/null || true; }
+[ "$SYNC" = "--sync" ] && { git -C "$WT" fetch origin 2>/dev/null; git -C "$WT" pull --rebase 2>/dev/null || true; }
 
 exit 0

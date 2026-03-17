@@ -71,20 +71,22 @@ When you need to work on a different rig (e.g., fix a beads bug while assigned
 to gastown), you can create a worktree in the target rig:
 
 ```bash
-# Create worktree in another rig
-git worktree add {{ .CityRoot }}/beads/crew/{{ .RigName }}-{{ basename .AgentName }}/ -b {{ .RigName }}-{{ basename .AgentName }}
+# Create a worktree in another rig (look up the target rig's root first)
+TARGET_RIG=beads
+TARGET_ROOT=<from `gc rig status $TARGET_RIG`>
+git -C "$TARGET_ROOT" worktree add {{ .CityRoot }}/.gc/worktrees/$TARGET_RIG/crew/{{ basename .AgentName }}-from-{{ .RigName }} -b $TARGET_RIG-{{ basename .AgentName }}
 
 # List your worktrees
 git worktree list
 
 # Remove when done
-git worktree remove {{ .CityRoot }}/beads/crew/{{ .RigName }}-{{ basename .AgentName }}/
+git worktree remove {{ .CityRoot }}/.gc/worktrees/$TARGET_RIG/crew/{{ basename .AgentName }}-from-{{ .RigName }}
 ```
 
 **Directory structure:**
 ```
-{{ .CityRoot }}/beads/crew/{{ .RigName }}-{{ basename .AgentName }}/    # You (from {{ .RigName }}) working on beads
-{{ .CityRoot }}/gastown/crew/beads-alice/      # Alice (from beads) working on gastown
+{{ .CityRoot }}/.gc/worktrees/beads/crew/{{ basename .AgentName }}-from-{{ .RigName }}   # You (from {{ .RigName }}) working on beads
+{{ .CityRoot }}/.gc/worktrees/gastown/crew/beads-alice                    # Alice (from beads) working on gastown
 ```
 
 **Key principles:**

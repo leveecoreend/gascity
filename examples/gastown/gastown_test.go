@@ -210,6 +210,94 @@ func TestWorktreeSetupKeepsIgnoresLocal(t *testing.T) {
 	}
 }
 
+func TestWorktreeSetupBootstrapsPrepopulatedTargetDir(t *testing.T) {
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	city := filepath.Join(tmp, "city")
+	script := filepath.Join(exampleDir(), "packs", "gastown", "scripts", "worktree-setup.sh")
+
+	runCmd(t, tmp, "git", "init", repo)
+	runCmd(t, repo, "git", "config", "user.email", "test@example.com")
+	runCmd(t, repo, "git", "config", "user.name", "Gastown Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("writing repo README: %v", err)
+	}
+	runCmd(t, repo, "git", "add", ".")
+	runCmd(t, repo, "git", "commit", "-m", "init")
+
+	worktree := filepath.Join(city, ".gc", "worktrees", filepath.Base(repo), "refinery")
+	stagedPath := filepath.Join(worktree, ".codex", "hooks.json")
+	if err := os.MkdirAll(filepath.Dir(stagedPath), 0o755); err != nil {
+		t.Fatalf("creating staged dir: %v", err)
+	}
+	if err := os.WriteFile(stagedPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("writing staged file: %v", err)
+	}
+
+	runCmd(t, tmp, "sh", script, repo, worktree, "refinery")
+
+	if got := runCmd(t, tmp, "git", "-C", worktree, "rev-parse", "--is-inside-work-tree"); got != "true" {
+		t.Fatalf("worktree bootstrap did not produce a git worktree, got %q", got)
+	}
+	if _, err := os.Stat(stagedPath); err != nil {
+		t.Fatalf("staged runtime file missing after bootstrap: %v", err)
+	}
+}
+
+func TestWorktreeSetupSupportsLegacySignature(t *testing.T) {
+	tmp := t.TempDir()
+	repo := filepath.Join(tmp, "repo")
+	city := filepath.Join(tmp, "city")
+	script := filepath.Join(exampleDir(), "packs", "gastown", "scripts", "worktree-setup.sh")
+
+	runCmd(t, tmp, "git", "init", repo)
+	runCmd(t, repo, "git", "config", "user.email", "test@example.com")
+	runCmd(t, repo, "git", "config", "user.name", "Gastown Test")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("hello\n"), 0o644); err != nil {
+		t.Fatalf("writing repo README: %v", err)
+	}
+	runCmd(t, repo, "git", "add", ".")
+	runCmd(t, repo, "git", "commit", "-m", "init")
+
+	runCmd(t, tmp, "sh", script, repo, "legacy-worker", city)
+
+	worktree := filepath.Join(city, ".gc", "worktrees", filepath.Base(repo), "legacy-worker")
+	if got := runCmd(t, tmp, "git", "-C", worktree, "rev-parse", "--is-inside-work-tree"); got != "true" {
+		t.Fatalf("legacy signature did not produce a git worktree, got %q", got)
+	}
+}
+
+func TestPromptGuidanceUsesConfiguredRigRootsAndNamespacedWorktrees(t *testing.T) {
+	dir := exampleDir()
+
+	mayorPrompt, err := os.ReadFile(filepath.Join(dir, "packs", "gastown", "prompts", "mayor.md.tmpl"))
+	if err != nil {
+		t.Fatalf("reading mayor prompt: %v", err)
+	}
+	if strings.Contains(string(mayorPrompt), "{{ .CityRoot }}/<rig>") {
+		t.Fatalf("mayor prompt still hardcodes {{ .CityRoot }}/<rig>:\n%s", mayorPrompt)
+	}
+	if !strings.Contains(string(mayorPrompt), "{{ cmd }} rig status <rig>") {
+		t.Fatalf("mayor prompt missing rig-status guidance:\n%s", mayorPrompt)
+	}
+
+	crewPrompt, err := os.ReadFile(filepath.Join(dir, "packs", "gastown", "prompts", "crew.md.tmpl"))
+	if err != nil {
+		t.Fatalf("reading crew prompt: %v", err)
+	}
+	if !strings.Contains(string(crewPrompt), "{{ .CityRoot }}/.gc/worktrees/$TARGET_RIG/crew/") {
+		t.Fatalf("crew prompt missing namespaced worktree path:\n%s", crewPrompt)
+	}
+
+	polecatPrompt, err := os.ReadFile(filepath.Join(dir, "packs", "gastown", "prompts", "polecat.md.tmpl"))
+	if err != nil {
+		t.Fatalf("reading polecat prompt: %v", err)
+	}
+	if strings.Contains(string(polecatPrompt), "that's not a git working tree") {
+		t.Fatalf("polecat prompt still claims rig root is not a git working tree:\n%s", polecatPrompt)
+	}
+}
+
 func TestIdeaToPlanFormulaUsesSupportedPrimitives(t *testing.T) {
 	dir := exampleDir()
 	path := filepath.Join(dir, "packs", "gastown", "formulas", "mol-idea-to-plan.formula.toml")
