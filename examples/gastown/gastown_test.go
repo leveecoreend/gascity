@@ -80,6 +80,26 @@ func TestRefineryPromptSeedsTargetBranchVar(t *testing.T) {
 	}
 }
 
+func TestRefineryFormulaSupportsMergeStrategies(t *testing.T) {
+	dir := exampleDir()
+	path := filepath.Join(dir, "packs", "gastown", "formulas", "mol-refinery-patrol.formula.toml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading refinery formula: %v", err)
+	}
+	body := string(data)
+	for _, want := range []string{
+		".metadata.merge_strategy // \"direct\"",
+		"gh pr create",
+		"Pull request ready:",
+		"merge_strategy=local",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("refinery formula missing %q", want)
+		}
+	}
+}
+
 func TestAllFormulasExist(t *testing.T) {
 	dir := exampleDir()
 	formulaDir := filepath.Join(dir, "packs", "gastown", "formulas")
@@ -97,8 +117,8 @@ func TestAllFormulasExist(t *testing.T) {
 		count++
 	}
 
-	if count != 6 {
-		t.Errorf("found %d formula files, want 6", count)
+	if count != 5 {
+		t.Errorf("found %d formula files, want 5", count)
 	}
 }
 

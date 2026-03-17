@@ -19,6 +19,14 @@ No separate MR beads. The polecat sets metadata (branch, target) on
 the work bead and assigns it to the refinery. On rejection, the
 refinery puts the bead back in the pool with rejection metadata.
 
+Merge strategy is per-work-bead metadata:
+- `direct` (default): fast-forward merge to target and push
+- `mr` / `pr`: publish a GitHub pull request instead of landing directly
+
+In `mr` mode, refinery treats PR publication as the terminal handoff for
+the direct-bead workflow: it records the PR URL on the work bead and
+closes the bead once the PR is verified.
+
 Read each step's description before acting — Config values override defaults."""
 formula = "mol-refinery-patrol"
 version = 1
@@ -206,6 +214,12 @@ If all checks and tests PASSED: close this step, proceed to merge-push.
 
 If any check or test FAILED:
 
+Read the current branch and target again:
+```bash
+BRANCH=$(bd show $WORK --json | jq -r '.metadata.branch')
+TARGET=$(bd show $WORK --json | jq -r '.metadata.target // "{{target_branch}}"')
+```
+
 1. Diagnose: branch regression or pre-existing on target?
 
 2. If branch caused it:
@@ -215,7 +229,7 @@ If any check or test FAILED:
        --set-metadata rejection_reason="<failure summary>"
      ```
    - Delete branch: `git push origin --delete $BRANCH`
-   - Clean up: `git checkout {{target_branch}} && git branch -D temp`
+   - Clean up: `git checkout "$TARGET" && git branch -D temp`
    - Pour next patrol iteration before burning:
      ```bash
      NEXT=$(bd mol wisp mol-refinery-patrol --root-only --json | jq -r '.new_epic_id')
@@ -246,12 +260,19 @@ description = """
 **Config: target_branch = {{target_branch}}**
 **Config: delete_merged_branches = {{delete_merged_branches}}**
 
-Read the merge target from the work bead metadata:
+Read the merge target and merge strategy from the work bead metadata:
 ```bash
+BRANCH=$(bd show $WORK --json | jq -r '.metadata.branch')
 TARGET=$(bd show $WORK --json | jq -r '.metadata.target // "{{target_branch}}"')
+MERGE_STRATEGY=$(bd show $WORK --json | jq -r '.metadata.merge_strategy // "direct"')
+if [ "$MERGE_STRATEGY" = "pr" ]; then
+  MERGE_STRATEGY="mr"
+fi
 ```
 
-**1. Merge and push:**
+**If MERGE_STRATEGY = "direct" (default):**
+
+**1. Merge and push target branch:**
 ```bash
 git checkout $TARGET
 git merge --ff-only temp
@@ -267,8 +288,12 @@ REMOTE=$(git rev-parse origin/$TARGET)
 ```
 If SHAs differ: STOP. Debug and retry. Do NOT continue.
 
-**3. Close work bead (REQUIRED):**
+**3. Record merge metadata and close work bead:**
 ```bash
+bd update $WORK \
+  --set-metadata merge_result=merged \
+  --set-metadata merged_sha=$(git rev-parse HEAD) \
+  --set-metadata merged_target=$TARGET
 bd close $WORK --reason "Merged to $TARGET at $(git rev-parse --short HEAD)"
 ```
 
@@ -278,7 +303,81 @@ git branch -d temp
 ```
 If delete_merged_branches = "true": `git push origin --delete $BRANCH`
 
-**GATE**: Push verified + work bead closed before closing this step."""
+**If MERGE_STRATEGY = "mr":**
+
+Refinery does NOT land the branch directly. Instead it publishes a pull
+request and treats PR creation as the terminal handoff for this work bead.
+
+**1. Push the rebased branch back to origin:**
+```bash
+git checkout temp
+git push origin HEAD:$BRANCH --force-with-lease
+```
+
+**2. Create or discover the pull request:**
+```bash
+ISSUE_TITLE=$(bd show $WORK --json | jq -r '.title')
+PR_BODY=$(cat <<EOF
+## Summary
+
+Automated pull request published by Gastown Refinery.
+
+- Issue: $WORK
+- Branch: $BRANCH
+- Target: $TARGET
+
+EOF
+)
+
+PR_URL=$(gh pr create \
+  --base "$TARGET" \
+  --head "$BRANCH" \
+  --title "$ISSUE_TITLE ($WORK)" \
+  --body "$PR_BODY" 2>/dev/null || true)
+
+if [ -z "$PR_URL" ]; then
+  PR_URL=$(gh pr view "$BRANCH" --json url -q '.url')
+fi
+```
+
+**3. Verify the pull request exists:**
+```bash
+PR_INFO=$(gh pr view "$BRANCH" --json url,number,state -q '.url + " " + (.number|tostring) + " " + .state')
+echo "$PR_INFO"
+```
+If this command fails or prints empty output: STOP. Debug and retry. Do NOT continue.
+
+**4. Record PR metadata and close the work bead:**
+```bash
+PR_NUMBER=$(gh pr view "$BRANCH" --json number -q '.number')
+bd update $WORK \
+  --set-metadata merge_result=pull_request \
+  --set-metadata pr_url="$PR_URL" \
+  --set-metadata pr_number="$PR_NUMBER" \
+  --set-metadata merged_target="$TARGET"
+bd close $WORK --reason "Pull request ready: $PR_URL"
+```
+
+**5. Cleanup:**
+```bash
+git checkout "$TARGET"
+git branch -d temp
+```
+Do NOT delete `$BRANCH` in mr mode — GitHub pull requests need the source branch.
+
+**If MERGE_STRATEGY = "local":**
+
+STOP. Local-only merge handoff is not implemented in the Gastown example pack.
+Leave the work bead assigned to refinery and escalate to mayor for manual handling:
+```bash
+gc mail send mayor/ -s "ESCALATION: unsupported merge_strategy=local" -m "Work bead: $WORK
+Branch: $BRANCH
+Target: $TARGET
+The Gastown example refinery supports direct and mr/pr merge strategies only."
+```
+Do NOT close the bead, delete the branch, or burn the wisp until a human decides how to proceed.
+
+**GATE**: direct mode requires verified target push. mr mode requires verified PR URL. Bead closure only happens after the selected handoff is confirmed."""
 
 [[steps]]
 id = "patrol-summary"

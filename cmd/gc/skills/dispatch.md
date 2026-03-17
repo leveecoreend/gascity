@@ -111,16 +111,6 @@ for merge review. Production default for multi-agent setups.
 gc sling <agent> <bead-id> --on mol-polecat-work
 ```
 
-**mol-polecat-work-reviewed** — Human-reviewed variant. Like
-mol-polecat-work but adds investigation, planning, and a human
-checkpoint before implementation. The polecat writes a plan to bead
-notes, notifies the mayor, and blocks until approved. Use for
-high-risk or complex work that needs human sign-off before coding.
-
-```
-gc sling <agent> <bead-id> --on mol-polecat-work-reviewed
-```
-
 ### Gastown pack formulas (patrol loops)
 
 Patrol formulas are auto-poured by agent startup prompts — you typically
