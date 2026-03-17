@@ -13,18 +13,25 @@ builds:
       - arm64
 
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
 
-brews:
+homebrew_casks:
   - repository:
       owner: gastownhall
       name: homebrew-gascity
-    directory: Formula
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    binaries:
+      - gc
     homepage: https://github.com/gastownhall/gascity
     description: "Gas City CLI — an orchestration-builder SDK for multi-agent coding workflows"
-    license: "MIT"
-    install: |
-      bin.install "gc"
+    url:
+      verified: github.com/gastownhall/gascity/
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/gc"]
+          end
 
 changelog:
   sort: asc

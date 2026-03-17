@@ -24,6 +24,15 @@ trying to port the entire Town architecture literally.
 
 See the full install guide at [docs/getting-started/installation.md](docs/getting-started/installation.md).
 
+Install from Homebrew:
+
+```bash
+brew install gastownhall/gascity/gascity
+gc version
+```
+
+Or build from source:
+
 ```bash
 make install
 

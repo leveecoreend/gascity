@@ -21,7 +21,32 @@ Optional dependencies:
 The CI pin set lives in [`deps.env`](https://github.com/gastownhall/gascity/blob/main/deps.env). If you need to match CI
 exactly, start there.
 
-## Build `gc`
+## Install From A Release
+
+Homebrew:
+
+```bash
+brew install gastownhall/gascity/gascity
+gc version
+```
+
+Direct download:
+
+```bash
+VERSION=0.13.0
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64) ARCH=amd64 ;;
+  aarch64|arm64) ARCH=arm64 ;;
+esac
+
+curl -fsSLO "https://github.com/gastownhall/gascity/releases/download/v${VERSION}/gascity_${VERSION}_${OS}_${ARCH}.tar.gz"
+tar -xzf "gascity_${VERSION}_${OS}_${ARCH}.tar.gz"
+./gc version
+```
+
+## Build `gc` From Source
 
 From a clean clone:
 
