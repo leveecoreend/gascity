@@ -57,6 +57,7 @@ type fakeRunnerRule struct {
 // Rules are matched in order (first match wins), providing deterministic behavior.
 type fakeRunner struct {
 	calls []string
+	dirs  []string
 	envs  []map[string]string
 	rules []fakeRunnerRule
 }
@@ -68,8 +69,9 @@ func (r *fakeRunner) on(prefix, out string, err error) {
 	r.rules = append(r.rules, fakeRunnerRule{prefix: prefix, out: out, err: err})
 }
 
-func (r *fakeRunner) run(_, command string, env map[string]string) (string, error) {
+func (r *fakeRunner) run(dir, command string, env map[string]string) (string, error) {
 	r.calls = append(r.calls, command)
+	r.dirs = append(r.dirs, dir)
 	r.envs = append(r.envs, env)
 	for _, rule := range r.rules {
 		if strings.Contains(command, rule.prefix) {
@@ -204,6 +206,9 @@ func TestDoSlingBeadToFixedAgent(t *testing.T) {
 	want := "bd update 'BL-42' --assignee=$GC_SLING_TARGET"
 	if runner.calls[0] != want {
 		t.Errorf("runner call = %q, want %q", runner.calls[0], want)
+	}
+	if runner.dirs[0] != "/city" {
+		t.Errorf("runner dir = %q, want /city", runner.dirs[0])
 	}
 	if !strings.Contains(stdout.String(), "Slung BL-42") {
 		t.Errorf("stdout = %q, want to contain 'Slung BL-42'", stdout.String())

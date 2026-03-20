@@ -369,6 +369,13 @@ func rigDirForAgent(cfg *config.City, a config.Agent) string {
 	return ""
 }
 
+func slingDirForBead(cfg *config.City, cityPath, beadID string) string {
+	if dir := rigDirForBead(cfg, beadID); dir != "" {
+		return dir
+	}
+	return cityPath
+}
+
 // doSling is the pure logic for gc sling. Accepts injected deps, querier,
 // and opts struct for testability.
 func doSling(opts slingOpts, deps slingDeps, querier BeadQuerier) int {
@@ -493,7 +500,7 @@ func doSling(opts slingOpts, deps slingDeps, querier BeadQuerier) int {
 	// as GC_SLING_TARGET so the sling query can assign work per-session.
 	slingEnv := resolveSlingEnv(a, deps)
 	slingCmd := buildSlingCommand(a.EffectiveSlingQuery(), beadID)
-	rigDir := rigDirForBead(deps.Cfg, beadID)
+	rigDir := slingDirForBead(deps.Cfg, deps.CityPath, beadID)
 	if _, err := deps.Runner(rigDir, slingCmd, slingEnv); err != nil {
 		fmt.Fprintf(deps.Stderr, "gc sling: %v\n", err) //nolint:errcheck // best-effort
 		telemetry.RecordSling(context.Background(), a.QualifiedName(), targetType(&a), method, err)
@@ -701,7 +708,7 @@ func doSlingBatch(opts slingOpts, deps slingDeps, querier BeadChildQuerier) int 
 
 		childEnv := resolveSlingEnv(a, deps)
 		slingCmd := buildSlingCommand(a.EffectiveSlingQuery(), child.ID)
-		rigDir := rigDirForBead(deps.Cfg, child.ID)
+		rigDir := slingDirForBead(deps.Cfg, deps.CityPath, child.ID)
 		if _, err := deps.Runner(rigDir, slingCmd, childEnv); err != nil {
 			fmt.Fprintf(deps.Stderr, "  Failed %s: %v\n", child.ID, err) //nolint:errcheck // best-effort
 			telemetry.RecordSling(context.Background(), a.QualifiedName(), targetType(&a), batchMethod, err)
