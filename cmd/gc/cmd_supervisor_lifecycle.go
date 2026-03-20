@@ -112,37 +112,6 @@ func ensureSupervisorRunning(stdout, stderr io.Writer) int {
 	return waitForSupervisorReady(stderr)
 }
 
-// isSupervisorServiceInstalled checks whether the platform service unit
-// file exists on disk (plist on macOS, systemd unit on Linux).
-func isSupervisorServiceInstalled() bool {
-	var path string
-	switch goruntime.GOOS {
-	case "darwin":
-		path = supervisorLaunchdPlistPath()
-	case "linux":
-		path = supervisorSystemdServicePath()
-	default:
-		return false
-	}
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-// startInstalledService loads/starts the already-installed platform service.
-func startInstalledService(stderr io.Writer) {
-	switch goruntime.GOOS {
-	case "darwin":
-		path := supervisorLaunchdPlistPath()
-		if err := exec.Command("launchctl", "load", path).Run(); err != nil {
-			fmt.Fprintf(stderr, "gc: launchctl load: %v\n", err) //nolint:errcheck // best-effort stderr
-		}
-	case "linux":
-		if err := exec.Command("systemctl", "--user", "start", "gascity-supervisor.service").Run(); err != nil {
-			fmt.Fprintf(stderr, "gc: systemctl start: %v\n", err) //nolint:errcheck // best-effort stderr
-		}
-	}
-}
-
 // waitForSupervisorReady polls supervisorAlive with a 5s timeout.
 func waitForSupervisorReady(stderr io.Writer) int {
 	deadline := time.Now().Add(5 * time.Second)
