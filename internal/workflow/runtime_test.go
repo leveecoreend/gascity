@@ -213,6 +213,13 @@ func TestProcessScopeCheckAbortsScopeOnFailure(t *testing.T) {
 			t.Fatalf("%s outcome = %q, want skipped", beadID, got)
 		}
 	}
+	memberDeps, err := store.DepList(futureMember.ID, "down")
+	if err != nil {
+		t.Fatalf("dep list future member: %v", err)
+	}
+	if len(memberDeps) != 1 || memberDeps[0].DependsOnID != control.ID || memberDeps[0].Type != "blocks" {
+		t.Fatalf("future member deps = %+v, want preserved block on %s", memberDeps, control.ID)
+	}
 
 	cleanupReady := mustReadyContains(t, store, cleanup.ID)
 	if !cleanupReady {
