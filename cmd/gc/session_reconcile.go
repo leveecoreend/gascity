@@ -97,7 +97,7 @@ func evaluateWakeReasons(
 	// WakeWork: session has open work assigned to its template.
 	// For pool agents, apply the same slot/desired gate as WakeConfig
 	// so excess pool instances aren't woken by pending work.
-	if !waitHold && workSet[template] {
+	if !waitHold && workSet[template] && session.Metadata["dependency_only"] != "true" {
 		if agent != nil && agent.Pool != nil {
 			slot, _ := strconv.Atoi(session.Metadata["pool_slot"])
 			if slot == 0 && !agent.Pool.IsMultiInstance() {
@@ -128,6 +128,12 @@ func sessionWithinDesiredConfig(session beads.Bead, cfg *config.City, poolDesire
 	agent := findAgentByTemplate(cfg, template)
 	if agent == nil {
 		return nil, false
+	}
+	if session.Metadata["manual_session"] == "true" {
+		return agent, true
+	}
+	if session.Metadata["dependency_only"] == "true" {
+		return agent, false
 	}
 	if agent.Pool == nil {
 		return agent, true

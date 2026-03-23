@@ -21,6 +21,8 @@ type resolvedSessionSleepPolicy struct {
 	Duration         time.Duration
 }
 
+const idleSleepProbeTimeout = time.Second
+
 func (p resolvedSessionSleepPolicy) enabled() bool {
 	return p.Effective != "" && p.Effective != config.SessionSleepOff
 }
@@ -172,6 +174,9 @@ func configWakeSuppressed(
 	if !policy.enabled() {
 		return false
 	}
+	if session.Metadata["sleep_reason"] == "idle-timeout" {
+		return false
+	}
 	if session.Metadata["sleep_reason"] == "idle" &&
 		session.Metadata["sleep_policy_fingerprint"] != "" &&
 		session.Metadata["sleep_policy_fingerprint"] == policy.Fingerprint {
@@ -196,13 +201,24 @@ func persistSleepPolicyMetadata(
 	if session == nil || store == nil {
 		return
 	}
+	fingerprint := policy.Fingerprint
+	if ((session.Metadata["state"] == "asleep" &&
+		session.Metadata["sleep_reason"] == "idle") ||
+		session.Metadata["sleep_intent"] == "idle-stop-pending") &&
+		session.Metadata["sleep_policy_fingerprint"] != "" {
+		// Preserve the fingerprint that initiated an in-flight idle drain so the
+		// eventual asleep state remains tied to the policy that actually put the
+		// session to sleep. Config changes while the session is still running are
+		// handled by wake evaluation before the drain completes.
+		fingerprint = session.Metadata["sleep_policy_fingerprint"]
+	}
 	batch := map[string]string{
 		"requested_sleep_after_idle":     policy.Requested,
 		"effective_sleep_after_idle":     policy.Effective,
 		"sleep_policy_source":            policy.Source,
 		"sleep_capability":               string(policy.Capability),
 		"sleep_policy_adjustment_reason": policy.AdjustmentReason,
-		"sleep_policy_fingerprint":       policy.Fingerprint,
+		"sleep_policy_fingerprint":       fingerprint,
 		"config_wake_suppressed":         boolMetadata(configSuppressed),
 	}
 	changed := make(map[string]string)
@@ -217,9 +233,56 @@ func persistSleepPolicyMetadata(
 	if err := store.SetMetadataBatch(session.ID, changed); err != nil {
 		return
 	}
+	if session.Metadata == nil {
+		session.Metadata = make(map[string]string, len(changed))
+	}
 	for key, value := range changed {
 		session.Metadata[key] = value
 	}
+}
+
+func markIdleSleepPending(session *beads.Bead, store beads.Store) {
+	if session == nil || store == nil || session.Metadata["sleep_intent"] == "idle-stop-pending" {
+		return
+	}
+	if err := store.SetMetadata(session.ID, "sleep_intent", "idle-stop-pending"); err != nil {
+		return
+	}
+	if session.Metadata == nil {
+		session.Metadata = make(map[string]string, 1)
+	}
+	session.Metadata["sleep_intent"] = "idle-stop-pending"
+}
+
+func recoverPendingIdleSleep(
+	session *beads.Bead,
+	store beads.Store,
+	running bool,
+	clk clock.Clock,
+) bool {
+	if session == nil || store == nil || running || session.Metadata["sleep_intent"] != "idle-stop-pending" {
+		return false
+	}
+	batch := map[string]string{
+		"state":        "asleep",
+		"sleep_reason": "idle",
+		"sleep_intent": "",
+		"slept_at":     clk.Now().UTC().Format(time.RFC3339),
+		"last_woke_at": "",
+	}
+	if fingerprint := session.Metadata["sleep_policy_fingerprint"]; fingerprint != "" {
+		batch["sleep_policy_fingerprint"] = fingerprint
+	}
+	if err := store.SetMetadataBatch(session.ID, batch); err != nil {
+		return false
+	}
+	if session.Metadata == nil {
+		session.Metadata = make(map[string]string, len(batch))
+	}
+	for key, value := range batch {
+		session.Metadata[key] = value
+	}
+	return true
 }
 
 func boolMetadata(v bool) string {

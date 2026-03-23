@@ -386,7 +386,7 @@ func (f *Fake) ClearScrollback(name string) error {
 }
 
 // WaitForIdle records the call and returns the configured result.
-func (f *Fake) WaitForIdle(name string, _ time.Duration) error {
+func (f *Fake) WaitForIdle(_ context.Context, name string, _ time.Duration) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.Calls = append(f.Calls, Call{Method: "WaitForIdle", Name: name})

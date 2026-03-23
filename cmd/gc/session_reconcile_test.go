@@ -389,6 +389,54 @@ func TestWakeReasons_WorkSetPoolSlotGated(t *testing.T) {
 	}
 }
 
+func TestWakeReasons_DependencyOnlyPoolSlotDoesNotWakeOnWork(t *testing.T) {
+	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
+	clk := &clock.Fake{Time: now}
+
+	cfg := &config.City{
+		Agents: []config.Agent{
+			{Name: "pooled", Pool: &config.PoolConfig{Min: 0, Max: 3}},
+		},
+	}
+
+	reasons := wakeReasons(makeBead("b1", map[string]string{
+		"template":        "pooled",
+		"session_name":    "test-pooled-1",
+		"pool_slot":       "1",
+		"dependency_only": "true",
+	}), cfg, nil, map[string]int{"pooled": 1}, map[string]bool{"pooled": true}, nil, clk)
+
+	for _, r := range reasons {
+		if r == WakeWork {
+			t.Fatalf("dependency-only pool slot should not get WakeWork, got %v", reasons)
+		}
+	}
+}
+
+func TestWakeReasons_ManualPoolSessionGetsWakeConfigAtZeroScale(t *testing.T) {
+	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
+	clk := &clock.Fake{Time: now}
+
+	cfg := &config.City{
+		Agents: []config.Agent{
+			{Name: "pooled", Pool: &config.PoolConfig{Min: 0, Max: 3}},
+		},
+	}
+
+	reasons := wakeReasons(makeBead("b1", map[string]string{
+		"template":       "pooled",
+		"session_name":   "manual-pooled",
+		"manual_session": "true",
+	}), cfg, nil, map[string]int{"pooled": 0}, nil, nil, clk)
+
+	for _, r := range reasons {
+		if r == WakeConfig {
+			return
+		}
+	}
+	t.Fatalf("manual pool session should get WakeConfig at zero scale, got %v", reasons)
+}
+
 func TestWakeReasons_UsesLegacyAgentLabelTemplate(t *testing.T) {
 	now := time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)
 	clk := &clock.Fake{Time: now}

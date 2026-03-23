@@ -408,6 +408,7 @@ func (m *Manager) CreateAliasedBeadOnlyNamed(alias, explicitName, template, titl
 			"template":           template,
 			"state":              "creating",
 			"provider":           provider,
+			"manual_session":     "true",
 			"work_dir":           workDir,
 			"command":            command,
 			"resume_flag":        resume.ResumeFlag,

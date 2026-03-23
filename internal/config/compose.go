@@ -261,14 +261,51 @@ func mergeFragment(base, fragment *City, fragMeta toml.MetaData, fragPath string
 	if fragMeta.IsDefined("api") {
 		base.API = fragment.API
 	}
-	if fragMeta.IsDefined("session_sleep") {
-		base.SessionSleep = fragment.SessionSleep
-	}
+	mergeSessionSleep(base, fragment, fragMeta, fragPath, prov)
 	if fragMeta.IsDefined("convergence") {
 		base.Convergence = fragment.Convergence
 	}
 	if fragMeta.IsDefined("agent_defaults") {
 		base.AgentDefaults = fragment.AgentDefaults
+	}
+}
+
+type sessionSleepField struct {
+	key string
+	get func() string
+	set func()
+}
+
+func sessionSleepMergeFields(base, fragment *City) []sessionSleepField {
+	return []sessionSleepField{
+		{
+			key: "interactive_resume",
+			get: func() string { return base.SessionSleep.InteractiveResume },
+			set: func() { base.SessionSleep.InteractiveResume = fragment.SessionSleep.InteractiveResume },
+		},
+		{
+			key: "interactive_fresh",
+			get: func() string { return base.SessionSleep.InteractiveFresh },
+			set: func() { base.SessionSleep.InteractiveFresh = fragment.SessionSleep.InteractiveFresh },
+		},
+		{
+			key: "noninteractive",
+			get: func() string { return base.SessionSleep.NonInteractive },
+			set: func() { base.SessionSleep.NonInteractive = fragment.SessionSleep.NonInteractive },
+		},
+	}
+}
+
+func mergeSessionSleep(base, fragment *City, fragMeta toml.MetaData, fragPath string, prov *Provenance) {
+	for _, field := range sessionSleepMergeFields(base, fragment) {
+		if !fragMeta.IsDefined("session_sleep", field.key) {
+			continue
+		}
+		if field.get() != "" {
+			prov.Warnings = append(prov.Warnings,
+				fmt.Sprintf("session_sleep.%s redefined by %q", field.key, fragPath))
+		}
+		field.set()
 	}
 }
 

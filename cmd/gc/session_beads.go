@@ -164,6 +164,9 @@ func syncSessionBeadsWithSnapshot(
 				"state":              state,
 				"synced_at":          now.Format("2006-01-02T15:04:05Z07:00"),
 			}
+			if tp.DependencyOnly {
+				meta["dependency_only"] = boolMetadata(true)
+			}
 			// Generate session_key for providers that support --session-id.
 			// Without this, transcript lookup falls back to workdir-based
 			// matching which is ambiguous when multiple sessions share a dir.
@@ -281,6 +284,9 @@ func syncSessionBeadsWithSnapshot(
 		}
 		if b.Metadata["work_dir"] == "" && tp.WorkDir != "" {
 			queueMeta("work_dir", tp.WorkDir)
+		}
+		if b.Metadata["dependency_only"] != boolMetadata(tp.DependencyOnly) {
+			queueMeta("dependency_only", boolMetadata(tp.DependencyOnly))
 		}
 		needsAliasSync := b.Metadata["alias"] != managedAlias
 		if b.Metadata["wake_mode"] != tp.WakeMode {

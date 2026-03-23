@@ -658,7 +658,7 @@ func tryDeliverWaitIdleNudge(target nudgeTarget, sp runtime.Provider, message st
 	if !ok {
 		return false
 	}
-	if err := wp.WaitForIdle(target.sessionName, defaultNudgeWaitIdleTimeout); err != nil {
+	if err := wp.WaitForIdle(context.Background(), target.sessionName, defaultNudgeWaitIdleTimeout); err != nil {
 		return false
 	}
 	if err := deliverImmediateNudge(sp, target.sessionName, runtime.TextContent(message)); err != nil {

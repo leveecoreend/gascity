@@ -3,6 +3,7 @@ package config
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -104,6 +105,34 @@ func TestAgentFieldSync(t *testing.T) {
 		if !agentSet[f] && !patchOnly[f] {
 			t.Errorf("AgentOverride has field %q not found on Agent or patchOnly exclusion list", f)
 		}
+	}
+}
+
+func TestSessionSleepFieldSync(t *testing.T) {
+	var expected []string
+	cfgType := reflect.TypeOf(SessionSleepConfig{})
+	for i := 0; i < cfgType.NumField(); i++ {
+		field := cfgType.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		tag := strings.Split(field.Tag.Get("toml"), ",")[0]
+		if tag == "" || tag == "-" {
+			continue
+		}
+		expected = append(expected, tag)
+	}
+	sort.Strings(expected)
+
+	fields := sessionSleepMergeFields(&City{}, &City{})
+	got := make([]string, 0, len(fields))
+	for _, field := range fields {
+		got = append(got, field.key)
+	}
+	sort.Strings(got)
+
+	if !reflect.DeepEqual(got, expected) {
+		t.Fatalf("session_sleep merge fields = %v, want %v", got, expected)
 	}
 }
 

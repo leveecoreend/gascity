@@ -258,6 +258,23 @@ func TestDerivePoolDesired_CountsPoolInstances(t *testing.T) {
 	}
 }
 
+func TestDerivePoolDesired_SkipsManualPoolRoots(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{
+			{Name: "worker", Pool: &config.PoolConfig{Min: 0, Max: 5}},
+		},
+	}
+	desired := map[string]TemplateParams{
+		"worker-manual": {TemplateName: "worker", ManualSession: true},
+		"worker-1":      {TemplateName: "worker"},
+	}
+
+	result := derivePoolDesired(desired, cfg)
+	if result["worker"] != 1 {
+		t.Fatalf("expected only config-managed pool slots to count, got %d", result["worker"])
+	}
+}
+
 // --- allDependenciesAlive tests ---
 
 func TestAllDependenciesAlive_NoDeps(t *testing.T) {
