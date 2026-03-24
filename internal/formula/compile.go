@@ -40,6 +40,16 @@ func Compile(_ context.Context, name string, searchPaths []string, vars map[stri
 		return nil, fmt.Errorf("resolving formula %q: %w", name, err)
 	}
 
+	compileVars := make(map[string]string)
+	for vname, def := range resolved.Vars {
+		if def != nil && def.Default != nil {
+			compileVars[vname] = *def.Default
+		}
+	}
+	for k, v := range vars {
+		compileVars[k] = v
+	}
+
 	// Stage 3: Apply control flow operators — loops, branches, gates
 	controlFlowSteps, err := ApplyControlFlow(resolved.Steps, resolved.Compose)
 	if err != nil {
@@ -61,7 +71,7 @@ func Compile(_ context.Context, name string, searchPaths []string, vars map[stri
 
 	// Stage 6: Apply expansion operators (compose.expand/map)
 	if resolved.Compose != nil && (len(resolved.Compose.Expand) > 0 || len(resolved.Compose.Map) > 0) {
-		expandedSteps, err := ApplyExpansions(resolved.Steps, resolved.Compose, parser)
+		expandedSteps, err := ApplyExpansionsWithVars(resolved.Steps, resolved.Compose, parser, compileVars)
 		if err != nil {
 			return nil, fmt.Errorf("applying expansions to %q: %w", name, err)
 		}
@@ -86,16 +96,7 @@ func Compile(_ context.Context, name string, searchPaths []string, vars map[stri
 
 	// Stage 8: Apply step condition filtering if vars provided
 	if vars != nil {
-		mergedVars := make(map[string]string)
-		for vname, def := range resolved.Vars {
-			if def != nil && def.Default != nil {
-				mergedVars[vname] = *def.Default
-			}
-		}
-		for k, v := range vars {
-			mergedVars[k] = v
-		}
-		filteredSteps, err := FilterStepsByCondition(resolved.Steps, mergedVars)
+		filteredSteps, err := FilterStepsByCondition(resolved.Steps, compileVars)
 		if err != nil {
 			return nil, fmt.Errorf("filtering steps by condition: %w", err)
 		}
@@ -118,17 +119,24 @@ func Compile(_ context.Context, name string, searchPaths []string, vars map[stri
 		}
 	}
 
-	// Stage 10: Expand inline Ralph steps
+	// Stage 10: Expand inline retry-managed steps.
+	retrySteps, err := ApplyRetries(resolved.Steps)
+	if err != nil {
+		return nil, fmt.Errorf("applying retry transforms to %q: %w", name, err)
+	}
+	resolved.Steps = retrySteps
+
+	// Stage 11: Expand inline Ralph steps
 	ralphSteps, err := ApplyRalph(resolved.Steps)
 	if err != nil {
 		return nil, fmt.Errorf("applying ralph transforms to %q: %w", name, err)
 	}
 	resolved.Steps = ralphSteps
 
-	// Stage 11: Add graph-first control beads for v2 workflow formulas.
+	// Stage 12: Add graph-first control beads for v2 workflow formulas.
 	ApplyGraphControls(resolved)
 
-	// Stage 12: Flatten to Recipe
+	// Stage 13: Flatten to Recipe
 	return toRecipe(resolved), nil
 }
 
@@ -380,7 +388,7 @@ func isDetachedGraphStep(step *Step) bool {
 		return false
 	}
 	switch step.Metadata["gc.kind"] {
-	case "ralph", "run", "check":
+	case "ralph", "run", "check", "retry", "retry-run", "retry-eval":
 		return true
 	default:
 		return false
@@ -433,7 +441,7 @@ func isWorkflowRootBlocker(step *Step) bool {
 		return false
 	}
 	switch step.Metadata["gc.kind"] {
-	case "run", "check":
+	case "run", "check", "retry-run", "retry-eval":
 		return false
 	default:
 		return true

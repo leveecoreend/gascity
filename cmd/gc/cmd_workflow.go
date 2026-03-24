@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -13,6 +14,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var workflowControlSessionProvider = newSessionProvider
+
 func newWorkflowCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "workflow",
@@ -20,6 +23,7 @@ func newWorkflowCmd(stdout, stderr io.Writer) *cobra.Command {
 	}
 	cmd.AddCommand(
 		newWorkflowControlCmd(stdout, stderr),
+		newWorkflowPokeCmd(stdout, stderr),
 		newWorkflowServeCmd(stdout, stderr),
 	)
 	return cmd
@@ -32,6 +36,9 @@ func newWorkflowControlCmd(stdout, stderr io.Writer) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			if err := runWorkflowControl(args[0], stdout, stderr); err != nil {
+				if errors.Is(err, workflow.ErrControlPending) {
+					return nil
+				}
 				fmt.Fprintf(stderr, "gc workflow control: %v\n", err) //nolint:errcheck
 				return errExit
 			}
@@ -39,6 +46,35 @@ func newWorkflowControlCmd(stdout, stderr io.Writer) *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+func newWorkflowPokeCmd(_ io.Writer, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "poke",
+		Short:  "Trigger immediate workflow/control reconciliation",
+		Hidden: true,
+		Args:   cobra.NoArgs,
+		RunE: func(_ *cobra.Command, _ []string) error {
+			cityPath, err := resolveCity()
+			if err != nil {
+				fmt.Fprintf(stderr, "gc workflow poke: %v\n", err) //nolint:errcheck
+				return errExit
+			}
+			if err := pokeWorkflowControl(cityPath); err != nil {
+				fmt.Fprintf(stderr, "gc workflow poke: %v\n", err) //nolint:errcheck
+				return errExit
+			}
+			return nil
+		},
+	}
+	return cmd
+}
+
+func pokeWorkflowControl(cityPath string) error {
+	if _, err := sendControllerCommand(cityPath, "workflow-control"); err == nil {
+		return nil
+	}
+	return pokeController(cityPath)
 }
 
 func runWorkflowControl(beadID string, stdout, _ io.Writer) error {
@@ -59,15 +95,30 @@ func runWorkflowControl(beadID string, stdout, _ io.Writer) error {
 	}
 
 	opts := workflow.ProcessOptions{CityPath: cityPath}
+	loadCfg := false
 	switch bead.Metadata["gc.kind"] {
-	case "check", "fanout":
+	case "check", "fanout", "retry-eval":
+		loadCfg = true
+	}
+	if loadCfg {
 		cfg, err := loadCityConfig(cityPath)
 		if err != nil {
 			return err
 		}
-		opts.FormulaSearchPaths = workflowFormulaSearchPaths(cfg, bead)
-		opts.PrepareFragment = func(fragment *formula.FragmentRecipe, source beads.Bead) error {
-			return decorateDynamicFragmentRecipe(fragment, source, store, cfg.Workspace.Name, cityPath, cfg)
+		switch bead.Metadata["gc.kind"] {
+		case "check", "fanout":
+			opts.FormulaSearchPaths = workflowFormulaSearchPaths(cfg, bead)
+			opts.PrepareFragment = func(fragment *formula.FragmentRecipe, source beads.Bead) error {
+				return decorateDynamicFragmentRecipe(fragment, source, store, cfg.Workspace.Name, cfg)
+			}
+		case "retry-eval":
+			sp := workflowControlSessionProvider()
+			opts.RecycleSession = func(subject beads.Bead) error {
+				if strings.TrimSpace(subject.Assignee) == "" {
+					return fmt.Errorf("subject %s missing assignee for pooled retry recycle", subject.ID)
+				}
+				return sp.Stop(subject.Assignee)
+			}
 		}
 	}
 
@@ -103,15 +154,15 @@ func workflowFormulaSearchPaths(cfg *config.City, bead beads.Bead) []string {
 	return cfg.FormulaLayers.City
 }
 
-func decorateDynamicFragmentRecipe(fragment *formula.FragmentRecipe, source beads.Bead, store beads.Store, cityName, cityPath string, cfg *config.City) error {
+func decorateDynamicFragmentRecipe(fragment *formula.FragmentRecipe, source beads.Bead, store beads.Store, cityName string, cfg *config.City) error {
 	if fragment == nil {
 		return fmt.Errorf("fragment recipe is nil")
 	}
-	defaultRoute, err := graphFallbackBindingForBead(source, store, cityName, cityPath, cfg)
+	defaultRoute, err := graphFallbackBindingForBead(source, store, cityName, cfg)
 	if err != nil {
 		return err
 	}
-	controlRoute, err := workflowControlBinding(store, cityName, cityPath, cfg)
+	controlRoute, err := workflowControlBinding(store, cityName, cfg)
 	if err != nil {
 		return err
 	}
@@ -149,10 +200,10 @@ func decorateDynamicFragmentRecipe(fragment *formula.FragmentRecipe, source bead
 	for i := range fragment.Steps {
 		step := &fragment.Steps[i]
 		switch step.Metadata["gc.kind"] {
-		case "workflow", "scope":
+		case "workflow", "scope", "ralph", "retry":
 			continue
 		}
-		binding, err := resolveGraphStepBinding(step.ID, stepByID, stepAlias, depsByStep, bindingCache, resolving, defaultRoute, routingRigContext, store, cityName, cityPath, cfg)
+		binding, err := resolveGraphStepBinding(step.ID, stepByID, stepAlias, depsByStep, bindingCache, resolving, defaultRoute, routingRigContext, store, cityName, cfg)
 		if err != nil {
 			return err
 		}
@@ -165,7 +216,7 @@ func decorateDynamicFragmentRecipe(fragment *formula.FragmentRecipe, source bead
 	return nil
 }
 
-func graphFallbackBindingForBead(source beads.Bead, store beads.Store, cityName, cityPath string, cfg *config.City) (graphRouteBinding, error) {
+func graphFallbackBindingForBead(source beads.Bead, store beads.Store, cityName string, cfg *config.City) (graphRouteBinding, error) {
 	routedTo := workflowExecutionRoute(source)
 	if routedTo == "" {
 		return graphRouteBinding{sessionName: source.Assignee}, nil
@@ -188,9 +239,9 @@ func graphFallbackBindingForBead(source beads.Bead, store beads.Store, cityName,
 		binding.sessionName = source.Assignee
 		return binding, nil
 	}
-	sn, err := ensureSessionForTemplate(cityPath, cfg, store, agentCfg.QualifiedName(), io.Discard)
-	if err != nil {
-		return graphRouteBinding{}, err
+	sn := lookupSessionNameOrLegacy(store, cityName, agentCfg.QualifiedName(), cfg.Workspace.SessionTemplate)
+	if sn == "" {
+		return graphRouteBinding{}, fmt.Errorf("could not resolve session name for %q", agentCfg.QualifiedName())
 	}
 	binding.sessionName = sn
 	return binding, nil

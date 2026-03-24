@@ -58,12 +58,13 @@ type CityRuntime struct {
 	// Bead-driven reconciler state (Phase 2f).
 	sessionDrains *drainTracker // in-memory drain tracker; nil when bead reconciler disabled
 
-	convHandler      *convergence.Handler     // nil until bead store available
-	convStoreAdapter *convergenceStoreAdapter // typed reference; avoids type assertions in tick/reconcile
-	convergenceReqCh chan convergenceRequest  // receives CLI commands from controller.sock
-	pokeCh           chan struct{}            // non-blocking signal to trigger immediate reconciler tick
-	onStarted        func()
-	onStatus         func(string)
+	convHandler       *convergence.Handler     // nil until bead store available
+	convStoreAdapter  *convergenceStoreAdapter // typed reference; avoids type assertions in tick/reconcile
+	convergenceReqCh  chan convergenceRequest  // receives CLI commands from controller.sock
+	pokeCh            chan struct{}            // non-blocking signal to trigger immediate reconciler tick
+	workflowControlCh chan struct{}            // non-blocking signal for workflow-control-only reconcile
+	onStarted         func()
+	onStatus          func(string)
 
 	shutdownOnce   sync.Once
 	logPrefix      string // "gc start" or "gc supervisor"
@@ -92,10 +93,11 @@ type CityRuntimeParams struct {
 	PoolSessions      map[string]time.Duration
 	PoolDeathHandlers map[string]poolDeathInfo
 
-	ConvergenceReqCh chan convergenceRequest // may be nil
-	PokeCh           chan struct{}           // may be nil; triggers immediate tick
-	OnStarted        func()                  // called after initial reconciliation succeeds
-	OnStatus         func(string)            // called when init status changes
+	ConvergenceReqCh  chan convergenceRequest // may be nil
+	PokeCh            chan struct{}           // may be nil; triggers immediate tick
+	WorkflowControlCh chan struct{}           // may be nil; triggers workflow-control-only reconcile
+	OnStarted         func()                  // called after initial reconciliation succeeds
+	OnStatus          func(string)            // called when init status changes
 
 	LogPrefix      string // "gc start" or "gc supervisor"; defaults to "gc start"
 	Stdout, Stderr io.Writer
@@ -151,6 +153,12 @@ func newCityRuntime(p CityRuntimeParams) *CityRuntime {
 		pokeCh: func() chan struct{} {
 			if p.PokeCh != nil {
 				return p.PokeCh
+			}
+			return make(chan struct{}, 1)
+		}(),
+		workflowControlCh: func() chan struct{} {
+			if p.WorkflowControlCh != nil {
+				return p.WorkflowControlCh
 			}
 			return make(chan struct{}, 1)
 		}(),
@@ -292,6 +300,8 @@ func (cr *CityRuntime) run(ctx context.Context) {
 			// session. Trigger an immediate tick so the reconciler computes
 			// workSet and wakes the target without waiting for the next patrol.
 			cr.tick(ctx, dirty, &lastProviderName, cityRoot, &prevPoolRunning)
+		case <-cr.workflowControlCh:
+			cr.workflowControlTick(ctx)
 		case req := <-cr.convergenceReqCh:
 			// Low-latency path: process convergence commands between ticks.
 			// processConvergenceRequests() in tick() drains any that arrived
@@ -587,6 +597,68 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, desiredState map[s
 	}
 }
 
+func (cr *CityRuntime) workflowControlTick(ctx context.Context) {
+	store := cr.cityBeadStore()
+	if store == nil || cr.sessionDrains == nil {
+		return
+	}
+
+	filteredCfg := workflowControlOnlyConfig(cr.cfg)
+	if filteredCfg == nil {
+		return
+	}
+
+	sessionBeads := cr.loadSessionBeadSnapshot()
+	desiredState := buildDesiredStateWithSessionBeads(
+		cr.cityName,
+		cr.cityPath,
+		time.Now(),
+		filteredCfg,
+		cr.sp,
+		store,
+		sessionBeads,
+		cr.stderr,
+	)
+	cfgNames := configuredSessionNamesWithSnapshot(filteredCfg, cr.cityName, sessionBeads)
+	_, updated := syncSessionBeadsWithSnapshot(
+		cr.cityPath,
+		store,
+		desiredState,
+		cr.sp,
+		cfgNames,
+		filteredCfg,
+		clock.Real{},
+		cr.stderr,
+		true,
+		sessionBeads,
+	)
+	open := filterSessionBeadsByName(updated, cfgNames)
+	poolDesired := derivePoolDesired(desiredState, filteredCfg)
+	workSet := computeWorkSet(filteredCfg, shellScaleCheck, cr.cityName, cr.cityPath, store, sessionBeads)
+	reconcileSessionBeads(
+		ctx,
+		open,
+		desiredState,
+		cfgNames,
+		filteredCfg,
+		cr.sp,
+		store,
+		cr.dops,
+		workSet,
+		nil,
+		cr.sessionDrains,
+		poolDesired,
+		cr.cityName,
+		cr.it,
+		clock.Real{},
+		cr.rec,
+		cr.cfg.Session.StartupTimeoutDuration(),
+		cr.cfg.Daemon.DriftDrainTimeoutDuration(),
+		cr.stdout,
+		cr.stderr,
+	)
+}
+
 // syncBeadsAndUpdateIndex runs syncSessionBeads.
 func (cr *CityRuntime) syncBeadsAndUpdateIndex(desiredState map[string]TemplateParams, sessionBeads *sessionBeadSnapshot) *sessionBeadSnapshot {
 	store := cr.cityBeadStore()
@@ -617,6 +689,19 @@ func (cr *CityRuntime) loadSessionBeadSnapshot() *sessionBeadSnapshot {
 		return nil
 	}
 	return sessionBeads
+}
+
+func filterSessionBeadsByName(snapshot *sessionBeadSnapshot, names map[string]bool) []beads.Bead {
+	if snapshot == nil || len(names) == 0 {
+		return nil
+	}
+	var filtered []beads.Bead
+	for _, bead := range snapshot.Open() {
+		if names[bead.Metadata["session_name"]] {
+			filtered = append(filtered, bead)
+		}
+	}
+	return filtered
 }
 
 func (cr *CityRuntime) buildDesiredState(sessionBeads *sessionBeadSnapshot) map[string]TemplateParams {

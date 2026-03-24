@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -20,14 +19,14 @@ import (
 // for constructing the desired agent set — both reconcilers use it.
 //
 // When store is non-nil, session names are derived from bead IDs
-// ("s-{beadID}") for discovered session beads. Configured singleton agents
-// are treated as templates only; the controller no longer auto-creates a
-// canonical chat session for them. When store is nil, the legacy
-// SessionNameFor function is used for backward compatibility.
+// ("s-{beadID}") and session beads are auto-created for configured agents
+// that don't have them yet. When store is nil, the legacy SessionNameFor
+// function is used for backward compatibility.
 //
-// Performs idempotent side effects on each tick: hook installation and ACP
-// route registration. These are safe to repeat because hooks are installed
-// to stable filesystem paths and ACP routing is idempotent.
+// Performs idempotent side effects on each tick: hook installation,
+// ACP route registration, and session bead auto-creation. These are safe
+// to repeat because hooks are installed to stable filesystem paths,
+// ACP routing is idempotent, and bead creation is deduplicated by template.
 func buildDesiredState(
 	cityName, cityPath string,
 	beaconTime time.Time,
@@ -79,9 +78,6 @@ func buildDesiredStateWithSessionBeads(
 
 	desired := make(map[string]TemplateParams)
 	var pendingPools []poolEvalWork
-	eligibleTemplates := make(map[string]bool)
-	realizedTemplates := make(map[string]bool)
-	namedSpecs := make(map[string]namedSessionSpec)
 
 	for i := range cfg.Agents {
 		if cfg.Agents[i].Suspended {
@@ -94,33 +90,31 @@ func buildDesiredStateWithSessionBeads(
 			continue
 		}
 
-		rigName := configuredRigName(cityPath, &cfg.Agents[i], cfg.Rigs)
-		if rigName != "" && suspendedRigPaths[filepath.Clean(rigRootForName(rigName, cfg.Rigs))] {
-			continue
-		}
-		eligibleTemplates[cfg.Agents[i].QualifiedName()] = true
-
 		if pool.Max == 1 && !cfg.Agents[i].IsPool() {
-			// Singleton agents are templates only. A session exists only after
-			// an explicit create or other on-demand session minting path.
+			// Fixed agent.
+			rigName := configuredRigName(cityPath, &cfg.Agents[i], cfg.Rigs)
+			if rigName != "" && suspendedRigPaths[filepath.Clean(rigRootForName(rigName, cfg.Rigs))] {
+				continue
+			}
+
+			fpExtra := buildFingerprintExtra(&cfg.Agents[i])
+			tp, err := resolveTemplate(bp, &cfg.Agents[i], cfg.Agents[i].QualifiedName(), fpExtra)
+			if err != nil {
+				fmt.Fprintf(stderr, "buildDesiredState: %v (skipping)\n", err) //nolint:errcheck
+				continue
+			}
+			installAgentSideEffects(bp, &cfg.Agents[i], tp, stderr)
+			desired[tp.SessionName] = tp
 			continue
 		}
 
 		// Pool agent: collect for parallel scale_check.
+		rigName := configuredRigName(cityPath, &cfg.Agents[i], cfg.Rigs)
+		if rigName != "" && suspendedRigPaths[filepath.Clean(rigRootForName(rigName, cfg.Rigs))] {
+			continue
+		}
 		poolDir := agentCommandDir(cityPath, &cfg.Agents[i], cfg.Rigs)
 		pendingPools = append(pendingPools, poolEvalWork{agentIdx: i, pool: pool, poolDir: poolDir})
-	}
-
-	for i := range cfg.NamedSessions {
-		identity := cfg.NamedSessions[i].QualifiedName()
-		spec, ok := findNamedSessionSpec(cfg, cityName, identity)
-		if !ok {
-			continue
-		}
-		if agentUsesSuspendedRig(cityPath, spec.Agent, cfg.Rigs, suspendedRigPaths) {
-			continue
-		}
-		namedSpecs[identity] = spec
 	}
 
 	// Parallel scale_check evaluation for pools.
@@ -140,50 +134,17 @@ func buildDesiredStateWithSessionBeads(
 	}
 	wg.Wait()
 
-	poolDesiredCounts := make([]int, len(pendingPools))
 	for j, pw := range pendingPools {
 		pr := evalResults[j]
 		if pr.err != nil {
 			fmt.Fprintf(stderr, "buildDesiredState: %v (using min=%d)\n", pr.err, pw.pool.Min) //nolint:errcheck
 		}
-		poolDesiredCounts[j] = pr.desired
-		if pr.desired > 0 {
-			realizedTemplates[cfg.Agents[pw.agentIdx].QualifiedName()] = true
+		desiredCount := pr.desired
+		floored, floorErr := floorSingletonPoolDesiredFromWorkQuery(cfg.Agents[pw.agentIdx], desiredCount, pw.poolDir, shellScaleCheck)
+		if floorErr != nil {
+			fmt.Fprintf(stderr, "buildDesiredState: work_query fallback for %q: %v\n", cfg.Agents[pw.agentIdx].QualifiedName(), floorErr) //nolint:errcheck
 		}
-	}
-
-	markDiscoveredSessionTemplates(bp.sessionBeads, cityPath, cfg, desired, realizedTemplates, suspendedRigPaths)
-
-	namedWorkReady := make(map[string]bool, len(namedSpecs))
-	for identity, spec := range namedSpecs {
-		if spec.Mode == "always" {
-			realizedTemplates[identity] = true
-			continue
-		}
-		wq := prefixedWorkQueryForProbe(cfg, cityName, store, bp.sessionBeads, spec.Agent)
-		if wq == "" {
-			continue
-		}
-		dir := agentCommandDir(cityPath, spec.Agent, cfg.Rigs)
-		out, err := shellScaleCheck(wq, dir)
-		if err != nil {
-			continue
-		}
-		if workQueryHasReadyWork(strings.TrimSpace(out)) {
-			namedWorkReady[identity] = true
-			realizedTemplates[identity] = true
-		}
-	}
-
-	dependencyFloors := dependencyRealizedFloors(cfg, eligibleTemplates, realizedTemplates)
-
-	for j, pw := range pendingPools {
-		desiredCount := poolDesiredCounts[j]
-		floorOnlyCount := 0
-		if floor := dependencyFloors[cfg.Agents[pw.agentIdx].QualifiedName()]; floor > desiredCount {
-			floorOnlyCount = floor - desiredCount
-			desiredCount = floor
-		}
+		desiredCount = floored
 		for slot := 1; slot <= desiredCount; slot++ {
 			// If single-instance (max == 1), use bare name (no suffix).
 			// If multi-instance (max > 1 or unlimited), use themed name
@@ -203,130 +164,30 @@ func buildDesiredStateWithSessionBeads(
 				fmt.Fprintf(stderr, "buildDesiredState: pool instance %q: %v (skipping)\n", qualifiedInstance, err) //nolint:errcheck
 				continue
 			}
-			tp.DependencyOnly = slot > desiredCount-floorOnlyCount
 			installAgentSideEffects(bp, &instanceAgent, tp, stderr)
 			desired[tp.SessionName] = tp
 		}
 	}
 
-	for identity, spec := range namedSpecs {
-		_, hasCanonical := findCanonicalNamedSessionBead(bp.sessionBeads, identity)
-		if !hasCanonical {
-			if _, conflict := findNamedSessionConflict(bp.sessionBeads, spec); conflict {
-				continue
-			}
-		}
-		if spec.Mode != "always" && !hasCanonical && !namedWorkReady[identity] && dependencyFloors[identity] == 0 {
-			continue
-		}
-		fpExtra := buildFingerprintExtra(spec.Agent)
-		tp, err := resolveTemplate(bp, spec.Agent, identity, fpExtra)
-		if err != nil {
-			fmt.Fprintf(stderr, "buildDesiredState: named session %q: %v (skipping)\n", identity, err) //nolint:errcheck
-			continue
-		}
-		tp.Alias = identity
-		tp.ConfiguredNamedIdentity = identity
-		tp.ConfiguredNamedMode = spec.Mode
-		installAgentSideEffects(bp, spec.Agent, tp, stderr)
-		desired[tp.SessionName] = tp
-	}
-
 	// Phase 2: discover session beads created outside config iteration
 	// (e.g., by "gc session new"). Include them in desired state if they
 	// have a valid template and are not held/closed.
-	discoverSessionBeads(bp, cfg, desired, suspendedRigPaths, stderr)
+	discoverSessionBeads(bp, cfg, desired, stderr)
 
 	return desired
 }
 
-func dependencyRealizedFloors(cfg *config.City, eligibleTemplates, realizedTemplates map[string]bool) map[string]int {
-	floors := make(map[string]int)
-	if cfg == nil || len(realizedTemplates) == 0 {
-		return floors
+func workflowControlOnlyConfig(cfg *config.City) *config.City {
+	if cfg == nil {
+		return nil
 	}
-	agentsByTemplate := make(map[string]*config.Agent)
-	for i := range cfg.Agents {
-		agentsByTemplate[cfg.Agents[i].QualifiedName()] = &cfg.Agents[i]
+	agentCfg, ok := resolveAgentIdentity(cfg, config.WorkflowControlAgentName, "")
+	if !ok {
+		return nil
 	}
-	visited := make(map[string]bool)
-	var visit func(template string)
-	visit = func(template string) {
-		if visited[template] {
-			return
-		}
-		visited[template] = true
-		agent := agentsByTemplate[template]
-		if agent == nil {
-			return
-		}
-		for _, dep := range agent.DependsOn {
-			if dep == "" || !eligibleTemplates[dep] || agentsByTemplate[dep] == nil {
-				continue
-			}
-			floors[dep] = 1
-			visit(dep)
-		}
-	}
-	for template := range realizedTemplates {
-		visit(template)
-	}
-	return floors
-}
-
-func markDiscoveredSessionTemplates(
-	sessionBeads *sessionBeadSnapshot,
-	cityPath string,
-	cfg *config.City,
-	desired map[string]TemplateParams,
-	realizedTemplates map[string]bool,
-	suspendedRigPaths map[string]bool,
-) {
-	if sessionBeads == nil || cfg == nil {
-		return
-	}
-	for _, b := range sessionBeads.Open() {
-		if b.Status == "closed" {
-			continue
-		}
-		sn := b.Metadata["session_name"]
-		if sn == "" {
-			continue
-		}
-		if _, exists := desired[sn]; exists {
-			continue
-		}
-		template := b.Metadata["template"]
-		if template == "" {
-			template = b.Metadata["common_name"]
-		}
-		if template == "" {
-			continue
-		}
-		cfgAgent := findAgentByTemplate(cfg, template)
-		if cfgAgent == nil {
-			continue
-		}
-		if agentUsesSuspendedRig(cityPath, cfgAgent, cfg.Rigs, suspendedRigPaths) {
-			continue
-		}
-		realizedTemplates[template] = true
-	}
-}
-
-func isManualSessionRoot(b beads.Bead) bool {
-	return b.Metadata["manual_session"] == "true" || b.Metadata["state"] == "creating"
-}
-
-func agentUsesSuspendedRig(cityPath string, cfgAgent *config.Agent, rigs []config.Rig, suspendedRigPaths map[string]bool) bool {
-	if cfgAgent == nil || len(suspendedRigPaths) == 0 {
-		return false
-	}
-	rigName := configuredRigName(cityPath, cfgAgent, rigs)
-	if rigName == "" {
-		return false
-	}
-	return suspendedRigPaths[filepath.Clean(rigRootForName(rigName, rigs))]
+	cfgCopy := *cfg
+	cfgCopy.Agents = []config.Agent{agentCfg}
+	return &cfgCopy
 }
 
 // discoverSessionBeads queries the store for open session beads that are
@@ -336,7 +197,6 @@ func discoverSessionBeads(
 	bp *agentBuildParams,
 	cfg *config.City,
 	desired map[string]TemplateParams,
-	suspendedRigPaths map[string]bool,
 	stderr io.Writer,
 ) {
 	sessionBeads := bp.sessionBeads
@@ -379,13 +239,12 @@ func discoverSessionBeads(
 		if cfgAgent == nil {
 			continue
 		}
-		if agentUsesSuspendedRig(bp.cityPath, cfgAgent, cfg.Rigs, suspendedRigPaths) {
-			continue
-		}
-		// Pool agents: respect the pool's scaling decision for config-managed
-		// slots, but keep manual session roots discoverable even when the pool
-		// currently wants 0 instances. Manual roots come from `gc session new`
-		// and intentionally bypass scale checks.
+		// Pool agents: respect the pool's scaling decision. If the main
+		// config iteration (which ran evaluatePool / scale_check) did not
+		// produce any desired entries for this template, the pool wants 0
+		// instances. Don't re-add stale session beads — that bypasses
+		// scaling and causes infinite wake→drain→stop loops when there's
+		// no work.
 		if cfgAgent.Pool != nil {
 			templateHasDesired := false
 			for _, existing := range desired {
@@ -394,7 +253,7 @@ func discoverSessionBeads(
 					break
 				}
 			}
-			if !templateHasDesired && !isManualSessionRoot(b) {
+			if !templateHasDesired {
 				continue
 			}
 		}
@@ -415,7 +274,6 @@ func discoverSessionBeads(
 			tp.Env = make(map[string]string)
 		}
 		tp.Env["GC_SESSION_NAME"] = sn
-		tp.ManualSession = isManualSessionRoot(b)
 		installAgentSideEffects(bp, cfgAgent, tp, stderr)
 		desired[sn] = tp
 	}
