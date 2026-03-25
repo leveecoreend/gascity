@@ -40,17 +40,17 @@ func (s *BdStore) ApplyGraphPlan(_ context.Context, plan *GraphApplyPlan) (*Grap
 		return nil, fmt.Errorf("closing graph apply temp file: %w", err)
 	}
 
-	out, err := s.runner(s.dir, "bd", "graph-apply", "--json", "--plan-file", tmpPath)
+	out, err := s.runner(s.dir, "bd", "create", "--graph", tmpPath, "--json")
 	if err != nil {
-		return nil, fmt.Errorf("bd graph-apply: %w", err)
+		return nil, fmt.Errorf("bd create --graph: %w", err)
 	}
 
 	var result GraphApplyResult
 	if err := json.Unmarshal(extractJSON(out), &result); err != nil {
-		return nil, fmt.Errorf("bd graph-apply: parsing JSON: %w", err)
+		return nil, fmt.Errorf("bd create --graph: parsing JSON: %w", err)
 	}
 	if len(result.IDs) == 0 {
-		return nil, fmt.Errorf("bd graph-apply: empty result")
+		return nil, fmt.Errorf("bd create --graph: empty result")
 	}
 	return &result, nil
 }
