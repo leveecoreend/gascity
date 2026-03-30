@@ -99,18 +99,8 @@ func (c *CachingStore) Prime(_ context.Context) error {
 	}
 
 	beadMap := make(map[string]Bead, len(all))
-	var emptyTypeCount int
 	for _, b := range all {
-		if b.Type == "" {
-			emptyTypeCount++
-			if emptyTypeCount <= 3 {
-				log.Printf("DEBUG Prime: bead %s has empty Type, status=%q title=%q", b.ID, b.Status, b.Title)
-			}
-		}
 		beadMap[b.ID] = cloneBead(b)
-	}
-	if emptyTypeCount > 0 {
-		log.Printf("DEBUG Prime: %d/%d beads have empty Type!", emptyTypeCount, len(all))
 	}
 	// Batch-fetch deps in one subprocess call (if backing is BdStore).
 	depMap := make(map[string][]Dep)
@@ -193,6 +183,16 @@ func (c *CachingStore) ApplyEvent(eventType string, payload json.RawMessage) {
 	}
 	if b.ID == "" {
 		return
+	}
+	// bd hook payloads use "issue_type" while Bead uses "type". If Type
+	// wasn't populated from "type", check for the bd field name.
+	if b.Type == "" {
+		var bdCompat struct {
+			IssueType string `json:"issue_type"`
+		}
+		if err := json.Unmarshal(payload, &bdCompat); err == nil && bdCompat.IssueType != "" {
+			b.Type = bdCompat.IssueType
+		}
 	}
 
 	c.mu.Lock()
@@ -281,18 +281,12 @@ func (c *CachingStore) Get(id string) (Bead, error) {
 	if c.state == cacheLive {
 		if b, ok := c.beads[id]; ok {
 			c.mu.RUnlock()
-			if b.Type == "" {
-				log.Printf("DEBUG CachingStore.Get: id=%s type=%q (EMPTY!) status=%q title=%q from=cache",
-					id, b.Type, b.Status, b.Title)
-			}
 			return cloneBead(b), nil
 		}
 		c.mu.RUnlock()
-		log.Printf("DEBUG CachingStore.Get: id=%s NOT IN CACHE (state=live, total=%d)", id, len(c.beads))
 		return Bead{}, fmt.Errorf("getting bead %q: %w", id, ErrNotFound)
 	}
 	c.mu.RUnlock()
-	log.Printf("DEBUG CachingStore.Get: id=%s falling through to backing (state=%d)", id, c.state)
 	return c.backing.Get(id)
 }
 
@@ -501,7 +495,6 @@ func (c *CachingStore) Create(b Bead) (Bead, error) {
 	if err != nil {
 		return created, err
 	}
-	log.Printf("DEBUG CachingStore.Create: id=%s type=%q backing_type=%q", created.ID, created.Type, b.Type)
 	c.mu.Lock()
 	c.beads[created.ID] = cloneBead(created)
 	c.mu.Unlock()
@@ -516,13 +509,6 @@ func (c *CachingStore) Update(id string, opts UpdateOpts) error {
 	}
 	// Re-fetch from backing to get the authoritative state.
 	if fresh, err := c.backing.Get(id); err == nil {
-		if fresh.Type == "" {
-			c.mu.RLock()
-			old, hadOld := c.beads[id]
-			c.mu.RUnlock()
-			log.Printf("DEBUG CachingStore.Update: id=%s fresh.Type=%q (EMPTY from backing!) old_cached_type=%q had_old=%v opts=%+v",
-				id, fresh.Type, old.Type, hadOld, opts)
-		}
 		c.mu.Lock()
 		c.beads[id] = cloneBead(fresh)
 		c.mu.Unlock()

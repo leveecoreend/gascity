@@ -15,13 +15,13 @@ var ErrNotFound = errors.New("bead not found")
 type Bead struct {
 	ID           string            `json:"id"`
 	Title        string            `json:"title"`
-	Status       string            `json:"status"` // "open", "in_progress", "closed"
-	Type         string            `json:"type"`   // "task" default
+	Status       string            `json:"status"`     // "open", "in_progress", "closed"
+	Type         string            `json:"issue_type"` // "task" default; matches bd wire format
 	Priority     *int              `json:"priority,omitempty"`
 	CreatedAt    time.Time         `json:"created_at"`
 	Assignee     string            `json:"assignee,omitempty"`
 	From         string            `json:"from,omitempty"`
-	ParentID     string            `json:"parent_id,omitempty"`   // step → molecule
+	ParentID     string            `json:"parent,omitempty"`      // step → molecule; matches bd wire format
 	Ref          string            `json:"ref,omitempty"`         // formula step ID or formula name
 	Needs        []string          `json:"needs,omitempty"`       // dependency step refs
 	Description  string            `json:"description,omitempty"` // step instructions

@@ -263,7 +263,7 @@ func buildDesiredStateWithSessionBeads(
 		}
 	}
 	for identity, spec := range namedSpecs {
-		_, hasCanonical := findCanonicalNamedSessionBead(bp.sessionBeads, identity)
+		canonicalBead, hasCanonical := findCanonicalNamedSessionBead(bp.sessionBeads, identity)
 		if !hasCanonical {
 			if _, conflict := findNamedSessionConflict(bp.sessionBeads, spec); conflict {
 				continue
@@ -281,6 +281,17 @@ func buildDesiredStateWithSessionBeads(
 		tp.Alias = identity
 		tp.ConfiguredNamedIdentity = identity
 		tp.ConfiguredNamedMode = spec.Mode
+		// When a canonical bead exists, use ITS session_name as the
+		// desiredState key so syncSessionBeads finds it in bySessionName
+		// and takes the UPDATE path. Without this, resolveSessionName
+		// might find a different (leaked) bead and produce a mismatched
+		// key, sending the canonical bead through the CREATE path where
+		// the alias check fails against itself.
+		if hasCanonical {
+			if sn := strings.TrimSpace(canonicalBead.Metadata["session_name"]); sn != "" {
+				tp.SessionName = sn
+			}
+		}
 		installAgentSideEffects(bp, spec.Agent, tp, stderr)
 		desired[tp.SessionName] = tp
 	}
