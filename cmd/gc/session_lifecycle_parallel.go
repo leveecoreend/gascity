@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/runtime"
 	sessionpkg "github.com/gastownhall/gascity/internal/session"
+	"github.com/gastownhall/gascity/internal/shellquote"
 )
 
 const (
@@ -264,6 +267,26 @@ func prepareStartCandidate(
 		return nil, err
 	}
 	agentCfg := templateParamsToConfig(tp)
+
+	// Apply template_overrides from bead metadata. These are per-session
+	// schema option overrides (e.g., {"model":"opus","effort":"high"}) that
+	// override the agent's default CLI flags for specific options.
+	if rawOverrides := session.Metadata["template_overrides"]; rawOverrides != "" {
+		if tp.ResolvedProvider != nil && len(tp.ResolvedProvider.OptionsSchema) > 0 {
+			var overrides map[string]string
+			if err := json.Unmarshal([]byte(rawOverrides), &overrides); err != nil {
+				log.Printf("session %s: invalid template_overrides JSON: %v", session.ID, err)
+			} else if len(overrides) > 0 {
+				extraArgs, err := config.ResolveExplicitOptions(tp.ResolvedProvider.OptionsSchema, overrides)
+				if err != nil {
+					log.Printf("session %s: template_overrides resolution error: %v", session.ID, err)
+				} else if len(extraArgs) > 0 {
+					agentCfg.Command = agentCfg.Command + " " + shellquote.Join(extraArgs)
+				}
+			}
+		}
+	}
+
 	coreHash := runtime.CoreFingerprint(agentCfg)
 	liveHash := runtime.LiveFingerprint(agentCfg)
 	if wd := resolveTaskWorkDir(store, candidate.logicalTemplate(cfg)); wd != "" {

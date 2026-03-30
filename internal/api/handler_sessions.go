@@ -117,8 +117,13 @@ func sessionResponseWithReason(info session.Info, b *beads.Bead, cfg *config.Cit
 	return r
 }
 
-// filterMetadata returns only metadata keys with the "mc_" prefix.
-// This allowlist approach prevents leaking internal bead fields
+// filterMetadataAllowedKeys lists non-mc_ metadata keys that are safe to expose.
+var filterMetadataAllowedKeys = map[string]bool{
+	"template_overrides": true,
+}
+
+// filterMetadata returns only metadata keys with the "mc_" prefix plus
+// explicitly allowlisted keys. This prevents leaking internal bead fields
 // (session_key, command, work_dir, quarantine state) to API consumers.
 func filterMetadata(m map[string]string) map[string]string {
 	if len(m) == 0 {
@@ -126,7 +131,7 @@ func filterMetadata(m map[string]string) map[string]string {
 	}
 	filtered := make(map[string]string)
 	for k, v := range m {
-		if strings.HasPrefix(k, "mc_") {
+		if strings.HasPrefix(k, "mc_") || filterMetadataAllowedKeys[k] {
 			filtered[k] = v
 		}
 	}

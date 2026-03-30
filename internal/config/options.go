@@ -51,6 +51,42 @@ func ResolveOptions(schema []ProviderOption, options map[string]string) (extraAr
 	return extraArgs, metadata, nil
 }
 
+// ResolveExplicitOptions validates user-specified options against a provider's
+// schema and produces extra CLI args ONLY for explicitly provided options.
+// Unlike ResolveOptions, schema defaults are NOT applied — only the options
+// present in the overrides map generate flags. This is used for template_overrides
+// where agent sessions already have their own base CLI flags from config.
+//
+// Args are emitted in schema declaration order for deterministic command lines.
+func ResolveExplicitOptions(schema []ProviderOption, overrides map[string]string) (extraArgs []string, err error) {
+	if len(overrides) == 0 {
+		return nil, nil
+	}
+
+	// Validate override keys and values up front.
+	for key, value := range overrides {
+		opt := findOption(schema, key)
+		if opt == nil {
+			return nil, fmt.Errorf("%w: %s", ErrUnknownOption, key)
+		}
+		if findChoice(opt.Choices, value) == nil {
+			return nil, fmt.Errorf("invalid value for %s: %s", key, value)
+		}
+	}
+
+	// Iterate in schema declaration order for deterministic arg ordering.
+	for _, opt := range schema {
+		value, ok := overrides[opt.Key]
+		if !ok {
+			continue
+		}
+		choice := findChoice(opt.Choices, value)
+		extraArgs = append(extraArgs, choice.FlagArgs...)
+	}
+
+	return extraArgs, nil
+}
+
 func findOption(schema []ProviderOption, key string) *ProviderOption {
 	for i := range schema {
 		if schema[i].Key == key {

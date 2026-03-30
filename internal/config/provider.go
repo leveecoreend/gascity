@@ -187,13 +187,14 @@ func BuiltinProviders() map[string]ProviderSpec {
 					},
 				},
 				{
-					Key: "thinking", Label: "Thinking", Type: "select",
+					Key: "effort", Label: "Effort", Type: "select",
 					Default: "",
 					Choices: []OptionChoice{
 						{Value: "", Label: "Default", FlagArgs: nil},
-						{Value: "off", Label: "Off", FlagArgs: []string{"--thinking", "off"}},
-						{Value: "high", Label: "High", FlagArgs: []string{"--thinking", "high"}},
-						{Value: "max", Label: "Max", FlagArgs: []string{"--thinking", "max"}},
+						{Value: "low", Label: "Low", FlagArgs: []string{"--effort", "low"}},
+						{Value: "medium", Label: "Medium", FlagArgs: []string{"--effort", "medium"}},
+						{Value: "high", Label: "High", FlagArgs: []string{"--effort", "high"}},
+						{Value: "max", Label: "Max", FlagArgs: []string{"--effort", "max"}},
 					},
 				},
 				{
@@ -239,6 +240,15 @@ func BuiltinProviders() map[string]ProviderSpec {
 						{Value: "", Label: "Default", FlagArgs: nil},
 						{Value: "o3", Label: "o3", FlagArgs: []string{"--model", "o3"}},
 						{Value: "o4-mini", Label: "o4-mini", FlagArgs: []string{"--model", "o4-mini"}},
+					},
+				},
+				{
+					Key: "sandbox", Label: "Sandbox", Type: "select",
+					Default: "",
+					Choices: []OptionChoice{
+						{Value: "", Label: "Default", FlagArgs: nil},
+						{Value: "read-only", Label: "Read Only", FlagArgs: []string{"--sandbox", "read-only"}},
+						{Value: "network-off", Label: "Network Off", FlagArgs: []string{"--sandbox", "network-off"}},
 					},
 				},
 			},
