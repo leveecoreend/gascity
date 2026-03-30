@@ -306,11 +306,14 @@ func (c *CachingStore) ApplyDepEvent(beadID string, deps []Dep) {
 // ── Read methods (cache when live, fallback to backing) ─────────────
 
 // List returns all cached beads, optionally filtered by status.
-// If the cache is not yet live, blocks until Prime completes rather
-// than falling through to a bd subprocess (prevents stampede).
+// When fully primed (cacheLive), serves from memory. When partially
+// primed (cachePartial) with a status filter for pre-primed statuses
+// (open, in_progress), serves from the partial cache. Otherwise blocks
+// until full Prime completes.
 func (c *CachingStore) List(status ...string) ([]Bead, error) {
 	c.mu.RLock()
-	if c.state == cacheLive {
+	state := c.state
+	if state == cacheLive || (state == cachePartial && len(status) > 0 && isPrePrimedStatus(status[0])) {
 		filterStatus := ""
 		if len(status) > 0 {
 			filterStatus = status[0]
@@ -913,4 +916,9 @@ func (c *CachingStore) Delete(id string) error {
 	delete(c.deps, id)
 	c.mu.Unlock()
 	return nil
+}
+
+// isPrePrimedStatus returns true for statuses loaded by PrimeActive.
+func isPrePrimedStatus(status string) bool {
+	return status == "open" || status == "in_progress"
 }
