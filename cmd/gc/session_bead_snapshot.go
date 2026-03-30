@@ -1,6 +1,10 @@
 package main
 
-import "github.com/gastownhall/gascity/internal/beads"
+import (
+	"strings"
+
+	"github.com/gastownhall/gascity/internal/beads"
+)
 
 // sessionBeadSnapshot caches open session-bead state for a single reconcile
 // cycle so build/sync/reconcile can reuse one store scan.
@@ -33,6 +37,7 @@ func newSessionBeadSnapshot(open []beads.Bead) *sessionBeadSnapshot {
 		if sn == "" {
 			continue
 		}
+		isCanonicalNamed := strings.TrimSpace(b.Metadata["configured_named_identity"]) != ""
 		if agentName := sessionBeadAgentName(b); agentName != "" {
 			if isPoolManagedSessionBead(b) && agentName == b.Metadata["template"] {
 				agentName = ""
@@ -40,7 +45,10 @@ func newSessionBeadSnapshot(open []beads.Bead) *sessionBeadSnapshot {
 			if agentName == "" {
 				continue
 			}
-			if _, exists := sessionNameByAgentName[agentName]; !exists {
+			// Canonical named session beads always win the index so
+			// resolveSessionName returns the correct session_name even
+			// when leaked pool-style beads exist for the same template.
+			if _, exists := sessionNameByAgentName[agentName]; !exists || isCanonicalNamed {
 				sessionNameByAgentName[agentName] = sn
 			}
 		}
@@ -48,7 +56,7 @@ func newSessionBeadSnapshot(open []beads.Bead) *sessionBeadSnapshot {
 			continue
 		}
 		if template := b.Metadata["template"]; template != "" {
-			if _, exists := sessionNameByTemplateHint[template]; !exists {
+			if _, exists := sessionNameByTemplateHint[template]; !exists || isCanonicalNamed {
 				sessionNameByTemplateHint[template] = sn
 			}
 		}
