@@ -442,7 +442,11 @@ func discoverSessionBeadsWithRoots(
 			// sessions in desired state forever, which prevents sweep from
 			// closing them and forces future generic demand to create fresh
 			// session beads instead of cleaning up the old ones.
-			if isPoolManagedSessionBead(b) && !manualSession && !isNamedSessionBead(b) {
+			// Exception: beads still in "creating" state haven't had their
+			// first start yet — they MUST enter desired state so the
+			// reconciler can wake them.
+			creating := b.Metadata["state"] == "creating"
+			if isPoolManagedSessionBead(b) && !manualSession && !isNamedSessionBead(b) && !creating {
 				continue
 			}
 			if !manualSession && !desiredHasTemplate(desired, template) {
