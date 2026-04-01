@@ -1225,6 +1225,7 @@ prompt_template = "prompts/mayor.md"
 
 [[named_session]]
 template = "mayor"
+mode = "always"
 `
 	if got != want {
 		t.Errorf("city.toml content:\ngot:\n%s\nwant:\n%s", got, want)

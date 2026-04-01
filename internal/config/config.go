@@ -1848,7 +1848,7 @@ func DefaultCity(name string) City {
 	return City{
 		Workspace:     Workspace{Name: name},
 		Agents:        []Agent{{Name: "mayor", PromptTemplate: "prompts/mayor.md"}},
-		NamedSessions: []NamedSession{{Template: "mayor"}},
+		NamedSessions: []NamedSession{{Template: "mayor", Mode: "always"}},
 	}
 }
 
@@ -1868,7 +1868,7 @@ func WizardCity(name, provider, startCommand string) City {
 		Agents: []Agent{
 			{Name: "mayor", PromptTemplate: "prompts/mayor.md"},
 		},
-		NamedSessions: []NamedSession{{Template: "mayor"}},
+		NamedSessions: []NamedSession{{Template: "mayor", Mode: "always"}},
 	}
 }
 

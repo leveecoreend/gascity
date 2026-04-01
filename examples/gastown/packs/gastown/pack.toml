@@ -47,7 +47,7 @@ session_live = [
 [[named_session]]
 template = "mayor"
 scope = "city"
-mode = "on_demand"
+mode = "always"
 
 # ── DEACON — Daemon beacon / patrol executor. One per city. ────────────
 [[agent]]
