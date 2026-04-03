@@ -368,7 +368,7 @@ func collectAssignedWorkBeads(
 	seen := make(map[string]struct{})
 	for _, s := range stores {
 		// In-progress beads with an assignee (active work).
-		if inProgress, err := s.List("in_progress"); err == nil {
+		if inProgress, err := s.ListOpen("in_progress"); err == nil {
 			appendAssignedUnique(&result, inProgress, seen)
 		}
 		// Ready beads with an assignee (queued direct handoff work that is
