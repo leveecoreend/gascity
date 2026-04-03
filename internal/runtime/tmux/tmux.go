@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -200,7 +201,30 @@ func (t *Tmux) run(args ...string) (string, error) {
 	}
 	allArgs = append(allArgs, args...)
 
+	// TRACE: log every tmux command that could inject input or signals.
+	if tmuxTraceEnabled() {
+		if len(args) > 0 {
+			switch args[0] {
+			case "send-keys", "resize-pane":
+				log.Printf("[TMUX-TRACE] %s target=%s args=%v", args[0], targetFromArgs(args), args)
+			}
+		}
+	}
+
 	return t.exec.execute(allArgs)
+}
+
+func tmuxTraceEnabled() bool {
+	return os.Getenv("GC_TMUX_TRACE") == "1"
+}
+
+func targetFromArgs(args []string) string {
+	for i, a := range args {
+		if a == "-t" && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return "?"
 }
 
 // wrapError wraps tmux errors with context.
