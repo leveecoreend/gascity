@@ -80,12 +80,27 @@ func TestMain(m *testing.M) {
 		panic("acceptance-c: " + err.Error())
 	}
 
-	// Copy the minimum Claude OAuth/config files into the isolated home.
-	// Symlinking the whole host tree leaks runtime state and still leaves
-	// Claude in first-run interactive setup if .claude.json is absent.
+	// Symlink the host's .claude dir so the test always sees fresh OAuth
+	// tokens (including tokens refreshed by aimux during the test run).
+	// Copying credentials leads to stale token failures on long test suites.
 	realHome, _ := os.UserHomeDir()
-	if err := stageClaudeOAuth(realHome, gcHome); err != nil {
+	srcClaudeDir := filepath.Join(realHome, ".claude")
+	dstClaudeDir := filepath.Join(gcHome, ".claude")
+	if _, err := os.Stat(srcClaudeDir); err == nil {
+		if err := os.Symlink(srcClaudeDir, dstClaudeDir); err != nil {
+			// Fall back to copy if symlink fails (e.g., cross-device).
+			if err2 := stageClaudeOAuth(realHome, gcHome); err2 != nil {
+				panic("acceptance-c: staging Claude oauth: " + err2.Error())
+			}
+		}
+	} else if err := stageClaudeOAuth(realHome, gcHome); err != nil {
 		panic("acceptance-c: staging Claude oauth: " + err.Error())
+	}
+	// Also symlink .claude.json if it exists (legacy config location).
+	srcClaudeJSON := filepath.Join(realHome, ".claude.json")
+	dstClaudeJSON := filepath.Join(gcHome, ".claude.json")
+	if _, err := os.Stat(srcClaudeJSON); err == nil {
+		_ = os.Symlink(srcClaudeJSON, dstClaudeJSON)
 	}
 
 	testEnvC = helpers.NewEnv(gcBinary, gcHome, runtimeDir).
