@@ -8,7 +8,9 @@ You don't need to understand beads to use Gas City productively. But if you want
 
 ## What is a bead
 
-A bead is a unit of work with an ID, a title, a status, and a type. The basics:
+A bead is a unit of work with an ID, a title, a status, and a type. We use the `bd` tool to work with beads directly.
+
+Here's how to get the current list of beads:
 
 ```
 $ bd list
@@ -23,10 +25,11 @@ gc-11   convoy    open         sprint-42
 
 Every bead has:
 
+// actually don't some beads use the city prefix - that is, beads initated outside of a rig?
 - **ID** — unique identifier with a prefix derived from its rig (e.g., `gc-5`, `ma-12`)
 - **Title** — human-readable name
 - **Status** — `open`, `in_progress`, or `closed`
-- **Type** — what kind of thing it is
+- **Type** — what type of bead it is
 
 ## Bead types
 
@@ -45,7 +48,14 @@ The type system is simple by design. Gas City doesn't have separate storage for 
 
 ## Creating beads
 
-The most direct way:
+But most beads are created indirectly:
+
+- `gc session new helper` creates a session bead
+- `gc mail send mayor "Subject" "Body"` creates a message bead
+- `gc formula cook review` creates molecule + step beads
+- `gc sling worker review --formula` creates a wisp bead + convoy
+
+but you can use the `bd` tool to create them manually.
 
 ```
 $ bd create "Fix the login bug"
@@ -55,12 +65,6 @@ $ bd create "Refactor auth module" --type feature
 Created gc-16: Refactor auth module
 ```
 
-But most beads are created indirectly:
-
-- `gc session new helper` creates a session bead
-- `gc mail send mayor "Subject" "Body"` creates a message bead
-- `gc formula cook review` creates molecule + step beads
-- `gc sling worker review --formula` creates a wisp bead + convoy
 
 ## Bead lifecycle
 
@@ -84,6 +88,10 @@ $ bd list --state open
 ID      TYPE    STATUS  TITLE
 gc-16   feature open    Refactor auth module
 ```
+
+
+// ok, so to this point, I THINK we have neough to exmplain how there is a beads database that keeps the exection state of work as it flows thorugh the system. I believe this is effectively the execution state the sytem.   Can we bring that material up here and then make labels etc just details afterwards?
+
 
 ## Labels
 
