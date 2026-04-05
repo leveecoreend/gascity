@@ -37,15 +37,16 @@ func standaloneBuildAgentsFnWithSessionBeads(
 	cityName, cityPath string,
 	beaconTime time.Time,
 	stderr io.Writer,
-) func(*config.City, runtime.Provider, beads.Store, map[string]beads.Store, *sessionBeadSnapshot) DesiredStateResult {
+) func(*config.City, runtime.Provider, beads.Store, map[string]beads.Store, *sessionBeadSnapshot, *sessionReconcilerTraceCycle) DesiredStateResult {
 	return func(
 		c *config.City,
 		currentSP runtime.Provider,
 		store beads.Store,
 		rigStores map[string]beads.Store,
 		sessionBeads *sessionBeadSnapshot,
+		trace *sessionReconcilerTraceCycle,
 	) DesiredStateResult {
-		return buildDesiredStateWithSessionBeads(cityName, cityPath, beaconTime, c, currentSP, store, rigStores, sessionBeads, stderr)
+		return buildDesiredStateWithSessionBeads(cityName, cityPath, beaconTime, c, currentSP, store, rigStores, sessionBeads, trace, stderr)
 	}
 }
 
@@ -592,7 +593,7 @@ func doStartStandalone(args []string, controllerMode bool, stdout, stderr io.Wri
 		fmt.Fprintf(stderr, "gc start: loading session beads: %v\n", err) //nolint:errcheck
 		sessionBeads = nil
 	}
-	dsResult := buildDesiredStateWithSessionBeads(cityName, cityPath, beaconTime, cfg, sp, oneShotStore, nil, sessionBeads, stderr)
+	dsResult := buildDesiredStateWithSessionBeads(cityName, cityPath, beaconTime, cfg, sp, oneShotStore, nil, sessionBeads, nil, stderr)
 	ds := dsResult.State
 	cfgNames := configuredSessionNamesWithSnapshot(cfg, cityName, sessionBeads)
 	_, sessionBeads = syncSessionBeadsWithSnapshot(
@@ -603,9 +604,11 @@ func doStartStandalone(args []string, controllerMode bool, stdout, stderr io.Wri
 	dt := newDrainTracker()
 	poolDesired := PoolDesiredCounts(ComputePoolDesiredStates(
 		cfg, nil, sessionBeads.Open(), dsResult.ScaleCheckCounts))
-	reconcileSessionBeads(
-		sigCtx, open, ds, cfgNames, cfg, sp, oneShotStore,
-		nil, nil, nil, dt, poolDesired, nil, cityName,
+	reconcileSessionBeadsAtPath(
+		sigCtx, cityPath, open, ds, cfgNames, cfg, sp, oneShotStore,
+		nil, nil, nil, dt, poolDesired,
+		dsResult.StoreQueryPartial,
+		nil, cityName,
 		nil, clock.Real{}, recorder, cfg.Session.StartupTimeoutDuration(), 0,
 		stdout, stderr,
 	)
@@ -616,7 +619,7 @@ func doStartStandalone(args []string, controllerMode bool, stdout, stderr io.Wri
 		fmt.Fprintf(stderr, "gc start: loading session beads: %v\n", err) //nolint:errcheck
 		sessionBeads = nil
 	}
-	dsResult = buildDesiredStateWithSessionBeads(cityName, cityPath, beaconTime, cfg, sp, oneShotStore, nil, sessionBeads, stderr)
+	dsResult = buildDesiredStateWithSessionBeads(cityName, cityPath, beaconTime, cfg, sp, oneShotStore, nil, sessionBeads, nil, stderr)
 	ds = dsResult.State
 	cfgNames = configuredSessionNamesWithSnapshot(cfg, cityName, sessionBeads)
 	syncSessionBeadsWithSnapshot(cityPath, oneShotStore, ds, sp, cfgNames, cfg, clock.Real{}, stderr, false, sessionBeads)
@@ -839,6 +842,29 @@ func passthroughEnv() map[string]string {
 	// configs (Docker, K8s, beads, dolt, etc.) propagate to agents.
 	if v := os.Getenv("PATH"); v != "" {
 		m["PATH"] = v
+	}
+	if v := os.Getenv("HOME"); v != "" {
+		m["HOME"] = v
+	}
+	// USER/LOGNAME are required on macOS for Keychain access — without them
+	// providers like Claude Code cannot read stored OAuth credentials.
+	for _, key := range []string{"USER", "LOGNAME"} {
+		if v := os.Getenv(key); v != "" {
+			m[key] = v
+		}
+	}
+	// XDG directories are needed for providers to locate config files
+	// (e.g. ~/.config/opencode/opencode.jsonc). When not set, compute
+	// defaults from HOME so spawned sessions always find user config.
+	if v := strings.TrimSpace(os.Getenv("XDG_CONFIG_HOME")); v != "" {
+		m["XDG_CONFIG_HOME"] = v
+	} else if home := os.Getenv("HOME"); home != "" {
+		m["XDG_CONFIG_HOME"] = filepath.Join(home, ".config")
+	}
+	if v := strings.TrimSpace(os.Getenv("XDG_STATE_HOME")); v != "" {
+		m["XDG_STATE_HOME"] = v
+	} else if home := os.Getenv("HOME"); home != "" {
+		m["XDG_STATE_HOME"] = filepath.Join(home, ".local", "state")
 	}
 	for _, entry := range os.Environ() {
 		if key, val, ok := strings.Cut(entry, "="); ok && strings.HasPrefix(key, "GC_") && val != "" {

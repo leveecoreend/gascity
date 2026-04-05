@@ -124,8 +124,36 @@ func (s *prefixedAliasStore) CloseAll(ids []string, metadata map[string]string) 
 	return s.base.CloseAll(mapped, metadata)
 }
 
-func (s *prefixedAliasStore) List(status ...string) ([]beads.Bead, error) {
-	items, err := s.base.List(status...)
+func (s *prefixedAliasStore) ListOpen(status ...string) ([]beads.Bead, error) {
+	items, err := s.base.ListOpen(status...)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]beads.Bead, 0, len(items))
+	for _, item := range items {
+		out = append(out, s.beadToAlias(item))
+	}
+	return out, nil
+}
+
+func (s *prefixedAliasStore) List(query beads.ListQuery) ([]beads.Bead, error) {
+	if query.ParentID != "" {
+		s.childrenCalls++
+		query.ParentID = s.aliasToBase(query.ParentID)
+	}
+	if len(query.Metadata) > 0 {
+		filters := make(map[string]string, len(query.Metadata))
+		for k, v := range query.Metadata {
+			switch k {
+			case "gc.root_bead_id", "gc.workflow_id", "gc.source_bead_id":
+				filters[k] = s.aliasToBase(v)
+			default:
+				filters[k] = v
+			}
+		}
+		query.Metadata = filters
+	}
+	items, err := s.base.List(query)
 	if err != nil {
 		return nil, err
 	}
@@ -148,9 +176,9 @@ func (s *prefixedAliasStore) Ready() ([]beads.Bead, error) {
 	return out, nil
 }
 
-func (s *prefixedAliasStore) Children(parentID string) ([]beads.Bead, error) {
+func (s *prefixedAliasStore) Children(parentID string, opts ...beads.QueryOpt) ([]beads.Bead, error) {
 	s.childrenCalls++
-	items, err := s.base.Children(s.aliasToBase(parentID))
+	items, err := s.base.Children(s.aliasToBase(parentID), opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -161,8 +189,8 @@ func (s *prefixedAliasStore) Children(parentID string) ([]beads.Bead, error) {
 	return out, nil
 }
 
-func (s *prefixedAliasStore) ListByLabel(label string, limit int) ([]beads.Bead, error) {
-	items, err := s.base.ListByLabel(label, limit)
+func (s *prefixedAliasStore) ListByLabel(label string, limit int, opts ...beads.QueryOpt) ([]beads.Bead, error) {
+	items, err := s.base.ListByLabel(label, limit, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -217,8 +245,8 @@ func (s *prefixedAliasStore) DepList(id, direction string) ([]beads.Dep, error) 
 	return out, nil
 }
 
-func (s *prefixedAliasStore) ListByMetadata(filters map[string]string, limit int) ([]beads.Bead, error) {
-	result, err := s.base.ListByMetadata(filters, limit)
+func (s *prefixedAliasStore) ListByMetadata(filters map[string]string, limit int, opts ...beads.QueryOpt) ([]beads.Bead, error) {
+	result, err := s.base.ListByMetadata(filters, limit, opts...)
 	if err != nil {
 		return nil, err
 	}
