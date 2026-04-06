@@ -241,6 +241,11 @@ func buildWorkflowRunProjections(state State, requestedScopeKind, requestedScope
 	}, nil
 }
 
+// buildWorkflowRunProjectionsRootOnly builds workflow run projections using
+// only root beads and their open children.  It intentionally skips per-root
+// closed-child lookups for speed, so status and UpdatedAt may lag behind
+// the full projection path.  Use this for monitor/feed views where freshness
+// matters more than precision.
 func buildWorkflowRunProjectionsRootOnly(state State, requestedScopeKind, requestedScopeRef string) (workflowRunProjectionResult, error) {
 	stores := workflowStores(state)
 	projections := make([]workflowRunProjection, 0)
@@ -258,11 +263,9 @@ func buildWorkflowRunProjectionsRootOnly(state State, requestedScopeKind, reques
 			if requestedScopeErr == nil && info.scopeKind == requestedScopeKind && info.scopeRef == requestedScopeRef {
 				requestedScopeErr = err
 			}
-			if includeAllForCity {
-				msg := info.ref + " store unavailable"
-				log.Printf("api: workflow root projection list failed for %s: %v", info.ref, err)
-				partialErrors = append(partialErrors, msg)
-			}
+			msg := info.ref + " store unavailable"
+			log.Printf("api: workflow root projection list failed for %s: %v", info.ref, err)
+			partialErrors = append(partialErrors, msg)
 			continue
 		}
 
@@ -293,9 +296,7 @@ func buildWorkflowRunProjectionsRootOnly(state State, requestedScopeKind, reques
 					roots = append(roots, bead)
 				}
 			}
-			if includeAllForCity {
-				partialErrors = append(partialErrors, info.ref+" workflow history incomplete")
-			}
+			partialErrors = append(partialErrors, info.ref+" workflow history incomplete")
 		}
 
 		for _, root := range roots {
