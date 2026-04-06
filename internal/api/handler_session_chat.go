@@ -536,7 +536,7 @@ func (s *Server) createProviderSession(w http.ResponseWriter, r *http.Request, s
 	// Deliver initial message if provided.
 	if msg := strings.TrimSpace(body.Message); msg != "" {
 		resumeCommand, nudgeHints := s.buildSessionResume(info)
-		if sendErr := mgr.Send(r.Context(), info.ID, msg, resumeCommand, nudgeHints); sendErr != nil {
+		if sendErr := mgr.SendImmediate(r.Context(), info.ID, msg, resumeCommand, nudgeHints); sendErr != nil {
 			log.Printf("session %s: initial message delivery failed: %v", info.ID, sendErr)
 			s.idem.unreserve(idemKey)
 			writeError(w, http.StatusInternalServerError, "message_delivery_failed",
@@ -731,14 +731,14 @@ func (s *Server) handleSessionMessage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	id, err := s.resolveSessionIDMaterializingNamed(store, r.PathValue("id"))
+	id, err := s.resolveSessionIDMaterializingNamedWithContext(r.Context(), store, r.PathValue("id"))
 	if err != nil {
 		s.idem.unreserve(idemKey)
 		writeResolveError(w, err)
 		return
 	}
 
-	if err := s.sendMessageToSession(r.Context(), store, id, body.Message); err != nil {
+	if err := s.sendUserMessageToSession(r.Context(), store, id, body.Message); err != nil {
 		s.idem.unreserve(idemKey)
 		writeSessionManagerError(w, err)
 		return

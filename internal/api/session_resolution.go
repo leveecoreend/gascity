@@ -250,7 +250,7 @@ func (s *Server) findCanonicalNamedSession(store beads.Store, spec apiNamedSessi
 	return beads.Bead{}, false, nil
 }
 
-func (s *Server) resolveConfiguredNamedSessionID(store beads.Store, identifier string, opts apiSessionResolveOptions) (string, bool, error) {
+func (s *Server) resolveConfiguredNamedSessionIDWithContext(ctx context.Context, store beads.Store, identifier string, opts apiSessionResolveOptions) (string, bool, error) {
 	spec, ok, err := s.findNamedSessionSpecForTarget(store, identifier)
 	if err != nil {
 		return "", false, err
@@ -284,8 +284,12 @@ func (s *Server) resolveConfiguredNamedSessionID(store beads.Store, identifier s
 	if !opts.materialize {
 		return "", false, fmt.Errorf("%w: %q", session.ErrSessionNotFound, identifier)
 	}
-	id, err := s.materializeNamedSession(store, spec)
+	id, err := s.materializeNamedSessionWithContext(ctx, store, spec)
 	return id, true, err
+}
+
+func (s *Server) resolveConfiguredNamedSessionID(store beads.Store, identifier string, opts apiSessionResolveOptions) (string, bool, error) {
+	return s.resolveConfiguredNamedSessionIDWithContext(context.Background(), store, identifier, opts)
 }
 
 func parseAPITemplateTarget(identifier string) (string, bool) {
@@ -312,7 +316,7 @@ func apiAllowImplicitTemplateMaterialization(cfg *config.City, identifier string
 	return maxSess != nil && *maxSess == 1
 }
 
-func (s *Server) materializeTemplateSession(store beads.Store, template string) (string, error) {
+func (s *Server) materializeTemplateSessionWithContext(ctx context.Context, store beads.Store, template string) (string, error) {
 	resolved, workDir, transport, qualifiedTemplate, err := s.resolveSessionTemplate(template)
 	if err != nil {
 		if errors.Is(err, errSessionTemplateNotFound) {
@@ -329,7 +333,7 @@ func (s *Server) materializeTemplateSession(store beads.Store, template string) 
 	mgr := s.sessionManager(store)
 	hints := sessionCreateHints(resolved)
 	info, err := mgr.CreateAliasedNamedWithTransport(
-		context.Background(),
+		ctx,
 		"",
 		"",
 		qualifiedTemplate,
@@ -349,7 +353,11 @@ func (s *Server) materializeTemplateSession(store beads.Store, template string) 
 	return info.ID, nil
 }
 
-func (s *Server) materializeNamedSession(store beads.Store, spec apiNamedSessionSpec) (string, error) {
+func (s *Server) materializeTemplateSession(store beads.Store, template string) (string, error) {
+	return s.materializeTemplateSessionWithContext(context.Background(), store, template)
+}
+
+func (s *Server) materializeNamedSessionWithContext(ctx context.Context, store beads.Store, spec apiNamedSessionSpec) (string, error) {
 	if bead, ok, err := s.findCanonicalNamedSession(store, spec); err != nil {
 		return "", err
 	} else if ok {
@@ -383,7 +391,7 @@ func (s *Server) materializeNamedSession(store beads.Store, spec apiNamedSession
 		}
 		var createErr error
 		info, createErr = mgr.CreateAliasedNamedWithTransportAndMetadata(
-			context.Background(),
+			ctx,
 			spec.Identity,
 			spec.SessionName,
 			qualifiedTemplate,
@@ -409,7 +417,11 @@ func (s *Server) materializeNamedSession(store beads.Store, spec apiNamedSession
 	return "", err
 }
 
-func (s *Server) materializeSessionTarget(store beads.Store, identifier string) (string, error) {
+func (s *Server) materializeNamedSession(store beads.Store, spec apiNamedSessionSpec) (string, error) {
+	return s.materializeNamedSessionWithContext(context.Background(), store, spec)
+}
+
+func (s *Server) materializeSessionTargetWithContext(ctx context.Context, store beads.Store, identifier string) (string, error) {
 	identifier = apiNormalizeSessionTarget(identifier)
 	if identifier == "" {
 		return "", fmt.Errorf("%w: %q", session.ErrSessionNotFound, identifier)
@@ -417,12 +429,16 @@ func (s *Server) materializeSessionTarget(store beads.Store, identifier string) 
 	if spec, ok, err := s.findNamedSessionSpecForTarget(store, identifier); err != nil {
 		return "", err
 	} else if ok {
-		return s.materializeNamedSession(store, spec)
+		return s.materializeNamedSessionWithContext(ctx, store, spec)
 	}
-	return s.materializeTemplateSession(store, identifier)
+	return s.materializeTemplateSessionWithContext(ctx, store, identifier)
 }
 
-func (s *Server) resolveSessionTargetID(store beads.Store, identifier string, opts apiSessionResolveOptions) (string, error) {
+func (s *Server) materializeSessionTarget(store beads.Store, identifier string) (string, error) {
+	return s.materializeSessionTargetWithContext(context.Background(), store, identifier)
+}
+
+func (s *Server) resolveSessionTargetIDWithContext(ctx context.Context, store beads.Store, identifier string, opts apiSessionResolveOptions) (string, error) {
 	if store == nil {
 		return "", fmt.Errorf("session store unavailable")
 	}
@@ -430,7 +446,7 @@ func (s *Server) resolveSessionTargetID(store beads.Store, identifier string, op
 		if !opts.materialize {
 			return "", fmt.Errorf("%w: %q", session.ErrSessionNotFound, identifier)
 		}
-		return s.materializeTemplateSession(store, templateName)
+		return s.materializeTemplateSessionWithContext(ctx, store, templateName)
 	}
 	if id, err := apiResolveSessionIDByExactID(store, identifier); err == nil {
 		return id, nil
@@ -438,7 +454,7 @@ func (s *Server) resolveSessionTargetID(store beads.Store, identifier string, op
 		return "", err
 	}
 	if opts.materialize {
-		if id, matched, err := s.resolveConfiguredNamedSessionID(store, identifier, opts); err == nil {
+		if id, matched, err := s.resolveConfiguredNamedSessionIDWithContext(ctx, store, identifier, opts); err == nil {
 			return id, nil
 		} else if matched || !errors.Is(err, session.ErrSessionNotFound) {
 			return "", err
@@ -450,7 +466,7 @@ func (s *Server) resolveSessionTargetID(store beads.Store, identifier string, op
 		return "", err
 	}
 	if !opts.materialize {
-		if id, matched, err := s.resolveConfiguredNamedSessionID(store, identifier, opts); err == nil {
+		if id, matched, err := s.resolveConfiguredNamedSessionIDWithContext(ctx, store, identifier, opts); err == nil {
 			return id, nil
 		} else if matched || !errors.Is(err, session.ErrSessionNotFound) {
 			return "", err
@@ -474,7 +490,11 @@ func (s *Server) resolveSessionTargetID(store beads.Store, identifier string, op
 	if !apiAllowImplicitTemplateMaterialization(s.state.Config(), identifier) {
 		return "", fmt.Errorf("%w: %q", session.ErrSessionNotFound, identifier)
 	}
-	return s.materializeSessionTarget(store, identifier)
+	return s.materializeSessionTargetWithContext(ctx, store, identifier)
+}
+
+func (s *Server) resolveSessionTargetID(store beads.Store, identifier string, opts apiSessionResolveOptions) (string, error) {
+	return s.resolveSessionTargetIDWithContext(context.Background(), store, identifier, opts)
 }
 
 func (s *Server) resolveSessionIDWithConfig(store beads.Store, identifier string) (string, error) {
@@ -489,7 +509,14 @@ func (s *Server) resolveSessionIDMaterializingNamed(store beads.Store, identifie
 	return s.resolveSessionTargetID(store, identifier, apiSessionResolveOptions{materialize: true})
 }
 
-func (s *Server) sendMessageToSession(ctx context.Context, store beads.Store, id, message string) error {
+func (s *Server) resolveSessionIDMaterializingNamedWithContext(ctx context.Context, store beads.Store, identifier string) (string, error) {
+	return s.resolveSessionTargetIDWithContext(ctx, store, identifier, apiSessionResolveOptions{materialize: true})
+}
+
+// sendBackgroundMessageToSession preserves the default provider nudge semantics
+// for system-driven messages that should respect wait-idle behavior when the
+// runtime supports it.
+func (s *Server) sendBackgroundMessageToSession(ctx context.Context, store beads.Store, id, message string) error {
 	mgr := s.sessionManager(store)
 	info, err := mgr.Get(id)
 	if err != nil {
@@ -497,6 +524,21 @@ func (s *Server) sendMessageToSession(ctx context.Context, store beads.Store, id
 	}
 	resumeCommand, hints := s.buildSessionResume(info)
 	if err := mgr.Send(ctx, id, message, resumeCommand, hints); err != nil {
+		return err
+	}
+	return nil
+}
+
+// sendUserMessageToSession prioritizes user-perceived responsiveness by using
+// the runtime's immediate nudge path when available.
+func (s *Server) sendUserMessageToSession(ctx context.Context, store beads.Store, id, message string) error {
+	mgr := s.sessionManager(store)
+	info, err := mgr.Get(id)
+	if err != nil {
+		return err
+	}
+	resumeCommand, hints := s.buildSessionResume(info)
+	if err := mgr.SendImmediate(ctx, id, message, resumeCommand, hints); err != nil {
 		return err
 	}
 	return nil

@@ -249,7 +249,12 @@ func (m *Manager) ensureRunning(ctx context.Context, id string, b beads.Bead, se
 	// invalid (e.g., "No conversation found"). Clear the key and retry
 	// with a fresh start so the user isn't stuck with a dead pane.
 	if started && b.Metadata["session_key"] != "" {
-		time.Sleep(staleKeyDetectDelay)
+		if err := sleepWithContext(ctx, staleKeyDetectDelay); err != nil {
+			if unroute != nil {
+				unroute()
+			}
+			return err
+		}
 		if !m.sp.IsRunning(sessName) {
 			retried, err := m.retryFreshStartAfterStaleKey(ctx, id, &b, sessName, resumeCommand, cfg, unroute)
 			if err != nil {
@@ -270,9 +275,48 @@ func (m *Manager) ensureRunning(ctx context.Context, id string, b beads.Bead, se
 	return nil
 }
 
-// Send resumes a suspended session if needed, then nudges the runtime with a
-// new user message.
-func (m *Manager) Send(ctx context.Context, id, message, resumeCommand string, hints runtime.Config) error {
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	if ctx == nil {
+		time.Sleep(d)
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (m *Manager) nudgeSession(ctx context.Context, sessName, message string, immediate bool) error {
+	content := runtime.TextContent(message)
+	err := m.nudgeContent(sessName, content, immediate)
+	recordCtx := ctx
+	if recordCtx == nil || recordCtx.Err() != nil {
+		recordCtx = context.Background()
+	}
+	telemetry.RecordNudge(recordCtx, sessName, err)
+	if err != nil {
+		return fmt.Errorf("sending message to session: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) nudgeContent(sessName string, content []runtime.ContentBlock, immediate bool) error {
+	if immediate {
+		if np, ok := m.sp.(runtime.ImmediateNudgeProvider); ok {
+			return np.NudgeNow(sessName, content)
+		}
+	}
+	return m.sp.Nudge(sessName, content)
+}
+
+func (m *Manager) send(ctx context.Context, id, message, resumeCommand string, hints runtime.Config, immediate bool) error {
 	return withSessionMutationLock(id, func() error {
 		b, sessName, err := m.sessionBead(id)
 		if err != nil {
@@ -290,13 +334,22 @@ func (m *Manager) Send(ctx context.Context, id, message, resumeCommand string, h
 				return ErrPendingInteraction
 			}
 		}
-		if err := m.sp.Nudge(sessName, runtime.TextContent(message)); err != nil {
-			telemetry.RecordNudge(context.Background(), sessName, err)
-			return fmt.Errorf("sending message to session: %w", err)
-		}
-		telemetry.RecordNudge(context.Background(), sessName, nil)
-		return nil
+		return m.nudgeSession(ctx, sessName, message, immediate)
 	})
+}
+
+// Send resumes a suspended session if needed, then nudges the runtime with a
+// new user message.
+func (m *Manager) Send(ctx context.Context, id, message, resumeCommand string, hints runtime.Config) error {
+	return m.send(ctx, id, message, resumeCommand, hints, false)
+}
+
+// SendImmediate resumes a suspended session if needed, then injects the new
+// user message without waiting for an idle boundary when the runtime supports
+// immediate nudges. Falls back to Send semantics on runtimes without the
+// optional immediate nudge capability.
+func (m *Manager) SendImmediate(ctx context.Context, id, message, resumeCommand string, hints runtime.Config) error {
+	return m.send(ctx, id, message, resumeCommand, hints, true)
 }
 
 // StopTurn issues a soft interrupt for the currently running turn.

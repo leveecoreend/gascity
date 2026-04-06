@@ -3,6 +3,7 @@ package tmux
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -33,16 +34,28 @@ type fakeStartOps struct {
 	createErrs []error
 	createIdx  int
 
-	isSessionRunningResult  *bool
-	isRuntimeRunningResult  bool
-	killErr                 error
-	waitCommandErr          error
-	acceptStartupDialogsErr error
-	waitReadyErr            error
-	hasSessionResult        bool
-	hasSessionErr           error
-	setRemainOnExitErr      error
-	runSetupCommandErr      error
+	isSessionRunningResult   *bool
+	isRuntimeRunningResult   bool
+	killErr                  error
+	waitCommandErr           error
+	acceptStartupDialogsErr  error
+	waitReadyErr             error
+	waitCommandHook          func()
+	acceptStartupDialogsHook func()
+	waitReadyHook            func()
+	hasSessionHook           func()
+	sendKeysHook             func()
+	runSetupCommandHook      func(string)
+	hasSessionResult         bool
+	hasSessionErr            error
+	setRemainOnExitErr       error
+	runSetupCommandErr       error
+}
+
+type errReader struct{}
+
+func (errReader) Read(_ []byte) (int, error) {
+	return 0, io.ErrUnexpectedEOF
 }
 
 func (f *fakeStartOps) createSession(name, workDir, command string, env map[string]string) error {
@@ -92,11 +105,17 @@ func (f *fakeStartOps) waitForCommand(_ context.Context, name string, timeout ti
 		name:    name,
 		timeout: timeout,
 	})
+	if f.waitCommandHook != nil {
+		f.waitCommandHook()
+	}
 	return f.waitCommandErr
 }
 
 func (f *fakeStartOps) acceptStartupDialogs(_ context.Context, name string) error {
 	f.calls = append(f.calls, startCall{method: "acceptStartupDialogs", name: name})
+	if f.acceptStartupDialogsHook != nil {
+		f.acceptStartupDialogsHook()
+	}
 	return f.acceptStartupDialogsErr
 }
 
@@ -107,16 +126,25 @@ func (f *fakeStartOps) waitForReady(_ context.Context, name string, rc *RuntimeC
 		rc:      rc,
 		timeout: timeout,
 	})
+	if f.waitReadyHook != nil {
+		f.waitReadyHook()
+	}
 	return f.waitReadyErr
 }
 
 func (f *fakeStartOps) hasSession(name string) (bool, error) {
 	f.calls = append(f.calls, startCall{method: "hasSession", name: name})
+	if f.hasSessionHook != nil {
+		f.hasSessionHook()
+	}
 	return f.hasSessionResult, f.hasSessionErr
 }
 
 func (f *fakeStartOps) sendKeys(name, text string) error {
 	f.calls = append(f.calls, startCall{method: "sendKeys", name: name, command: text})
+	if f.sendKeysHook != nil {
+		f.sendKeysHook()
+	}
 	return nil
 }
 
@@ -132,6 +160,9 @@ func (f *fakeStartOps) runSetupCommand(_ context.Context, cmd string, env map[st
 		env:     env,
 		timeout: timeout,
 	})
+	if f.runSetupCommandHook != nil {
+		f.runSetupCommandHook(cmd)
+	}
 	if f.runSetupCommandErr != nil {
 		return f.runSetupCommandErr
 	}
@@ -189,6 +220,18 @@ func TestDoStartSession_FireAndForget(t *testing.T) {
 	}
 	if c.command != "sleep 300" {
 		t.Errorf("createSession command = %q, want %q", c.command, "sleep 300")
+	}
+}
+
+func TestEnsureInstanceTokenReturnsErrorWhenReaderFails(t *testing.T) {
+	oldReader := instanceTokenReader
+	instanceTokenReader = errReader{}
+	defer func() {
+		instanceTokenReader = oldReader
+	}()
+
+	if _, err := ensureInstanceToken(nil); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("ensureInstanceToken error = %v, want %v", err, io.ErrUnexpectedEOF)
 	}
 }
 
@@ -262,6 +305,124 @@ func TestDoStartSession_FullSequence(t *testing.T) {
 	}
 	if len(wfr.rc.Tmux.ProcessNames) != 2 || wfr.rc.Tmux.ProcessNames[0] != "claude" {
 		t.Errorf("rc.ProcessNames = %v, want [claude node]", wfr.rc.Tmux.ProcessNames)
+	}
+}
+
+func TestDoStartSession_ReturnsContextCanceledAfterBestEffortReadyWait(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ops := &fakeStartOps{
+		hasSessionResult: true,
+		waitReadyHook:    cancel,
+	}
+
+	cfg := runtime.Config{
+		WorkDir:                "/proj",
+		Command:                "claude",
+		ReadyPromptPrefix:      "> ",
+		ReadyDelayMs:           5000,
+		ProcessNames:           []string{"claude"},
+		EmitsPermissionWarning: true,
+	}
+
+	err := doStartSession(ctx, ops, "gc-city-mayor", cfg, DefaultConfig().SetupTimeout)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context canceled", err)
+	}
+
+	assertCallSequence(t, ops, []string{
+		"createSession",
+		"setRemainOnExit",
+		"waitForCommand",
+		"acceptStartupDialogs",
+		"waitForReady",
+	})
+}
+
+func TestDoStartSession_DoesNotRunSessionSetupAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ops := &fakeStartOps{
+		hasSessionResult: true,
+		hasSessionHook:   cancel,
+	}
+
+	cfg := runtime.Config{
+		Command:                "claude",
+		ProcessNames:           []string{"claude"},
+		ReadyPromptPrefix:      "> ",
+		ReadyDelayMs:           1,
+		EmitsPermissionWarning: true,
+		SessionSetup:           []string{"echo setup"},
+	}
+
+	err := doStartSession(ctx, ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context canceled", err)
+	}
+	for _, call := range ops.calls {
+		if call.method == "runSetupCommand" {
+			t.Fatalf("runSetupCommand should not execute after cancellation: %#v", ops.calls)
+		}
+	}
+}
+
+func TestDoStartSession_DoesNotNudgeAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ops := &fakeStartOps{
+		hasSessionResult:    true,
+		runSetupCommandHook: func(cmd string) { cancel() },
+	}
+
+	cfg := runtime.Config{
+		Command:                "claude",
+		ProcessNames:           []string{"claude"},
+		ReadyPromptPrefix:      "> ",
+		ReadyDelayMs:           1,
+		EmitsPermissionWarning: true,
+		SessionSetup:           []string{"echo setup"},
+		Nudge:                  "hello",
+	}
+
+	err := doStartSession(ctx, ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context canceled", err)
+	}
+	for _, call := range ops.calls {
+		if call.method == "sendKeys" {
+			t.Fatalf("sendKeys should not execute after cancellation: %#v", ops.calls)
+		}
+	}
+}
+
+func TestDoStartSession_DoesNotRunSessionLiveAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ops := &fakeStartOps{
+		hasSessionResult: true,
+		sendKeysHook:     cancel,
+	}
+
+	cfg := runtime.Config{
+		Command:                "claude",
+		ProcessNames:           []string{"claude"},
+		ReadyPromptPrefix:      "> ",
+		ReadyDelayMs:           1,
+		EmitsPermissionWarning: true,
+		SessionSetup:           []string{"echo setup"},
+		Nudge:                  "hello",
+		SessionLive:            []string{"echo live"},
+	}
+
+	err := doStartSession(ctx, ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context canceled", err)
+	}
+	liveCalls := 0
+	for _, call := range ops.calls {
+		if call.method == "runSetupCommand" && call.command == "echo live" {
+			liveCalls++
+		}
+	}
+	if liveCalls != 0 {
+		t.Fatalf("session_live should not execute after cancellation: %#v", ops.calls)
 	}
 }
 

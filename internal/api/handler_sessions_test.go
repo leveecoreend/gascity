@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,6 +35,26 @@ func createTestSession(t *testing.T, store beads.Store, sp *runtime.Fake, title 
 		t.Fatalf("create session: %v", err)
 	}
 	return info
+}
+
+type cancelStartProvider struct {
+	*runtime.Fake
+}
+
+func (p *cancelStartProvider) Start(ctx context.Context, name string, cfg runtime.Config) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return p.Fake.Start(ctx, name, cfg)
+}
+
+type stateWithSessionProvider struct {
+	*fakeState
+	provider runtime.Provider
+}
+
+func (s *stateWithSessionProvider) SessionProvider() runtime.Provider {
+	return s.provider
 }
 
 func seedQueuedWaitNudge(t *testing.T, fs *fakeState, wait beads.Bead, agentName string) string {
@@ -931,6 +952,44 @@ func TestHandleProviderSessionCreateRejectsAsync(t *testing.T) {
 	}
 }
 
+func TestHandleProviderSessionCreateWithMessageUsesImmediateNudge(t *testing.T) {
+	fs := newSessionFakeState(t)
+	srv := New(fs)
+
+	body := `{"kind":"provider","name":"test-agent","message":"hello"}`
+	req := newPostRequest("/v0/sessions", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("got status %d, want %d; body: %s", w.Code, http.StatusCreated, w.Body.String())
+	}
+
+	var resp sessionResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.ID == "" {
+		t.Fatal("response missing id")
+	}
+	if resp.SessionName == "" {
+		t.Fatal("response missing session_name")
+	}
+
+	nudgeCount := 0
+	for _, call := range fs.sp.Calls {
+		if call.Name != resp.SessionName || call.Message != "hello" {
+			continue
+		}
+		if call.Method == "NudgeNow" {
+			nudgeCount++
+		}
+	}
+	if nudgeCount != 1 {
+		t.Fatalf("NudgeNow count for %q = %d, want 1; calls=%#v", resp.SessionName, nudgeCount, fs.sp.Calls)
+	}
+}
+
 func TestHandleSessionCreatePersistsAlias(t *testing.T) {
 	fs := newSessionFakeState(t)
 	srv := New(fs)
@@ -1279,13 +1338,13 @@ func TestHandleSessionMessageResumesSuspendedSession(t *testing.T) {
 	}
 	found := false
 	for _, call := range fs.sp.Calls {
-		if call.Method == "Nudge" && call.Name == info.SessionName && call.Message == "hello" {
+		if call.Method == "NudgeNow" && call.Name == info.SessionName && call.Message == "hello" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("calls = %#v, want Nudge hello", fs.sp.Calls)
+		t.Fatalf("calls = %#v, want immediate nudge hello", fs.sp.Calls)
 	}
 }
 
@@ -1328,12 +1387,36 @@ func TestHandleSessionMessageMaterializesNamedSession(t *testing.T) {
 	}
 	nudgeCount := 0
 	for _, call := range fs.sp.Calls {
-		if call.Method == "Nudge" && call.Name == sessionName && call.Message == "hello" {
+		if call.Method == "NudgeNow" && call.Name == sessionName && call.Message == "hello" {
 			nudgeCount++
 		}
 	}
 	if nudgeCount != 1 {
-		t.Fatalf("Nudge count for %q = %d, want 1; calls=%#v", sessionName, nudgeCount, fs.sp.Calls)
+		t.Fatalf("NudgeNow count for %q = %d, want 1; calls=%#v", sessionName, nudgeCount, fs.sp.Calls)
+	}
+}
+
+func TestResolveSessionIDMaterializingNamedWithContext_RollsBackCanceledCreate(t *testing.T) {
+	fs := newSessionFakeState(t)
+	provider := &cancelStartProvider{Fake: runtime.NewFake()}
+	srv := New(&stateWithSessionProvider{fakeState: fs, provider: provider})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := srv.resolveSessionIDMaterializingNamedWithContext(ctx, fs.cityBeadStore, "worker")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("resolveSessionIDMaterializingNamedWithContext: %v, want context canceled", err)
+	}
+
+	all, err := fs.cityBeadStore.ListByLabel(session.LabelSession, 0)
+	if err != nil {
+		t.Fatalf("ListByLabel: %v", err)
+	}
+	for _, b := range all {
+		if b.Status != "closed" {
+			t.Fatalf("session bead %s status = %q, want closed after canceled create rollback", b.ID, b.Status)
+		}
 	}
 }
 
@@ -1666,6 +1749,33 @@ func TestHandleSessionWakeMaterializesNamedSessionAndStartsRuntime(t *testing.T)
 	}
 }
 
+func TestHandleSessionWakeCanceledNamedCreateRollsBack(t *testing.T) {
+	fs := newSessionFakeState(t)
+	provider := &cancelStartProvider{Fake: runtime.NewFake()}
+	srv := New(&stateWithSessionProvider{fakeState: fs, provider: provider})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rec := httptest.NewRecorder()
+	req := newPostRequest("/v0/session/worker/wake", nil).WithContext(ctx)
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("wake status = %d, want %d; body: %s", rec.Code, http.StatusInternalServerError, rec.Body.String())
+	}
+
+	all, err := fs.cityBeadStore.ListByLabel(session.LabelSession, 0)
+	if err != nil {
+		t.Fatalf("ListByLabel: %v", err)
+	}
+	for _, b := range all {
+		if b.Status != "closed" {
+			t.Fatalf("session bead %s status = %q, want closed after canceled wake rollback", b.ID, b.Status)
+		}
+	}
+}
+
 func TestHandleSessionTranscriptUsesSessionKey(t *testing.T) {
 	fs := newSessionFakeState(t)
 	searchBase := t.TempDir()
@@ -1816,8 +1926,8 @@ func TestHandleSessionMessageRejectsPendingInteraction(t *testing.T) {
 		t.Fatalf("message body = %s, want pending_interaction error", rec.Body.String())
 	}
 	for _, call := range fs.sp.Calls {
-		if call.Method == "Nudge" && call.Name == info.SessionName {
-			t.Fatalf("unexpected Nudge while pending interaction is active: %#v", fs.sp.Calls)
+		if (call.Method == "Nudge" || call.Method == "NudgeNow") && call.Name == info.SessionName {
+			t.Fatalf("unexpected nudge while pending interaction is active: %#v", fs.sp.Calls)
 		}
 	}
 }

@@ -2,6 +2,8 @@ package tmux
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -25,8 +27,13 @@ type Provider struct {
 	workDirs map[string]string // session name → workDir (for CopyTo)
 }
 
+var instanceTokenReader io.Reader = rand.Reader
+
 // Compile-time check.
-var _ runtime.Provider = (*Provider)(nil)
+var (
+	_ runtime.Provider               = (*Provider)(nil)
+	_ runtime.ImmediateNudgeProvider = (*Provider)(nil)
+)
 
 // NewProvider returns a [Provider] backed by a real tmux installation
 // with default configuration.
@@ -52,6 +59,12 @@ func NewProviderWithConfig(cfg Config) *Provider {
 // and runtime readiness polling. Steps are conditional on Config fields
 // being set; an agent with no startup hints gets fire-and-forget.
 func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) error {
+	var err error
+	cfg.Env, err = ensureInstanceToken(cfg.Env)
+	if err != nil {
+		return fmt.Errorf("ensuring instance token: %w", err)
+	}
+
 	// Store workDir for CopyTo.
 	if cfg.WorkDir != "" {
 		p.mu.Lock()
@@ -89,11 +102,55 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 		_ = overlay.CopyFileOrDir(cf.Src, dst, io.Discard)
 	}
 
-	err := doStartSession(ctx, &tmuxStartOps{tm: p.tm}, name, cfg, p.cfg.SetupTimeout)
+	err = doStartSession(ctx, &tmuxStartOps{tm: p.tm}, name, cfg, p.cfg.SetupTimeout)
 	if err == nil {
 		p.cache.Invalidate()
+		return nil
 	}
+	p.cleanupFailedStart(name, cfg)
 	return err
+}
+
+func ensureInstanceToken(env map[string]string) (map[string]string, error) {
+	cloned := make(map[string]string, len(env)+1)
+	for k, v := range env {
+		cloned[k] = v
+	}
+	if strings.TrimSpace(cloned["GC_INSTANCE_TOKEN"]) == "" {
+		token, err := newInstanceToken()
+		if err != nil {
+			return nil, err
+		}
+		cloned["GC_INSTANCE_TOKEN"] = token
+	}
+	return cloned, nil
+}
+
+func newInstanceToken() (string, error) {
+	b := make([]byte, 16)
+	if _, err := io.ReadFull(instanceTokenReader, b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func (p *Provider) cleanupFailedStart(name string, cfg runtime.Config) {
+	instanceToken := strings.TrimSpace(cfg.Env["GC_INSTANCE_TOKEN"])
+	if instanceToken == "" {
+		// Best-effort safety guard: only managed session starts carry the
+		// instance token we can use to prove ownership before killing by name.
+		return
+	}
+	liveToken, err := p.tm.GetEnvironment(name, "GC_INSTANCE_TOKEN")
+	if err != nil {
+		return
+	}
+	if strings.TrimSpace(liveToken) != instanceToken {
+		return
+	}
+	if err := p.tm.KillSessionWithProcesses(name); err == nil {
+		p.cache.Invalidate()
+	}
 }
 
 // RunLive re-applies session_live commands to a running session.
@@ -432,9 +489,16 @@ func (o *tmuxStartOps) runSetupCommand(ctx context.Context, cmd string, env map[
 // The setupTimeout parameter controls the per-command timeout for
 // session_setup, session_setup_script, and pre_start commands.
 func doStartSession(ctx context.Context, ops startOps, name string, cfg runtime.Config, setupTimeout time.Duration) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	// Step 0: Run pre-start commands (directory/worktree preparation).
 	if err := runPreStart(ctx, ops, name, cfg, setupTimeout); err != nil {
 		return fmt.Errorf("running pre_start: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	// Step 1: Ensure fresh session (zombie detection).
@@ -444,6 +508,9 @@ func doStartSession(ctx context.Context, ops startOps, name string, cfg runtime.
 
 	// Enable remain-on-exit for crash forensics. Best-effort.
 	_ = ops.setRemainOnExit(name)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	hasHints := cfg.ReadyPromptPrefix != "" || cfg.ReadyDelayMs > 0 ||
 		len(cfg.ProcessNames) > 0 || cfg.EmitsPermissionWarning ||
@@ -457,6 +524,9 @@ func doStartSession(ctx context.Context, ops startOps, name string, cfg runtime.
 	// Step 2: Wait for agent command to appear (not still in shell).
 	if len(cfg.ProcessNames) > 0 {
 		_ = ops.waitForCommand(ctx, name, 30*time.Second) // best-effort, non-fatal
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 
 	// Step 3: Accept startup dialogs (workspace trust + bypass permissions).
@@ -464,6 +534,9 @@ func doStartSession(ctx context.Context, ops startOps, name string, cfg runtime.
 	// agent may show a trust dialog regardless of EmitsPermissionWarning.
 	if len(cfg.ProcessNames) > 0 || cfg.EmitsPermissionWarning {
 		_ = ops.acceptStartupDialogs(ctx, name) // best-effort
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 
 	// Step 4: Wait for runtime readiness.
@@ -474,6 +547,9 @@ func doStartSession(ctx context.Context, ops startOps, name string, cfg runtime.
 			ProcessNames:      cfg.ProcessNames,
 		}}
 		_ = ops.waitForReady(ctx, name, rc, 60*time.Second) // best-effort
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
 
 	// Step 5: Verify session survived startup.
@@ -486,15 +562,33 @@ func doStartSession(ctx context.Context, ops startOps, name string, cfg runtime.
 	}
 
 	// Step 5.5: Run session setup commands and script.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	runSessionSetup(ctx, ops, name, cfg, os.Stderr, setupTimeout)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Step 6: Send nudge text if configured.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if cfg.Nudge != "" {
 		_ = ops.sendKeys(name, cfg.Nudge) // best-effort
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Step 6.5: Run session_live commands (idempotent, re-applicable).
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	runSessionLive(ctx, ops, name, cfg, os.Stderr, setupTimeout)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	return nil
 }

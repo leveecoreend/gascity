@@ -209,6 +209,22 @@ func (f *Fake) Nudge(name string, content []ContentBlock) error {
 	return nil
 }
 
+// NudgeNow records the call and returns nil (or an error if broken).
+func (f *Fake) NudgeNow(name string, content []ContentBlock) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.Calls = append(f.Calls, Call{
+		Method:  "NudgeNow",
+		Name:    name,
+		Message: FlattenText(content),
+		Content: content,
+	})
+	if f.broken {
+		return fmt.Errorf("session unavailable")
+	}
+	return nil
+}
+
 // SetPendingInteraction configures a structured pending interaction for the
 // named session. A nil value clears any pending interaction.
 func (f *Fake) SetPendingInteraction(name string, pending *PendingInteraction) {

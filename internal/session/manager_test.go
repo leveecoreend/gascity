@@ -21,6 +21,10 @@ type startOverrideProvider struct {
 	startErr error
 }
 
+type noImmediateProvider struct {
+	runtime.Provider
+}
+
 func (p *startOverrideProvider) Start(ctx context.Context, name string, cfg runtime.Config) error {
 	if p.startErr != nil {
 		return p.startErr
@@ -1667,6 +1671,66 @@ func TestSendResumesSuspendedSession(t *testing.T) {
 	}
 }
 
+func TestSendImmediateUsesImmediateNudge(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManager(store, sp)
+
+	info, err := mgr.Create(context.Background(), "helper", "", "claude", "/tmp", "claude", nil, ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := mgr.Suspend(info.ID); err != nil {
+		t.Fatalf("Suspend: %v", err)
+	}
+
+	if err := mgr.SendImmediate(context.Background(), info.ID, "hello", "claude --resume "+info.SessionKey, runtime.Config{WorkDir: "/tmp"}); err != nil {
+		t.Fatalf("SendImmediate: %v", err)
+	}
+
+	found := false
+	for _, call := range sp.Calls {
+		if call.Method == "NudgeNow" && call.Name == info.SessionName && call.Message == "hello" {
+			found = true
+			break
+		}
+		if call.Method == "Nudge" && call.Name == info.SessionName {
+			t.Fatalf("calls = %#v, want immediate nudge without fallback", sp.Calls)
+		}
+	}
+	if !found {
+		t.Fatalf("calls = %#v, want NudgeNow hello", sp.Calls)
+	}
+}
+
+func TestSendImmediateFallsBackToDefaultNudge(t *testing.T) {
+	store := beads.NewMemStore()
+	fake := runtime.NewFake()
+	mgr := NewManager(store, &noImmediateProvider{Provider: fake})
+
+	info, err := mgr.Create(context.Background(), "helper", "", "claude", "/tmp", "claude", nil, ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if err := mgr.SendImmediate(context.Background(), info.ID, "hello", "", runtime.Config{}); err != nil {
+		t.Fatalf("SendImmediate: %v", err)
+	}
+
+	found := false
+	for _, call := range fake.Calls {
+		if call.Method == "Nudge" && call.Name == info.SessionName && call.Message == "hello" {
+			found = true
+		}
+		if call.Method == "NudgeNow" && call.Name == info.SessionName {
+			t.Fatalf("calls = %#v, want fallback Nudge only", fake.Calls)
+		}
+	}
+	if !found {
+		t.Fatalf("calls = %#v, want fallback Nudge hello", fake.Calls)
+	}
+}
+
 func TestSendResumesSuspendedSession_SyncsGCDirFromBeadWorkDir(t *testing.T) {
 	store := beads.NewMemStore()
 	sp := runtime.NewFake()
@@ -2155,6 +2219,33 @@ func TestSendRejectsPendingInteraction(t *testing.T) {
 	for _, call := range sp.Calls {
 		if call.Method == "Nudge" && call.Name == info.SessionName {
 			t.Fatalf("unexpected Nudge while pending interaction is active: %#v", sp.Calls)
+		}
+	}
+}
+
+func TestSendImmediateRejectsPendingInteraction(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManager(store, sp)
+
+	info, err := mgr.Create(context.Background(), "helper", "", "claude", "/tmp", "claude", nil, ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	sp.SetPendingInteraction(info.SessionName, &runtime.PendingInteraction{
+		RequestID: "req-1",
+		Kind:      "approval",
+		Prompt:    "approve?",
+	})
+
+	err = mgr.SendImmediate(context.Background(), info.ID, "hello", "", runtime.Config{})
+	if !errors.Is(err, ErrPendingInteraction) {
+		t.Fatalf("SendImmediate error = %v, want %v", err, ErrPendingInteraction)
+	}
+	for _, call := range sp.Calls {
+		if (call.Method == "Nudge" || call.Method == "NudgeNow") && call.Name == info.SessionName {
+			t.Fatalf("unexpected nudge while pending interaction is active: %#v", sp.Calls)
 		}
 	}
 }
