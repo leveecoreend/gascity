@@ -73,12 +73,16 @@ func startBeadsLifecycle(cityPath, _ string, cfg *config.City, stderr io.Writer)
 	// passthroughEnv() includes it for all agent sessions.
 	readDoltPort(cityPath)
 	beadsPrefix := config.EffectiveHQPrefix(cfg)
-	if err := initAndHookDir(cityPath, cityPath, beadsPrefix); err != nil {
+	// Leave doltDatabase empty unless the caller knows a canonical server DB
+	// identity that differs from the bead prefix. New managed bd stores still
+	// default to prefix-named databases, but older/imported metadata may carry
+	// a different dolt_database that gc-beads-bd should preserve.
+	if err := initAndHookDir(cityPath, cityPath, beadsPrefix, ""); err != nil {
 		return fmt.Errorf("init city beads: %w", err)
 	}
 	for i := range cfg.Rigs {
 		prefix := cfg.Rigs[i].EffectivePrefix()
-		if err := initAndHookDir(cityPath, cfg.Rigs[i].Path, prefix); err != nil {
+		if err := initAndHookDir(cityPath, cfg.Rigs[i].Path, prefix, ""); err != nil {
 			return fmt.Errorf("init rig %q beads: %w", cfg.Rigs[i].Name, err)
 		}
 	}
@@ -114,13 +118,15 @@ func startBeadsLifecycle(cityPath, _ string, cfg *config.City, stderr io.Writer)
 func initDirIfReady(cityPath, dir, prefix string) (deferred bool, err error) {
 	if rawBeadsProvider(cityPath) == "bd" {
 		if os.Getenv("GC_DOLT") == "skip" {
-			seedDeferredManagedBeads(dir, prefix)
+			// Defer to controller/startup without forcing a new dolt_database:
+			// preserve existing metadata identity when present.
+			seedDeferredManagedBeads(dir, prefix, "")
 			return true, nil
 		}
 		if err := ensureBeadsProvider(cityPath); err != nil {
 			return false, fmt.Errorf("bead store: %w", err)
 		}
-		if err := initAndHookDir(cityPath, dir, prefix); err != nil {
+		if err := initAndHookDir(cityPath, dir, prefix, ""); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -128,7 +134,7 @@ func initDirIfReady(cityPath, dir, prefix string) (deferred bool, err error) {
 
 	provider := beadsProvider(cityPath)
 	if provider == "" {
-		seedDeferredManagedBeads(dir, prefix)
+		seedDeferredManagedBeads(dir, prefix, "")
 		return true, nil
 	}
 	// For exec: providers, probe to check if the backing service is available.
@@ -137,7 +143,7 @@ func initDirIfReady(cityPath, dir, prefix string) (deferred bool, err error) {
 		script := strings.TrimPrefix(provider, "exec:")
 		if !runProviderProbe(script, cityPath) {
 			if rawBeadsProvider(cityPath) == "bd" {
-				seedDeferredManagedBeads(dir, prefix)
+				seedDeferredManagedBeads(dir, prefix, "")
 			}
 			return true, nil // Not running — defer to gc start.
 		}
@@ -145,13 +151,13 @@ func initDirIfReady(cityPath, dir, prefix string) (deferred bool, err error) {
 	if err := ensureBeadsProvider(cityPath); err != nil {
 		return false, fmt.Errorf("bead store: %w", err)
 	}
-	if err := initAndHookDir(cityPath, dir, prefix); err != nil {
+	if err := initAndHookDir(cityPath, dir, prefix, ""); err != nil {
 		return false, err
 	}
 	return false, nil
 }
 
-func seedDeferredManagedBeads(dir, prefix string) {
+func seedDeferredManagedBeads(dir, prefix, doltDatabase string) {
 	if strings.TrimSpace(dir) == "" || strings.TrimSpace(prefix) == "" {
 		return
 	}
@@ -159,8 +165,30 @@ func seedDeferredManagedBeads(dir, prefix string) {
 	if err := os.MkdirAll(beadsDir, 0o755); err != nil {
 		return
 	}
+	if strings.TrimSpace(doltDatabase) == "" {
+		// When the caller does not know the canonical DB name yet, preserve an
+		// existing metadata-backed identity and fall back to the bead prefix for
+		// first-time initialization.
+		doltDatabase = readDeferredManagedDoltDatabase(filepath.Join(beadsDir, "metadata.json"), prefix)
+	}
 	ensureDeferredManagedConfig(filepath.Join(beadsDir, "config.yaml"), prefix)
-	ensureDeferredManagedMetadata(filepath.Join(beadsDir, "metadata.json"), prefix)
+	ensureDeferredManagedMetadata(filepath.Join(beadsDir, "metadata.json"), doltDatabase)
+}
+
+func readDeferredManagedDoltDatabase(path, fallback string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fallback
+	}
+
+	var meta map[string]any
+	if json.Unmarshal(data, &meta) != nil {
+		return fallback
+	}
+	if db := strings.TrimSpace(fmt.Sprint(meta["dolt_database"])); db != "" && db != "<nil>" {
+		return db
+	}
+	return fallback
 }
 
 func ensureDeferredManagedConfig(path, prefix string) {
@@ -233,11 +261,11 @@ func ensureDeferredManagedConfig(path, prefix string) {
 	_ = os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644)
 }
 
-func ensureDeferredManagedMetadata(path, prefix string) {
+func ensureDeferredManagedMetadata(path, doltDatabase string) {
 	defaults := map[string]any{
 		"backend":       "dolt",
 		"database":      "dolt",
-		"dolt_database": prefix,
+		"dolt_database": doltDatabase,
 		"dolt_mode":     "server",
 	}
 
@@ -256,7 +284,7 @@ func ensureDeferredManagedMetadata(path, prefix string) {
 
 	changed := false
 	for key, value := range defaults {
-		if existing, ok := meta[key]; !ok || strings.TrimSpace(fmt.Sprint(existing)) == "" {
+		if existing := strings.TrimSpace(fmt.Sprint(meta[key])); existing != strings.TrimSpace(fmt.Sprint(value)) {
 			meta[key] = value
 			changed = true
 		}
@@ -276,8 +304,8 @@ func ensureDeferredManagedMetadata(path, prefix string) {
 // initAndHookDir is the atomic unit of bead store initialization:
 // init the directory, then install event hooks. The ordering matters
 // because init (bd init) may recreate .beads/ and wipe existing hooks.
-func initAndHookDir(cityPath, dir, prefix string) error {
-	if err := initBeadsForDir(cityPath, dir, prefix); err != nil {
+func initAndHookDir(cityPath, dir, prefix, doltDatabase string) error {
+	if err := initBeadsForDir(cityPath, dir, prefix, doltDatabase); err != nil {
 		return err
 	}
 	// Non-fatal: hooks are convenience (event forwarding), not critical.
@@ -330,10 +358,14 @@ func shutdownBeadsProvider(cityPath string) error {
 // initBeadsForDir initializes bead store infrastructure in a directory.
 // Idempotent — skips if already initialized. Callers should use
 // initAndHookDir instead to ensure hooks are installed afterward.
-func initBeadsForDir(cityPath, dir, prefix string) error {
+func initBeadsForDir(cityPath, dir, prefix, doltDatabase string) error {
 	provider := beadsProvider(cityPath)
 	if strings.HasPrefix(provider, "exec:") {
-		return runProviderOp(strings.TrimPrefix(provider, "exec:"), cityPath, "init", dir, prefix)
+		args := []string{"init", dir, prefix}
+		if strings.TrimSpace(doltDatabase) != "" {
+			args = append(args, doltDatabase)
+		}
+		return runProviderOp(strings.TrimPrefix(provider, "exec:"), cityPath, args...)
 	}
 	return nil
 }
