@@ -222,6 +222,9 @@ func (m *Manager) ensureRunning(ctx context.Context, id string, b beads.Bead, se
 		continuationEpoch,
 		instanceToken,
 	))
+	if provider := strings.TrimSpace(b.Metadata["provider"]); provider != "" {
+		cfg.Env = mergeEnv(cfg.Env, map[string]string{"GC_PROVIDER": provider})
+	}
 	cfg = runtime.SyncWorkDirEnv(cfg)
 	started := false
 	if err := m.sp.Start(ctx, sessName, cfg); err != nil {
@@ -321,25 +324,36 @@ func (m *Manager) nudgeContent(sessName string, content []runtime.ContentBlock, 
 	return m.sp.Nudge(sessName, content)
 }
 
+func (m *Manager) pendingInteractionLocked(sessName string) error {
+	if ip, ok := m.sp.(runtime.InteractionProvider); ok {
+		pending, err := ip.Pending(sessName)
+		if err != nil && !errors.Is(err, runtime.ErrInteractionUnsupported) {
+			return fmt.Errorf("getting pending interaction: %w", err)
+		}
+		if pending != nil {
+			return ErrPendingInteraction
+		}
+	}
+	return nil
+}
+
+func (m *Manager) sendLocked(ctx context.Context, id string, b beads.Bead, sessName, message, resumeCommand string, hints runtime.Config, immediate bool) error {
+	if err := m.ensureRunning(ctx, id, b, sessName, resumeCommand, hints); err != nil {
+		return err
+	}
+	if err := m.pendingInteractionLocked(sessName); err != nil {
+		return err
+	}
+	return m.nudgeSession(ctx, sessName, message, immediate)
+}
+
 func (m *Manager) send(ctx context.Context, id, message, resumeCommand string, hints runtime.Config, immediate bool) error {
 	return withSessionMutationLock(id, func() error {
 		b, sessName, err := m.sessionBead(id)
 		if err != nil {
 			return err
 		}
-		if err := m.ensureRunning(ctx, id, b, sessName, resumeCommand, hints); err != nil {
-			return err
-		}
-		if ip, ok := m.sp.(runtime.InteractionProvider); ok {
-			pending, err := ip.Pending(sessName)
-			if err != nil && !errors.Is(err, runtime.ErrInteractionUnsupported) {
-				return fmt.Errorf("getting pending interaction: %w", err)
-			}
-			if pending != nil {
-				return ErrPendingInteraction
-			}
-		}
-		return m.nudgeSession(ctx, sessName, message, immediate)
+		return m.sendLocked(ctx, id, b, sessName, message, resumeCommand, hints, immediate)
 	})
 }
 
@@ -367,16 +381,7 @@ func (m *Manager) StopTurn(id string) error {
 		if err != nil {
 			return err
 		}
-		if State(b.Metadata["state"]) == StateSuspended || !m.sp.IsRunning(sessName) {
-			return nil
-		}
-		if b.Metadata["pool_managed"] == "true" || strings.TrimSpace(b.Metadata["pool_slot"]) != "" {
-			return fmt.Errorf("%w: %s", ErrPoolManaged, sessName)
-		}
-		if err := m.sp.Interrupt(sessName); err != nil {
-			return fmt.Errorf("interrupting session: %w", err)
-		}
-		return nil
+		return m.stopTurnLocked(b, sessName)
 	})
 }
 
