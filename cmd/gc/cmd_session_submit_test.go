@@ -27,7 +27,6 @@ func TestEmitSessionSubmitResultFollowUpImmediate(t *testing.T) {
 		t.Fatalf("stdout = %q, want submitted follow-up confirmation", got)
 	}
 }
-
 func TestParseSessionSubmitIntentAcceptsLegacySpellings(t *testing.T) {
 	cases := []struct {
 		raw  string
