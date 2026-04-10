@@ -166,7 +166,15 @@ func TestWorkerInferenceSmoke(t *testing.T) {
 	reporter.Record(workertest.Pass(profileID, workertest.RequirementInferenceFreshTask, "live worker completed a machine-checkable file-writing task").WithEvidence(taskEvidence))
 
 	adapter := workerpkg.SessionLogAdapter{SearchPaths: liveSetup.SearchPaths}
-	transcriptPath, snapshot, transcriptEvidence, err := waitForTranscript(adapter, liveSetup.Profile, run.CityDir, run.SpawnedSession.SessionName, "", prompt, outputText)
+	transcriptPath, snapshot, transcriptEvidence, err := waitForTranscript(
+		adapter,
+		liveSetup.Profile,
+		run.CityDir,
+		run.SpawnedSession.SessionName,
+		run.SpawnedSession.SessionKey,
+		"",
+		"",
+	)
 	if err != nil {
 		reporter.Record(liveFailureResult(profileID, workertest.RequirementInferenceTranscript, err.Error(), transcriptEvidence))
 		t.FailNow()
@@ -3114,6 +3122,18 @@ func detectLiveBlockedInteraction(cityDir, sessionName string) (*liveBlockedInte
 	return detectLiveBlockedInteractionForSessions(cityDir, sessionNames)
 }
 
+func isIgnorableTmuxProbeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "no server") ||
+		strings.Contains(text, "failed to connect") ||
+		strings.Contains(text, "error connecting") ||
+		strings.Contains(text, "can't find pane") ||
+		strings.Contains(text, "can't find session")
+}
+
 func detectLiveBlockedInteractionForSessions(cityDir string, candidates []string) (*liveBlockedInteraction, error) {
 	seen := make(map[string]struct{}, len(candidates))
 	for _, name := range candidates {
@@ -3127,6 +3147,9 @@ func detectLiveBlockedInteractionForSessions(cityDir string, candidates []string
 		seen[trimmed] = struct{}{}
 		paneTail, err := captureTmuxPane(cityDir, trimmed, 60)
 		if err != nil {
+			if isIgnorableTmuxProbeError(err) {
+				continue
+			}
 			return nil, err
 		}
 		if strings.TrimSpace(paneTail) == "" {

@@ -405,6 +405,28 @@ func TestWaitForTmuxSessionStoppedFailsWhenSessionStaysLive(t *testing.T) {
 	require.ErrorContains(t, err, `tmux session "probe" still running after gc stop`)
 }
 
+func TestWaitForTranscriptSucceedsWithoutExpectedNeedles(t *testing.T) {
+	workDir := filepath.Join(t.TempDir(), "city")
+	searchBase := t.TempDir()
+	slug := strings.NewReplacer("/", "-", ".", "-").Replace(workDir)
+	transcriptDir := filepath.Join(searchBase, slug)
+	require.NoError(t, os.MkdirAll(transcriptDir, 0o755))
+
+	transcriptPath := filepath.Join(transcriptDir, "probe-session.jsonl")
+	writeLines(t, transcriptPath,
+		`{"uuid":"u1","type":"user","message":{"role":"user","content":"bootstrap prompt"},"timestamp":"2025-01-01T00:00:00Z","sessionId":"provider-probe"}`,
+		`{"uuid":"a1","parentUuid":"u1","type":"assistant","message":{"role":"assistant","content":"bootstrap reply"},"timestamp":"2025-01-01T00:00:01Z","sessionId":"provider-probe"}`,
+	)
+
+	adapter := workerpkg.SessionLogAdapter{SearchPaths: []string{searchBase}}
+	path, snapshot, evidence, err := waitForTranscript(adapter, workerpkg.ProfileClaudeTmuxCLI, workDir, "", "probe-session", "", "")
+	require.NoError(t, err)
+	require.Equal(t, transcriptPath, path)
+	require.Equal(t, "probe-session", evidence["gc_session_id"])
+	require.NotNil(t, snapshot)
+	require.NotEmpty(t, snapshot.Entries)
+}
+
 func TestBeadStoreNotReadyDetailIncludesInitialStartError(t *testing.T) {
 	detail := beadStoreNotReadyDetail("bead store did not become ready after restart", fmt.Errorf("exit status 1"))
 
@@ -791,6 +813,42 @@ func TestCaptureTmuxPaneReturnsErrorWhenSocketServerMissing(t *testing.T) {
 	require.Contains(t, err.Error(), "capture-pane")
 	require.Contains(t, strings.ToLower(err.Error()), "no server")
 	_ = tmuxPath
+}
+
+func TestDetectLiveBlockedInteractionIgnoresMissingSocketServer(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not found")
+	}
+
+	cityDir := filepath.Join(t.TempDir(), "at-test-socket")
+	require.NoError(t, os.MkdirAll(cityDir, 0o755))
+
+	blocked, err := detectLiveBlockedInteraction(cityDir, "worker-live")
+	require.NoError(t, err)
+	require.Nil(t, blocked)
+	_ = tmuxPath
+}
+
+func TestDetectLiveBlockedInteractionIgnoresMissingSessionOnLiveSocket(t *testing.T) {
+	tmuxPath, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux not found")
+	}
+
+	cityDir := filepath.Join(t.TempDir(), "at-test-socket")
+	require.NoError(t, os.MkdirAll(cityDir, 0o755))
+
+	cmd := exec.Command(tmuxPath, "-L", filepath.Base(cityDir), "new-session", "-d", "-s", "worker-live", "sleep", "30")
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(out))
+	t.Cleanup(func() {
+		exec.Command(tmuxPath, "-L", filepath.Base(cityDir), "kill-server").Run() //nolint:errcheck
+	})
+
+	blocked, err := detectLiveBlockedInteraction(cityDir, "missing-session")
+	require.NoError(t, err)
+	require.Nil(t, blocked)
 }
 
 func TestInstallInferenceProbeAgentDisablesBackgroundOrders(t *testing.T) {
