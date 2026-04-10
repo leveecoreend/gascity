@@ -953,23 +953,16 @@ func runFreshInitSlingWorkWithSetup(t *testing.T, provider, prompt, outputRel st
 			return false
 		}
 
-		spawnedSession = sessionJSON{}
-		for _, session := range sessions {
-			if session.Template != inferenceSlingTarget {
-				continue
-			}
-			if strings.TrimSpace(session.SessionName) == "" {
-				continue
-			}
-			running, runErr := tmuxSessionExists(session.SessionName)
-			if runErr != nil {
-				lastSessionJSON = strings.TrimSpace(lastSessionJSON + "\nTMUX_ERR: " + runErr.Error())
-				return false
-			}
-			if running || session.State == "active" || session.State == "awake" {
-				spawnedSession = session
-				return true
-			}
+		detected, ok, detectErr := selectInferenceSpawnedSession(sessions, inferenceSlingTarget, func(name string) (bool, error) {
+			return tmuxSessionLive(c.Dir, name)
+		})
+		if detectErr != nil {
+			lastSessionJSON = strings.TrimSpace(lastSessionJSON + "\nTMUX_ERR: " + detectErr.Error())
+			return false
+		}
+		if ok {
+			spawnedSession = detected
+			return true
 		}
 		return false
 	})
@@ -1819,19 +1812,15 @@ func restartLiveCity(cityDir, expectedSessionName string) (string, string, error
 	if supervisorStopErr != nil {
 		return stopOut, "", fmt.Errorf("gc supervisor stop failed before restart: %w", supervisorStopErr)
 	}
-	if expectedSessionName != "" {
-		running, err := tmuxSessionExistsOnCitySocket(cityDir, expectedSessionName)
-		if err != nil {
-			return stopOut, "", err
-		}
-		if running {
-			return stopOut, "", fmt.Errorf("tmux session %q still running after gc stop", expectedSessionName)
-		}
-	}
 	stopBarrierOut, stopBarrierErr := waitForManagedDoltStopped(cityDir, liveStopBarrierTimeout)
 	stopOut = strings.TrimSpace(strings.TrimSpace(stopOut) + "\n" + strings.TrimSpace(stopBarrierOut))
 	if stopBarrierErr != nil {
 		return stopOut, "", stopBarrierErr
+	}
+	if err := waitForTmuxSessionStopped(expectedSessionName, liveStopBarrierTimeout, 2*time.Second, func(name string) (bool, error) {
+		return tmuxSessionLive(cityDir, name)
+	}); err != nil {
+		return stopOut, "", err
 	}
 
 	startOut, err := runGCWithTimeout(liveBootstrapTimeout, liveEnv, cityDir, "start", cityDir)
@@ -2144,6 +2133,78 @@ func sessionStateCountsAsRunning(state string) bool {
 	default:
 		return false
 	}
+}
+
+func selectInferenceSpawnedSession(sessions []sessionJSON, fallbackSessionName string, isSessionLive func(string) (bool, error)) (sessionJSON, bool, error) {
+	for _, session := range sessions {
+		if session.Template != inferenceSlingTarget {
+			continue
+		}
+		if strings.TrimSpace(session.SessionName) == "" {
+			continue
+		}
+		live, err := isSessionLive(session.SessionName)
+		if err != nil {
+			return sessionJSON{}, false, err
+		}
+		if live || sessionStateCountsAsRunning(session.State) {
+			if live && !sessionStateCountsAsRunning(session.State) {
+				session.State = "active"
+			}
+			return session, true, nil
+		}
+	}
+	fallbackSessionName = strings.TrimSpace(fallbackSessionName)
+	if fallbackSessionName == "" {
+		return sessionJSON{}, false, nil
+	}
+	live, err := isSessionLive(fallbackSessionName)
+	if err != nil {
+		return sessionJSON{}, false, err
+	}
+	if !live {
+		return sessionJSON{}, false, nil
+	}
+	return sessionJSON{
+		Template:    inferenceSlingTarget,
+		Alias:       fallbackSessionName,
+		State:       "active",
+		SessionName: fallbackSessionName,
+	}, true, nil
+}
+
+func waitForTmuxSessionStopped(sessionName string, timeout, interval time.Duration, isSessionLive func(string) (bool, error)) error {
+	sessionName = strings.TrimSpace(sessionName)
+	if sessionName == "" {
+		return nil
+	}
+	if interval <= 0 {
+		interval = time.Second
+	}
+	var (
+		lastErr  error
+		lastLive bool
+	)
+	stopped := pollForCondition(timeout, interval, func() bool {
+		live, err := isSessionLive(sessionName)
+		if err != nil {
+			lastErr = err
+			return false
+		}
+		lastErr = nil
+		lastLive = live
+		return !live
+	})
+	if stopped {
+		return nil
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	if lastLive {
+		return fmt.Errorf("tmux session %q still running after gc stop", sessionName)
+	}
+	return nil
 }
 
 func waitForTranscript(adapter workerpkg.SessionLogAdapter, profile workerpkg.Profile, workDir, sessionName, gcSessionID, prompt, outputText string) (string, *workerpkg.HistorySnapshot, map[string]string, error) {
