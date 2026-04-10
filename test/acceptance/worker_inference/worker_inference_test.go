@@ -1226,6 +1226,23 @@ func runFreshManualSessionTurn(t *testing.T, provider, templateName, alias, prom
 			"output_rel":  outputRel,
 		}, nil, "spawn", fmt.Errorf("creating city API client: %w", err)
 	}
+	sessionInfo, statusOut, err = waitForSessionRunning(c.Dir, sessionID, sessionInfo.SessionName)
+	if err != nil {
+		return inferenceSessionRun{}, map[string]string{
+			"city_dir":       c.Dir,
+			"provider":       provider,
+			"template":       templateName,
+			"alias":          alias,
+			"session_id":     sessionID,
+			"session_name":   sessionInfo.SessionName,
+			"session_key":    sessionInfo.SessionKey,
+			"session_out":    strings.TrimSpace(newOut),
+			"start_out":      strings.TrimSpace(startOut),
+			"status":         strings.TrimSpace(statusOut),
+			"api_city_scope": cityScope,
+			"output_rel":     outputRel,
+		}, nil, "spawn", fmt.Errorf("manual session did not reach running state before first message: %w", err)
+	}
 	outputPath := filepath.Join(c.Dir, outputRel)
 	if err := client.SendSessionMessage(sessionID, prompt); err != nil {
 		evidence := map[string]string{
