@@ -73,9 +73,14 @@ func AgentMatchesIdentity(a *Agent, identity string) bool {
 	if a.QualifiedName() == identity {
 		return true
 	}
-	// Fallback: V1-style dir+name match (for cities without imports).
-	dir, name := ParseQualifiedName(identity)
-	return a.Dir == dir && a.Name == name
+	// Fallback: V1-style dir+name match. Only allowed when the agent
+	// has no binding name — imported V2 agents must be addressed by
+	// their qualified name (binding.name), not bare name.
+	if a.BindingName == "" {
+		dir, name := ParseQualifiedName(identity)
+		return a.Dir == dir && a.Name == name
+	}
+	return false
 }
 
 // City is the top-level configuration for a Gas City instance.

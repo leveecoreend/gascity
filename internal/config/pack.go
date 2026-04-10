@@ -923,6 +923,11 @@ func loadPack(fs fsys.FS, topoPath, topoDir, cityRoot, rigName string, seen map[
 				continue
 			}
 			agentName := entry.Name()
+			// Skip hidden directories, underscore-prefixed dirs, and
+			// common non-agent directories to avoid surprising discoveries.
+			if strings.HasPrefix(agentName, ".") || strings.HasPrefix(agentName, "_") {
+				continue
+			}
 			// Skip if this agent is already declared in [[agent]] tables.
 			if tomlAgentNames[agentName] {
 				continue

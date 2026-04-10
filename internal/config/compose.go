@@ -58,9 +58,28 @@ func LoadWithIncludes(fs fsys.FS, path string, extraIncludes ...string) (*City, 
 	packPath := filepath.Join(cityRoot, packFile)
 	if packData, pErr := fs.ReadFile(packPath); pErr == nil {
 		var pc packConfig
-		if _, decErr := toml.Decode(string(packData), &pc); decErr == nil {
-			// Merge pack.toml agents before city.toml agents (pack is base).
-			root.Agents = append(pc.Agents, root.Agents...)
+		if _, decErr := toml.Decode(string(packData), &pc); decErr != nil {
+			return nil, nil, fmt.Errorf("parsing city pack.toml: %w", decErr)
+		}
+		if err := validatePackMeta(&pc.Pack); err != nil {
+			return nil, nil, fmt.Errorf("city pack.toml: %w", err)
+		}
+		{
+			// Dedup: city.toml agents override pack.toml agents with the
+			// same name. Build a set of city.toml agent names and skip
+			// pack.toml agents that would duplicate.
+			cityAgentNames := make(map[string]bool)
+			for _, a := range root.Agents {
+				cityAgentNames[a.Name] = true
+			}
+			var packAgents []Agent
+			for _, a := range pc.Agents {
+				if !cityAgentNames[a.Name] {
+					packAgents = append(packAgents, a)
+				}
+			}
+			// Pack agents prepended (base layer), city agents appended (override).
+			root.Agents = append(packAgents, root.Agents...)
 			// Merge pack.toml imports into city imports (pack is base).
 			if len(pc.Imports) > 0 {
 				if root.Imports == nil {
@@ -93,7 +112,7 @@ func LoadWithIncludes(fs fsys.FS, path string, extraIncludes ...string) (*City, 
 			trackAgents(prov, pc.Agents, packPath)
 			prov.Sources = append(prov.Sources, packPath)
 		}
-	}
+	} // end pack.toml merge
 
 	// Track root's resources.
 	trackAgents(prov, root.Agents, path)

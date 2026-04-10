@@ -1166,10 +1166,10 @@ func TestAgentMatchesIdentity(t *testing.T) {
 			want:     true,
 		},
 		{
-			name:     "V1 fallback for V2 agent",
+			name:     "bare name does NOT match V2 agent with binding",
 			agent:    Agent{Name: "mayor", BindingName: "gastown"},
 			identity: "mayor",
-			want:     true,
+			want:     false,
 		},
 		{
 			name:     "no match",
