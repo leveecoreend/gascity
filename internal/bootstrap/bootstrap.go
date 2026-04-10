@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/gastownhall/gascity/internal/config"
 )
 
 const implicitImportSchema = 1
@@ -47,12 +48,6 @@ type implicitImportFile struct {
 	Imports map[string]implicitImport `toml:"imports"`
 }
 
-// CacheDir returns the cache directory name for a resolved source+commit pair.
-func CacheDir(source, commit string) string {
-	sum := sha256.Sum256([]byte(source + commit))
-	return fmt.Sprintf("%x", sum[:])
-}
-
 // EnsureBootstrap populates the global cache and updates implicit-import.toml.
 func EnsureBootstrap(gcHome string) error {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("GC_BOOTSTRAP")), "skip") {
@@ -81,7 +76,7 @@ func EnsureBootstrap(gcHome string) error {
 			return fmt.Errorf("bootstrapping %q: %w", entry.Name, err)
 		}
 
-		cacheDir := filepath.Join(gcHome, "cache", "repos", CacheDir(entry.Source, commit))
+		cacheDir := config.GlobalRepoCachePath(gcHome, entry.Source, commit)
 		if _, err := os.Stat(filepath.Join(cacheDir, "pack.toml")); err != nil {
 			if err := materializeBootstrapPack(cacheDir, entry); err != nil {
 				return fmt.Errorf("bootstrapping %q: %w", entry.Name, err)

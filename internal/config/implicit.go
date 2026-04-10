@@ -79,7 +79,7 @@ func resolveImplicitImport(imp ImplicitImport) Import {
 	source := imp.Source
 	if imp.Commit != "" {
 		if home := implicitGCHome(); home != "" {
-			source = filepath.Join(home, "cache", "repos", cacheDirName(imp.Source, imp.Commit))
+			source = GlobalRepoCachePath(home, imp.Source, imp.Commit)
 		}
 	}
 	return Import{
@@ -88,7 +88,13 @@ func resolveImplicitImport(imp ImplicitImport) Import {
 	}
 }
 
-func cacheDirName(source, commit string) string {
+// GlobalRepoCachePath returns the user-global cache path for a source+commit pair.
+func GlobalRepoCachePath(gcHome, source, commit string) string {
+	return filepath.Join(gcHome, "cache", "repos", GlobalRepoCacheDirName(source, commit))
+}
+
+// GlobalRepoCacheDirName returns the user-global cache directory name for a source+commit pair.
+func GlobalRepoCacheDirName(source, commit string) string {
 	sum := sha256.Sum256([]byte(source + commit))
 	return fmt.Sprintf("%x", sum[:])
 }

@@ -27,7 +27,7 @@ func TestLoadWithIncludes_SplicesImplicitImports(t *testing.T) {
 	t.Setenv("GC_HOME", t.TempDir())
 
 	gcHome := os.Getenv("GC_HOME")
-	cacheDir := filepath.Join(gcHome, "cache", "repos", cacheDirName("github.com/gastownhall/gc-import", "abc123"))
+	cacheDir := GlobalRepoCachePath(gcHome, "github.com/gastownhall/gc-import", "abc123")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestLoadWithIncludes_DoesNotOverrideExplicitImport(t *testing.T) {
 	t.Setenv("GC_HOME", t.TempDir())
 
 	gcHome := os.Getenv("GC_HOME")
-	implicitCacheDir := filepath.Join(gcHome, "cache", "repos", cacheDirName("github.com/gastownhall/gc-import", "abc123"))
+	implicitCacheDir := GlobalRepoCachePath(gcHome, "github.com/gastownhall/gc-import", "abc123")
 	if err := os.MkdirAll(implicitCacheDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

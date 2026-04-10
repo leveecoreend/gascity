@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gastownhall/gascity/internal/config"
 )
 
 func TestEnsureBootstrapPopulatesCacheAndWritesImplicitFile(t *testing.T) {
@@ -58,7 +60,7 @@ scope = "city"
 		t.Fatalf("readImplicitFile: %v", err)
 	}
 	entry := entries["import"]
-	cacheDir := filepath.Join(gcHome, "cache", "repos", CacheDir(entry.Source, entry.Commit))
+	cacheDir := config.GlobalRepoCachePath(gcHome, entry.Source, entry.Commit)
 	if _, err := os.Stat(filepath.Join(cacheDir, "pack.toml")); err != nil {
 		t.Fatalf("bootstrap cache missing pack.toml: %v", err)
 	}
@@ -152,7 +154,7 @@ func TestEnsureBootstrapEmbedsImportPackRuntimeFiles(t *testing.T) {
 		t.Fatalf("readImplicitFile: %v", err)
 	}
 	entry := entries["import"]
-	cacheDir := filepath.Join(gcHome, "cache", "repos", CacheDir(entry.Source, entry.Commit))
+	cacheDir := config.GlobalRepoCachePath(gcHome, entry.Source, entry.Commit)
 
 	for _, rel := range []string{"pack.toml", "commands/add.py", "lib/implicit.py"} {
 		if _, err := os.Stat(filepath.Join(cacheDir, filepath.FromSlash(rel))); err != nil {
@@ -231,7 +233,7 @@ schema = 1
 		t.Fatalf("missing import entry after concurrent bootstrap: %v", entries)
 	}
 
-	cacheDir := filepath.Join(gcHome, "cache", "repos", CacheDir(entry.Source, entry.Commit))
+	cacheDir := config.GlobalRepoCachePath(gcHome, entry.Source, entry.Commit)
 	for _, rel := range []string{"pack.toml", "commands/add.py"} {
 		if _, err := os.Stat(filepath.Join(cacheDir, filepath.FromSlash(rel))); err != nil {
 			t.Fatalf("bootstrap cache missing %s after concurrent bootstrap: %v", rel, err)
