@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"sort"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/formula"
 )
 
@@ -344,6 +346,7 @@ func normalizeFormulaRunsLimit(limit int) int {
 }
 
 func buildFormulaRuns(state State, formulaName, requestedScopeKind, requestedScopeRef string, limit int) (*formulaRunsResponse, error) {
+<<<<<<< HEAD
 	// Use the full projection path (with per-root child lookups) so that
 	// status and UpdatedAt reflect closed children.  The /feed endpoint
 	// intentionally uses the cheaper root-only path for monitor views.
@@ -361,14 +364,120 @@ func buildFormulaRuns(state State, formulaName, requestedScopeKind, requestedSco
 			continue
 		}
 		projections = append(projections, projection)
+=======
+	cityScopeRef := workflowCityScopeRef(state.CityName())
+	includeAllForCity := requestedScopeKind == "city" && requestedScopeRef == cityScopeRef
+	stores := workflowStores(state)
+	projections := make([]workflowRunProjection, 0)
+	partialErrors := make([]string, 0)
+	var requestedScopeErr error
+
+	for _, info := range stores {
+		if info.store == nil {
+			continue
+		}
+		if !includeAllForCity && (info.scopeKind != requestedScopeKind || info.scopeRef != requestedScopeRef) {
+			continue
+		}
+
+		openBeads, err := info.store.ListOpen()
+		if err != nil {
+			if requestedScopeErr == nil && info.scopeKind == requestedScopeKind && info.scopeRef == requestedScopeRef {
+				requestedScopeErr = err
+			}
+			if includeAllForCity {
+				msg := info.ref + " store unavailable"
+				log.Printf("api: formula runs open list failed for %s: %v", info.ref, err)
+				partialErrors = append(partialErrors, msg)
+			}
+			continue
+		}
+
+		openChildrenByRoot := make(map[string][]beads.Bead)
+		for _, bead := range openBeads {
+			rootID := strings.TrimSpace(bead.Metadata["gc.root_bead_id"])
+			if rootID == "" {
+				continue
+			}
+			openChildrenByRoot[rootID] = append(openChildrenByRoot[rootID], bead)
+		}
+
+		roots, err := info.store.ListByMetadata(map[string]string{
+			"gc.kind":             "workflow",
+			"gc.formula_contract": "graph.v2",
+		}, 0, beads.IncludeClosed)
+		if err != nil {
+			log.Printf("api: formula runs workflow root list failed for %s: %v", info.ref, err)
+			partialErrors = append(partialErrors, info.ref+" workflow history incomplete")
+			roots = nil
+			for _, bead := range openBeads {
+				if isWorkflowRoot(bead) && strings.TrimSpace(bead.Metadata["gc.formula_contract"]) == "graph.v2" {
+					roots = append(roots, bead)
+				}
+			}
+		}
+
+		for _, root := range roots {
+			if !isWorkflowRoot(root) || workflowFormulaName(root) != formulaName {
+				continue
+			}
+
+			scopeKind, scopeRef := workflowProjectionScope(info, root, cityScopeRef, requestedScopeKind, requestedScopeRef)
+			if scopeKind != requestedScopeKind || scopeRef != requestedScopeRef {
+				continue
+			}
+
+			runBeads := append([]beads.Bead{root}, openChildrenByRoot[root.ID]...)
+			children, childErr := info.store.ListByMetadata(map[string]string{"gc.root_bead_id": root.ID}, 0, beads.IncludeClosed)
+			if childErr != nil {
+				log.Printf("api: formula runs child list failed for %s root %s: %v", info.ref, root.ID, childErr)
+				partialErrors = append(partialErrors, root.ID+" workflow history incomplete")
+			} else {
+				seen := make(map[string]bool, len(runBeads))
+				for _, existing := range runBeads {
+					seen[existing.ID] = true
+				}
+				for _, child := range children {
+					if seen[child.ID] {
+						continue
+					}
+					runBeads = append(runBeads, child)
+				}
+			}
+
+			projections = append(projections, workflowRunProjection{
+				WorkflowID:     resolvedWorkflowID(root),
+				FormulaName:    workflowFormulaName(root),
+				Title:          workflowProjectionTitle(root),
+				Status:         normalizeMonitorStatus(aggregateWorkflowRunStatus(root, runBeads)),
+				Target:         workflowProjectionTarget(root),
+				StartedAt:      root.CreatedAt,
+				UpdatedAt:      workflowProjectionUpdatedAt(runBeads),
+				ScopeKind:      scopeKind,
+				ScopeRef:       scopeRef,
+				RootBeadID:     root.ID,
+				RootStoreRef:   info.ref,
+				AttachedBeadID: strings.TrimSpace(root.Metadata["gc.source_bead_id"]),
+			})
+		}
+	}
+
+	if len(projections) == 0 && requestedScopeErr != nil && !includeAllForCity {
+		return nil, fmt.Errorf("listing open beads for %s:%s: %w", requestedScopeKind, requestedScopeRef, requestedScopeErr)
+>>>>>>> 31ba45f62 (Speed up formula catalog and add formula runs endpoint)
 	}
 
 	return &formulaRunsResponse{
 		Formula:       formulaName,
 		RunCount:      formulaRunCountFor(formulaName, projections),
 		RecentRuns:    formulaRecentRunsFor(formulaName, projections, limit),
+<<<<<<< HEAD
 		Partial:       projectionResult.Partial,
 		PartialErrors: projectionResult.PartialErrors,
+=======
+		Partial:       len(partialErrors) > 0,
+		PartialErrors: partialErrors,
+>>>>>>> 31ba45f62 (Speed up formula catalog and add formula runs endpoint)
 	}, nil
 }
 
