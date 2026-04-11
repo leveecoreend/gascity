@@ -81,3 +81,38 @@ func TestPackCommandTemplateBadTemplate(t *testing.T) {
 		t.Fatalf("expected graceful fallback, got %q", result)
 	}
 }
+
+func TestNewRootCmdExposesRootPackCommands(t *testing.T) {
+	dir := t.TempDir()
+	cityDir := filepath.Join(dir, "city")
+	if err := os.MkdirAll(filepath.Join(cityDir, "commands", "hello"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte("[workspace]\nname = \"test\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityDir, "pack.toml"), []byte("[pack]\nname = \"backstage\"\nschema = 2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityDir, "commands", "hello", "run.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cityDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(oldWd) })
+
+	root := newRootCmd(&bytes.Buffer{}, &bytes.Buffer{})
+	backstage := findSubcommand(root, "backstage")
+	if backstage == nil {
+		t.Fatal("missing root pack namespace command")
+	}
+	if findSubcommand(backstage, "hello") == nil {
+		t.Fatal("missing root pack hello command")
+	}
+}

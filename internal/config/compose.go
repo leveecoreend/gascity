@@ -54,8 +54,8 @@ func LoadWithIncludes(fs fsys.FS, path string, extraIncludes ...string) (*City, 
 
 	// V2: if a pack.toml exists alongside city.toml, it is the city's
 	// definition layer. Parse it and merge its content (imports, agents,
-	// providers, named sessions) into the root config. pack.toml agents
-	// and imports are the city pack's own content; city.toml carries
+	// commands, doctors, providers, named sessions) into the root config.
+	// pack.toml content is the city pack's own content; city.toml carries
 	// deployment (rigs, substrates, capacity) plus any inline agents.
 	cityImportCount := len(root.Imports)
 	packExists := false
@@ -116,6 +116,24 @@ func LoadWithIncludes(fs fsys.FS, path string, extraIncludes ...string) (*City, 
 			// Track pack.toml agents in provenance.
 			trackAgents(prov, pc.Agents, packPath)
 			prov.Sources = append(prov.Sources, packPath)
+
+			packCommands, err := DiscoverPackCommands(fs, cityRoot, pc.Pack.Name)
+			if err != nil {
+				return nil, nil, fmt.Errorf("city pack.toml: %w", err)
+			}
+			packCommands = append(packCommands, legacyPackCommands(pc.Commands, cityRoot, pc.Pack.Name)...)
+			if len(packCommands) > 0 {
+				root.PackCommands = appendDiscoveredCommands(root.PackCommands, stampDefaultBinding(packCommands, pc.Pack.Name)...)
+			}
+
+			packDoctors, err := DiscoverPackDoctors(fs, cityRoot, pc.Pack.Name)
+			if err != nil {
+				return nil, nil, fmt.Errorf("city pack.toml: %w", err)
+			}
+			packDoctors = append(packDoctors, legacyPackDoctors(pc.Doctor, cityRoot, pc.Pack.Name)...)
+			if len(packDoctors) > 0 {
+				root.PackDoctors = appendDiscoveredDoctors(root.PackDoctors, packDoctors...)
+			}
 		}
 	} // end pack.toml merge
 

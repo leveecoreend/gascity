@@ -101,6 +101,45 @@ includes = ["../helper"]
 	}
 }
 
+func TestLoadWithIncludes_RootPackCommandsAndDoctorsCompose(t *testing.T) {
+	dir := t.TempDir()
+	cityDir := filepath.Join(dir, "city")
+
+	writeTestFile(t, cityDir, "pack.toml", `
+[pack]
+name = "backstage"
+schema = 2
+`)
+	writeTestFile(t, cityDir, "commands/hello/run.sh", "#!/bin/sh\nexit 0\n")
+	writeTestFile(t, cityDir, "doctor/check/run.sh", "#!/bin/sh\nexit 0\n")
+	writeTestFile(t, cityDir, "city.toml", `
+[workspace]
+name = "test"
+`)
+
+	cfg, _, err := LoadWithIncludes(fsys.OSFS{}, filepath.Join(cityDir, "city.toml"))
+	if err != nil {
+		t.Fatalf("LoadWithIncludes: %v", err)
+	}
+
+	if len(cfg.PackCommands) != 1 {
+		t.Fatalf("got %d PackCommands, want 1", len(cfg.PackCommands))
+	}
+	if !reflect.DeepEqual(cfg.PackCommands[0].Command, []string{"hello"}) {
+		t.Fatalf("command words = %#v, want %#v", cfg.PackCommands[0].Command, []string{"hello"})
+	}
+	if cfg.PackCommands[0].BindingName != "backstage" {
+		t.Fatalf("BindingName = %q, want %q", cfg.PackCommands[0].BindingName, "backstage")
+	}
+
+	if len(cfg.PackDoctors) != 1 {
+		t.Fatalf("got %d PackDoctors, want 1", len(cfg.PackDoctors))
+	}
+	if cfg.PackDoctors[0].Name != "check" {
+		t.Fatalf("doctor Name = %q, want %q", cfg.PackDoctors[0].Name, "check")
+	}
+}
+
 func TestLoadWithIncludes_LegacyPackTomlCommandsAndDoctorsStillCompose(t *testing.T) {
 	dir := t.TempDir()
 	packDir := filepath.Join(dir, "legacy")
