@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/template"
 
@@ -13,6 +14,11 @@ import (
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/fsys"
 	"github.com/gastownhall/gascity/internal/git"
+)
+
+const (
+	canonicalPromptTemplateSuffix = ".template.md"
+	legacyPromptTemplateSuffix    = ".md.tmpl"
 )
 
 // PromptContext holds template data for prompt rendering.
@@ -52,11 +58,10 @@ func renderPrompt(fs fsys.FS, cityPath, cityName, templatePath string, ctx Promp
 	}
 	raw := string(data)
 
-	// V2 .tmpl suffix rule: only files ending in .tmpl get template
-	// expansion. Plain .md files are returned as-is (no Go template
-	// engine runs). This eliminates the "everything is secretly a
-	// template" problem from doc-agent-v2.md.
-	if !strings.HasSuffix(templatePath, ".tmpl") {
+	// Canonical prompt templates use .template.md. Legacy .md.tmpl files
+	// remain supported temporarily for compatibility; plain .md files are
+	// returned as-is.
+	if !isPromptTemplatePath(templatePath) {
 		return raw
 	}
 
@@ -119,20 +124,49 @@ func renderPrompt(fs fsys.FS, cityPath, cityName, templatePath string, ctx Promp
 	return buf.String()
 }
 
-// loadSharedTemplates loads all .md.tmpl files from a shared directory
-// into the given template. Later calls override earlier definitions of
-// the same name (last-writer-wins).
+func isCanonicalPromptTemplatePath(path string) bool {
+	return strings.HasSuffix(path, canonicalPromptTemplateSuffix)
+}
+
+func isLegacyPromptTemplatePath(path string) bool {
+	return strings.HasSuffix(path, legacyPromptTemplateSuffix)
+}
+
+func isPromptTemplatePath(path string) bool {
+	return isCanonicalPromptTemplatePath(path) || isLegacyPromptTemplatePath(path)
+}
+
+func sharedTemplateFileNames(entries []os.DirEntry) []string {
+	legacy := make([]string, 0, len(entries))
+	canonical := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch name := e.Name(); {
+		case isLegacyPromptTemplatePath(name):
+			legacy = append(legacy, name)
+		case isCanonicalPromptTemplatePath(name):
+			canonical = append(canonical, name)
+		}
+	}
+	sort.Strings(legacy)
+	sort.Strings(canonical)
+	return append(legacy, canonical...)
+}
+
+// loadSharedTemplates loads supported prompt-template files from a shared
+// directory into the given template. Canonical .template.md files override
+// legacy .md.tmpl files with the same definitions.
 func loadSharedTemplates(fs fsys.FS, tmpl *template.Template, dir string, stderr io.Writer) {
 	entries, err := fs.ReadDir(dir)
 	if err != nil {
 		return
 	}
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md.tmpl") {
-			if sdata, err := fs.ReadFile(filepath.Join(dir, e.Name())); err == nil {
-				if _, err := tmpl.Parse(string(sdata)); err != nil {
-					fmt.Fprintf(stderr, "gc: shared template %q: %v\n", e.Name(), err) //nolint:errcheck // best-effort stderr
-				}
+	for _, name := range sharedTemplateFileNames(entries) {
+		if sdata, err := fs.ReadFile(filepath.Join(dir, name)); err == nil {
+			if _, err := tmpl.Parse(string(sdata)); err != nil {
+				fmt.Fprintf(stderr, "gc: shared template %q: %v\n", name, err) //nolint:errcheck // best-effort stderr
 			}
 		}
 	}

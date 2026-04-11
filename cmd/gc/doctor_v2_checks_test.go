@@ -60,8 +60,34 @@ scope = "city"
 	if !strings.Contains(out, "gc import migrate") {
 		t.Fatalf("doctor output missing migrate hint:\n%s", out)
 	}
-	if !strings.Contains(out, ".md.tmpl") {
-		t.Fatalf("doctor output missing .md.tmpl guidance:\n%s", out)
+	if !strings.Contains(out, ".template.md") {
+		t.Fatalf("doctor output missing .template.md guidance:\n%s", out)
+	}
+}
+
+func TestV2DeprecationChecksWarnOnLegacyTemplateSuffix(t *testing.T) {
+	t.Parallel()
+
+	cityDir := t.TempDir()
+	writeDoctorFile(t, cityDir, "city.toml", `
+[workspace]
+`)
+	writeDoctorFile(t, cityDir, "prompts/mayor.md.tmpl", "Hello {{.Agent}}\n")
+
+	var buf bytes.Buffer
+	d := &doctor.Doctor{}
+	registerV2DeprecationChecks(d)
+	d.Run(&doctor.CheckContext{CityPath: cityDir, Verbose: true}, &buf, false)
+
+	out := buf.String()
+	if !strings.Contains(out, "v2-prompt-template-suffix") {
+		t.Fatalf("doctor output missing prompt-template warning:\n%s", out)
+	}
+	if !strings.Contains(out, "prompts/mayor.md.tmpl") {
+		t.Fatalf("doctor output missing legacy prompt path:\n%s", out)
+	}
+	if !strings.Contains(out, ".template.md") {
+		t.Fatalf("doctor output missing canonical suffix guidance:\n%s", out)
 	}
 }
 

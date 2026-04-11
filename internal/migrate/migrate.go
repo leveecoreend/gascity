@@ -324,7 +324,7 @@ func migrateAgentAssets(cityPath string, entry agentEntry, usage usageCounts, re
 		}
 		destName := "prompt.md"
 		if bytes.Contains(data, []byte("{{")) {
-			destName = "prompt.md.tmpl"
+			destName = "prompt.template.md"
 		}
 		dest := filepath.Join(agentDir, destName)
 		removeSrc := usage.prompts[src] <= 1

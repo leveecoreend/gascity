@@ -1070,7 +1070,9 @@ func loadPackWithCache(fs fsys.FS, topoPath, topoDir, cityRoot, rigName string, 
 
 	// V2 convention-based agent discovery: scan agents/ directory.
 	// Each immediate subdirectory is an agent. agent.toml provides config
-	// (optional — defaults apply). prompt.md provides the prompt template.
+	// (optional — defaults apply). prompt.template.md is canonical for
+	// templated prompts; prompt.md.tmpl remains supported temporarily and
+	// prompt.md remains the plain-markdown fallback.
 	// Convention-discovered agents are appended AFTER TOML-declared agents
 	// so [[agent]] tables take precedence when both exist.
 	agentsDir := filepath.Join(topoDir, "agents")
@@ -1108,10 +1110,14 @@ func loadPackWithCache(fs fsys.FS, topoPath, topoDir, cityRoot, rigName string, 
 				agent.Name = agentName // directory name is canonical
 			}
 
-			// Discover prompt.md as the prompt template.
-			promptPath := filepath.Join(agentDir, "prompt.md")
-			if _, pErr := fs.Stat(promptPath); pErr == nil {
-				agent.PromptTemplate = promptPath
+			// Prefer the canonical template suffix, then the legacy one,
+			// then plain prompt.md for non-templated prompts.
+			for _, promptName := range []string{"prompt.template.md", "prompt.md.tmpl", "prompt.md"} {
+				promptPath := filepath.Join(agentDir, promptName)
+				if _, pErr := fs.Stat(promptPath); pErr == nil {
+					agent.PromptTemplate = promptPath
+					break
+				}
 			}
 
 			// Discover per-agent overlay/ directory.
