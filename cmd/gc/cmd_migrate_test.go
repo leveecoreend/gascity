@@ -67,7 +67,7 @@ fallback = true
 	if _, err := os.Stat(filepath.Join(cityDir, "pack.toml")); err != nil {
 		t.Fatalf("expected pack.toml after migrate: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(cityDir, "agents", "mayor", "prompt.md.tmpl")); err != nil {
+	if _, err := os.Stat(filepath.Join(cityDir, "agents", "mayor", "prompt.template.md")); err != nil {
 		t.Fatalf("expected migrated prompt file: %v", err)
 	}
 }

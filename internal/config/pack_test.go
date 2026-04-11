@@ -2281,10 +2281,10 @@ schema = 1
 
 [[agent]]
 name = "worker"
-prompt_template = "prompts/worker.md.tmpl"
+prompt_template = "prompts/worker.template.md"
 `)
-	writeFile(t, filepath.Join(topoDir, "prompts"), "worker.md.tmpl", "Worker prompt")
-	writeFile(t, filepath.Join(topoDir, "prompts", "shared"), "common.md.tmpl",
+	writeFile(t, filepath.Join(topoDir, "prompts"), "worker.template.md", "Worker prompt")
+	writeFile(t, filepath.Join(topoDir, "prompts", "shared"), "common.template.md",
 		`{{ define "common" }}shared content{{ end }}`)
 
 	writeFile(t, tmp, "city.toml", `

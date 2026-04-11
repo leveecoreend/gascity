@@ -95,7 +95,7 @@ prompt_template = "prompts/worker.md"
 		t.Fatalf("mayor agent.toml still contains fallback:\n%s", mayorAgentToml)
 	}
 
-	if got := readFile(t, filepath.Join(cityDir, "agents", "mayor", "prompt.md.tmpl")); !strings.Contains(got, "{{.Agent}}") {
+	if got := readFile(t, filepath.Join(cityDir, "agents", "mayor", "prompt.template.md")); !strings.Contains(got, "{{.Agent}}") {
 		t.Fatalf("expected templated mayor prompt to be moved, got:\n%s", got)
 	}
 	if got := readFile(t, filepath.Join(cityDir, "agents", "worker", "prompt.md")); !strings.Contains(got, "worker") {

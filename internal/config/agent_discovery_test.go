@@ -55,6 +55,125 @@ includes = ["../mypk"]
 	}
 }
 
+func TestAgentDiscovery_CanonicalTemplateSuffix(t *testing.T) {
+	dir := t.TempDir()
+	packDir := filepath.Join(dir, "mypk")
+	agentDir := filepath.Join(packDir, "agents", "worker")
+
+	os.MkdirAll(agentDir, 0o755)
+
+	writeTestFile(t, packDir, "pack.toml", `
+[pack]
+name = "mypk"
+schema = 1
+`)
+	writeTestFile(t, agentDir, "prompt.template.md", `You are {{ .AgentName }}.`)
+
+	cityDir := filepath.Join(dir, "city")
+	os.MkdirAll(cityDir, 0o755)
+	writeTestFile(t, cityDir, "city.toml", `
+[workspace]
+name = "test"
+includes = ["../mypk"]
+`)
+
+	cfg, _, err := LoadWithIncludes(fsys.OSFS{}, filepath.Join(cityDir, "city.toml"))
+	if err != nil {
+		t.Fatalf("LoadWithIncludes: %v", err)
+	}
+
+	explicit := explicitAgents(cfg.Agents)
+	for _, a := range explicit {
+		if a.Name == "worker" {
+			if !strings.HasSuffix(a.PromptTemplate, "prompt.template.md") {
+				t.Errorf("worker PromptTemplate = %q, want suffix prompt.template.md", a.PromptTemplate)
+			}
+			return
+		}
+	}
+	t.Error("worker agent not discovered from agents/ directory")
+}
+
+func TestAgentDiscovery_LegacyTemplateSuffixStillLoads(t *testing.T) {
+	dir := t.TempDir()
+	packDir := filepath.Join(dir, "mypk")
+	agentDir := filepath.Join(packDir, "agents", "worker")
+
+	os.MkdirAll(agentDir, 0o755)
+
+	writeTestFile(t, packDir, "pack.toml", `
+[pack]
+name = "mypk"
+schema = 1
+`)
+	writeTestFile(t, agentDir, "prompt.md.tmpl", `legacy`)
+
+	cityDir := filepath.Join(dir, "city")
+	os.MkdirAll(cityDir, 0o755)
+	writeTestFile(t, cityDir, "city.toml", `
+[workspace]
+name = "test"
+includes = ["../mypk"]
+`)
+
+	cfg, _, err := LoadWithIncludes(fsys.OSFS{}, filepath.Join(cityDir, "city.toml"))
+	if err != nil {
+		t.Fatalf("LoadWithIncludes: %v", err)
+	}
+
+	explicit := explicitAgents(cfg.Agents)
+	for _, a := range explicit {
+		if a.Name == "worker" {
+			if !strings.HasSuffix(a.PromptTemplate, "prompt.md.tmpl") {
+				t.Errorf("worker PromptTemplate = %q, want suffix prompt.md.tmpl", a.PromptTemplate)
+			}
+			return
+		}
+	}
+	t.Error("worker agent not discovered from agents/ directory")
+}
+
+func TestAgentDiscovery_PrefersCanonicalTemplateSuffix(t *testing.T) {
+	dir := t.TempDir()
+	packDir := filepath.Join(dir, "mypk")
+	agentDir := filepath.Join(packDir, "agents", "worker")
+
+	os.MkdirAll(agentDir, 0o755)
+
+	writeTestFile(t, packDir, "pack.toml", `
+[pack]
+name = "mypk"
+schema = 1
+`)
+	writeTestFile(t, agentDir, "prompt.template.md", `canonical`)
+	writeTestFile(t, agentDir, "prompt.md.tmpl", `legacy`)
+	writeTestFile(t, agentDir, "prompt.md", `plain`)
+
+	cityDir := filepath.Join(dir, "city")
+	os.MkdirAll(cityDir, 0o755)
+	writeTestFile(t, cityDir, "city.toml", `
+[workspace]
+name = "test"
+includes = ["../mypk"]
+`)
+
+	cfg, _, err := LoadWithIncludes(fsys.OSFS{}, filepath.Join(cityDir, "city.toml"))
+	if err != nil {
+		t.Fatalf("LoadWithIncludes: %v", err)
+	}
+
+	explicit := explicitAgents(cfg.Agents)
+	for _, a := range explicit {
+		if a.Name == "worker" {
+			if !strings.HasSuffix(a.PromptTemplate, "prompt.template.md") {
+				t.Errorf("worker PromptTemplate = %q, want canonical prompt.template.md", a.PromptTemplate)
+			}
+			return
+		}
+	}
+	t.Error("worker agent not discovered from agents/ directory")
+}
+
 func TestAgentDiscovery_WithAgentToml(t *testing.T) {
 	// agents/<name>/agent.toml provides per-agent config.
 	dir := t.TempDir()

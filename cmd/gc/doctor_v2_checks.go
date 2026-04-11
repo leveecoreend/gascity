@@ -110,11 +110,11 @@ func (v2PromptTemplateSuffixCheck) Fix(_ *doctor.CheckContext) error { return ni
 func (v2PromptTemplateSuffixCheck) Run(ctx *doctor.CheckContext) *doctor.CheckResult {
 	files := templatedMarkdownPrompts(ctx.CityPath)
 	if len(files) == 0 {
-		return okCheck("v2-prompt-template-suffix", "templated markdown prompts already use .tmpl suffixes")
+		return okCheck("v2-prompt-template-suffix", "templated markdown prompts already use .template.md suffixes")
 	}
 	return warnCheck("v2-prompt-template-suffix",
-		"templated markdown prompts should use .md.tmpl",
-		"rename each templated prompt file to *.md.tmpl",
+		"templated markdown prompts should use .template.md",
+		"rename each templated prompt file to *.template.md",
 		files)
 }
 
@@ -166,7 +166,12 @@ func templatedMarkdownPrompts(cityPath string) []string {
 	candidates := make(map[string]bool)
 
 	addPath := func(path string) {
-		if strings.HasSuffix(path, ".md") && !strings.HasSuffix(path, ".md.tmpl") {
+		switch {
+		case isCanonicalPromptTemplatePath(path):
+			return
+		case isLegacyPromptTemplatePath(path):
+			candidates[path] = true
+		case strings.HasSuffix(path, ".md"):
 			candidates[path] = true
 		}
 	}
@@ -199,7 +204,10 @@ func templatedMarkdownPrompts(cityPath string) []string {
 			if err != nil || d.IsDir() {
 				return nil
 			}
-			if filepath.Base(path) == "prompt.md" || strings.HasPrefix(path, filepath.Join(cityPath, "prompts")+string(filepath.Separator)) {
+			if filepath.Base(path) == "prompt.md" ||
+				filepath.Base(path) == "prompt.template.md" ||
+				filepath.Base(path) == "prompt.md.tmpl" ||
+				strings.HasPrefix(path, filepath.Join(cityPath, "prompts")+string(filepath.Separator)) {
 				addPath(path)
 			}
 			return nil

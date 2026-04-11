@@ -1244,9 +1244,10 @@ type AgentDefaults struct {
 	// override at creation time. Names must match ^[A-Z][A-Z0-9_]{0,127}$.
 	AllowEnvOverride []string `toml:"allow_env_override,omitempty"`
 	// AppendFragments lists named template fragments to auto-append to
-	// .md.tmpl prompts after rendering. V2 migration convenience —
-	// replaces global_fragments/inject_fragments for city-wide defaults.
-	// Only applies to .md.tmpl prompts (plain .md is inert).
+	// .template.md prompts after rendering. Legacy .md.tmpl prompts are
+	// still supported during the transition; plain .md remains inert.
+	// V2 migration convenience — replaces global_fragments/inject_fragments
+	// for city-wide defaults.
 	AppendFragments []string `toml:"append_fragments,omitempty"`
 }
 

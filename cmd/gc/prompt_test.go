@@ -34,17 +34,36 @@ func TestRenderPromptNoExpressions(t *testing.T) {
 	}
 }
 
+func TestRenderPromptPlainMarkdownDoesNotExecuteTemplates(t *testing.T) {
+	f := fsys.NewFake()
+	content := "Hello {{ .AgentName }}\n"
+	f.Files["/city/prompts/plain.md"] = []byte(content)
+	got := renderPrompt(f, "/city", "", "prompts/plain.md", PromptContext{AgentName: "mayor"}, "", io.Discard, nil, nil, nil)
+	if got != content {
+		t.Errorf("renderPrompt(plain markdown) = %q, want raw content %q", got, content)
+	}
+}
+
 func TestRenderPromptBasicVars(t *testing.T) {
 	f := fsys.NewFake()
-	f.Files["/city/prompts/test.md.tmpl"] = []byte("City: {{ .CityRoot }}\nAgent: {{ .AgentName }}\n")
+	f.Files["/city/prompts/test.template.md"] = []byte("City: {{ .CityRoot }}\nAgent: {{ .AgentName }}\n")
 	ctx := PromptContext{
 		CityRoot:  "/home/user/bright-lights",
 		AgentName: "hello-world/polecat-1",
 	}
-	got := renderPrompt(f, "/city", "bright-lights", "prompts/test.md.tmpl", ctx, "", io.Discard, nil, nil, nil)
+	got := renderPrompt(f, "/city", "bright-lights", "prompts/test.template.md", ctx, "", io.Discard, nil, nil, nil)
 	want := "City: /home/user/bright-lights\nAgent: hello-world/polecat-1\n"
 	if got != want {
 		t.Errorf("renderPrompt(vars) = %q, want %q", got, want)
+	}
+}
+
+func TestRenderPromptLegacyTemplateSuffixStillRenders(t *testing.T) {
+	f := fsys.NewFake()
+	f.Files["/city/prompts/test.md.tmpl"] = []byte("Agent: {{ .AgentName }}\n")
+	got := renderPrompt(f, "/city", "", "prompts/test.md.tmpl", PromptContext{AgentName: "mayor"}, "", io.Discard, nil, nil, nil)
+	if got != "Agent: mayor\n" {
+		t.Errorf("renderPrompt(legacy suffix) = %q, want %q", got, "Agent: mayor\n")
 	}
 }
 
@@ -310,13 +329,13 @@ func TestBuildTemplateDataEmptyEnv(t *testing.T) {
 func TestRenderPromptSharedTemplates(t *testing.T) {
 	f := fsys.NewFake()
 	// Shared template defines a named block.
-	f.Files["/city/prompts/shared/greeting.md.tmpl"] = []byte(
+	f.Files["/city/prompts/shared/greeting.template.md"] = []byte(
 		`{{ define "greeting" }}Hello, {{ .AgentName }}!{{ end }}`)
 	// Main template uses it.
-	f.Files["/city/prompts/test.md.tmpl"] = []byte(
+	f.Files["/city/prompts/test.template.md"] = []byte(
 		`# Prompt\n{{ template "greeting" . }}`)
 	ctx := PromptContext{AgentName: "mayor"}
-	got := renderPrompt(f, "/city", "", "prompts/test.md.tmpl", ctx, "", io.Discard, nil, nil, nil)
+	got := renderPrompt(f, "/city", "", "prompts/test.template.md", ctx, "", io.Discard, nil, nil, nil)
 	if !strings.Contains(got, "Hello, mayor!") {
 		t.Errorf("shared template not rendered: %q", got)
 	}
@@ -381,12 +400,25 @@ func TestRenderPromptSharedMultipleFiles(t *testing.T) {
 
 func TestRenderPromptSharedIgnoresNonTemplate(t *testing.T) {
 	f := fsys.NewFake()
-	// A .md file (not .md.tmpl) should be ignored.
+	// A .md file (not .template.md or legacy .md.tmpl) should be ignored.
 	f.Files["/city/prompts/shared/readme.md"] = []byte(`{{ define "oops" }}should not load{{ end }}`)
 	f.Files["/city/prompts/test.md.tmpl"] = []byte("Plain text.")
 	got := renderPrompt(f, "/city", "", "prompts/test.md.tmpl", PromptContext{}, "", io.Discard, nil, nil, nil)
 	if got != "Plain text." {
 		t.Errorf("renderPrompt(non-template) = %q, want plain text", got)
+	}
+}
+
+func TestRenderPromptSharedCanonicalOverridesLegacy(t *testing.T) {
+	f := fsys.NewFake()
+	f.Files["/city/prompts/shared/info.md.tmpl"] = []byte(
+		`{{ define "info" }}legacy{{ end }}`)
+	f.Files["/city/prompts/shared/info.template.md"] = []byte(
+		`{{ define "info" }}canonical{{ end }}`)
+	f.Files["/city/prompts/test.template.md"] = []byte(`{{ template "info" . }}`)
+	got := renderPrompt(f, "/city", "", "prompts/test.template.md", PromptContext{}, "", io.Discard, nil, nil, nil)
+	if got != "canonical" {
+		t.Errorf("canonical shared template = %q, want %q", got, "canonical")
 	}
 }
 

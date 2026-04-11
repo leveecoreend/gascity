@@ -22,7 +22,7 @@ stdout 'Applied changes for'
 stdout 'warning: dropped fallback field'
 exists $WORK/legacy-city/pack.toml
 exists $WORK/legacy-city/agents/mayor/agent.toml
-exists $WORK/legacy-city/agents/mayor/prompt.md.tmpl
+exists $WORK/legacy-city/agents/mayor/prompt.template.md
 exists $WORK/legacy-city/agents/mayor/overlay/CLAUDE.md
 exists $WORK/legacy-city/agents/mayor/namepool.txt
 ! exists $WORK/legacy-city/prompts/mayor.md
