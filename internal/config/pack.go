@@ -20,7 +20,7 @@ import (
 const packFile = "pack.toml"
 
 // currentPackSchema is the supported pack schema version.
-const currentPackSchema = 1
+const currentPackSchema = 2
 
 // packConfig is the TOML structure of a pack.toml file.
 // It has a [pack] metadata header and agent definitions.

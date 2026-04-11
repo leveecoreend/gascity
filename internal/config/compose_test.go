@@ -45,6 +45,37 @@ name = "mayor"
 	}
 }
 
+func TestLoadWithIncludes_CityPackSchema2(t *testing.T) {
+	fs := fsys.NewFake()
+	fs.Files["/city/city.toml"] = []byte(`
+[workspace]
+name = "test"
+`)
+	fs.Files["/city/pack.toml"] = []byte(`
+[pack]
+name = "test"
+schema = 2
+
+[[agent]]
+name = "mayor"
+`)
+
+	cfg, prov, err := LoadWithIncludes(fs, "/city/city.toml")
+	if err != nil {
+		t.Fatalf("LoadWithIncludes: %v", err)
+	}
+	explicit := explicitAgents(cfg.Agents)
+	if len(explicit) != 1 {
+		t.Fatalf("len(explicit Agents) = %d, want 1", len(explicit))
+	}
+	if explicit[0].Name != "mayor" {
+		t.Errorf("Agents[0].Name = %q, want %q", explicit[0].Name, "mayor")
+	}
+	if len(prov.Sources) != 2 {
+		t.Errorf("len(Sources) = %d, want 2", len(prov.Sources))
+	}
+}
+
 func TestLoadWithIncludes_ConcatAgents(t *testing.T) {
 	fs := fsys.NewFake()
 	fs.Files["/city/city.toml"] = []byte(`
