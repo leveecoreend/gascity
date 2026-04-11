@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 6 * * *'  # 6 AM UTC daily
   workflow_dispatch:  # Manual trigger
+    inputs:
+      tier_c_run_pattern:
+        description: 'Optional go test -run pattern for Tier C targeted reruns'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -73,7 +78,15 @@ jobs:
         run: npm install -g @anthropic-ai/claude-code
 
       - name: Tier B acceptance tests
+        if: ${{ inputs.tier_c_run_pattern == '' }}
         run: make test-acceptance-b
 
       - name: Tier C inference tests
-        run: make test-acceptance-c
+        env:
+          TIER_C_RUN_PATTERN: ${{ inputs.tier_c_run_pattern }}
+        run: |
+          if [ -n "$TIER_C_RUN_PATTERN" ]; then
+            go test -tags acceptance_c -timeout 45m -v -run "$TIER_C_RUN_PATTERN" ./test/acceptance/tier_c/...
+          else
+            make test-acceptance-c
+          fi
