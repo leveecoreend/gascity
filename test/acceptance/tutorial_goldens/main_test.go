@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -86,7 +85,8 @@ func newTutorialEnv(t *testing.T) *tutorialEnv {
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	home := filepath.Join(root, "home")
 	runtimeDir := filepath.Join(root, "runtime")
-	for _, dir := range []string{home, runtimeDir} {
+	tmuxDir := filepath.Join(runtimeDir, "tmux")
+	for _, dir := range []string{home, runtimeDir, tmuxDir} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("creating %s: %v", dir, err)
 		}
@@ -119,6 +119,10 @@ func newTutorialEnv(t *testing.T) *tutorialEnv {
 		Without("GC_BEADS").
 		Without("GC_DOLT").
 		With("DOLT_ROOT_PATH", home)
+	env.With("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	env.With("TMUX_TMPDIR", tmuxDir)
+	env.With("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	env.With("XDG_STATE_HOME", filepath.Join(home, ".local", "state"))
 	env.With("PATH", filepath.Join(home, ".local", "bin")+":"+env.Get("PATH"))
 
 	for _, key := range []string{
@@ -272,15 +276,45 @@ func hasCodexAuth() bool {
 	return codexStatusOutputLoggedIn(out)
 }
 
-func stageClaudeAuth(_ string) error {
-	// Tutorial acceptance uses wrapped provider binaries that delegate to the
-	// authenticated host CLI, so there is no isolated Claude auth state to copy.
+func stageClaudeAuth(dstHome string) error {
+	realHome := hostHomeDir()
+	if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) == "" && strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")) == "" {
+		if refreshOut, err := exec.Command("claude", "--print", "ok").CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "tutorial-goldens: Claude preflight refresh failed: %v\n%s\n", err, refreshOut) //nolint:errcheck
+		}
+	}
+
+	srcClaudeDir := filepath.Join(realHome, ".claude")
+	dstClaudeDir := filepath.Join(dstHome, ".claude")
+	if err := os.MkdirAll(dstClaudeDir, 0o755); err != nil {
+		return err
+	}
+	for _, name := range []string{".credentials.json", "credentials.json", "settings.json", ".claude.json"} {
+		if err := copyFileIfExists(filepath.Join(srcClaudeDir, name), filepath.Join(dstClaudeDir, name), 0o600); err != nil {
+			return err
+		}
+	}
+	if err := copyFileIfExists(filepath.Join(realHome, ".claude.json"), filepath.Join(dstHome, ".claude.json"), 0o600); err != nil {
+		return err
+	}
 	return nil
 }
 
-func stageCodexAuth(_ string) error {
-	// Tutorial acceptance uses wrapped provider binaries that delegate to the
-	// authenticated host CLI, so there is no isolated Codex auth state to copy.
+func stageCodexAuth(dstHome string) error {
+	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "" {
+		return nil
+	}
+	realHome := hostHomeDir()
+	srcCodexDir := filepath.Join(realHome, ".codex")
+	dstCodexDir := filepath.Join(dstHome, ".codex")
+	if err := os.MkdirAll(dstCodexDir, 0o755); err != nil {
+		return err
+	}
+	for _, name := range []string{"auth.json", "config.json", "config.toml"} {
+		if err := copyFileIfExists(filepath.Join(srcCodexDir, name), filepath.Join(dstCodexDir, name), 0o600); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -289,19 +323,11 @@ func stageProviderBinaries(dstHome string) error {
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		return err
 	}
-	claudeShim, err := providerBinaryShim("claude")
-	if err != nil {
-		return err
-	}
-	if err := helpers.StageProviderBinary(binDir, "claude", claudeShim); err != nil {
+	if err := helpers.StageProviderBinary(binDir, "claude", ""); err != nil {
 		return err
 	}
 	if !useClaudeForCodex() {
-		codexShim, err := providerBinaryShim("codex")
-		if err != nil {
-			return err
-		}
-		if err := helpers.StageProviderBinary(binDir, "codex", codexShim); err != nil {
+		if err := helpers.StageProviderBinary(binDir, "codex", ""); err != nil {
 			return err
 		}
 	}
@@ -313,64 +339,6 @@ func stageProviderBinaries(dstHome string) error {
 		}
 	}
 	return nil
-}
-
-func providerBinaryShim(name string) (string, error) {
-	switch name {
-	case "claude":
-		if strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")) != "" || strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")) != "" {
-			return "", nil
-		}
-		return hostProviderShim(name, []string{"CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_STATE_HOME"})
-	case "codex":
-		if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "" {
-			return "", nil
-		}
-		return hostProviderShim(name, []string{"XDG_CONFIG_HOME", "XDG_STATE_HOME"})
-	default:
-		return "", nil
-	}
-}
-
-func hostProviderShim(name string, unsetVars []string) (string, error) {
-	path, err := exec.LookPath(name)
-	if err != nil {
-		return "", err
-	}
-
-	realHome := hostHomeDir()
-	userName := strings.TrimSpace(os.Getenv("USER"))
-	login := strings.TrimSpace(os.Getenv("LOGNAME"))
-	if current, err := user.Current(); err == nil {
-		if userName == "" {
-			userName = strings.TrimSpace(current.Username)
-		}
-		if login == "" {
-			login = strings.TrimSpace(current.Username)
-		}
-	}
-	if login == "" {
-		login = filepath.Base(realHome)
-	}
-	if userName == "" {
-		userName = login
-	}
-
-	parts := []string{"env"}
-	for _, key := range unsetVars {
-		parts = append(parts, "-u", key)
-	}
-	parts = append(parts,
-		"HOME="+shellQuote(realHome),
-		"USER="+shellQuote(userName),
-		"LOGNAME="+shellQuote(login),
-		shellQuote(path),
-	)
-	return strings.Join(parts, " "), nil
-}
-
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'"'"'`) + "'"
 }
 
 func acceptanceTempRoot() (string, error) {
@@ -385,6 +353,17 @@ func acceptanceTempRoot() (string, error) {
 		return "", err
 	}
 	return root, nil
+}
+
+func copyFileIfExists(src, dst string, perm os.FileMode) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return os.WriteFile(dst, data, perm)
 }
 
 func useClaudeForCodex() bool {
