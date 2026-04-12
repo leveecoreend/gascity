@@ -173,11 +173,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.healthResponse())
+}
+
+func (s *Server) healthResponse() map[string]any {
 	uptime := int(time.Since(s.state.StartedAt()).Seconds())
-	writeJSON(w, http.StatusOK, map[string]any{
+	return map[string]any{
 		"status":     "ok",
 		"version":    s.state.Version(),
 		"city":       s.state.CityName(),
 		"uptime_sec": uptime,
-	})
+	}
 }

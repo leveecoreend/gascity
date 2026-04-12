@@ -165,6 +165,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) registerRoutes() {
+	s.mux.HandleFunc("GET /v0/ws", s.handleWebSocket)
+
 	// Status + Health
 	s.mux.HandleFunc("GET /v0/status", s.handleStatus)
 	s.mux.HandleFunc("GET /health", s.handleHealth)

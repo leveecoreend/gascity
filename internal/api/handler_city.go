@@ -19,19 +19,7 @@ type cityGetResponse struct {
 }
 
 func (s *Server) handleCityGet(w http.ResponseWriter, _ *http.Request) {
-	cfg := s.state.Config()
-	resp := cityGetResponse{
-		Name:            s.state.CityName(),
-		Path:            s.state.CityPath(),
-		Version:         s.state.Version(),
-		Suspended:       cfg.Workspace.Suspended,
-		Provider:        cfg.Workspace.Provider,
-		SessionTemplate: cfg.Workspace.SessionTemplate,
-		UptimeSec:       int(time.Since(s.state.StartedAt()).Seconds()),
-		AgentCount:      len(cfg.Agents),
-		RigCount:        len(cfg.Rigs),
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, s.cityGet())
 }
 
 // cityPatchRequest is the JSON body for PATCH /v0/city.
@@ -40,12 +28,6 @@ type cityPatchRequest struct {
 }
 
 func (s *Server) handleCityPatch(w http.ResponseWriter, r *http.Request) {
-	sm, ok := s.state.(StateMutator)
-	if !ok {
-		writeError(w, http.StatusNotImplemented, "internal", "mutations not supported")
-		return
-	}
-
 	var body cityPatchRequest
 	if err := decodeBody(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid", err.Error())
@@ -57,12 +39,7 @@ func (s *Server) handleCityPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var err error
-	if *body.Suspended {
-		err = sm.SuspendCity()
-	} else {
-		err = sm.ResumeCity()
-	}
+	err := s.patchCitySuspended(*body.Suspended)
 	if err != nil {
 		if strings.Contains(err.Error(), "validating") {
 			writeError(w, http.StatusBadRequest, "invalid", err.Error())
@@ -72,4 +49,30 @@ func (s *Server) handleCityPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (s *Server) cityGet() cityGetResponse {
+	cfg := s.state.Config()
+	return cityGetResponse{
+		Name:            s.state.CityName(),
+		Path:            s.state.CityPath(),
+		Version:         s.state.Version(),
+		Suspended:       cfg.Workspace.Suspended,
+		Provider:        cfg.Workspace.Provider,
+		SessionTemplate: cfg.Workspace.SessionTemplate,
+		UptimeSec:       int(time.Since(s.state.StartedAt()).Seconds()),
+		AgentCount:      len(cfg.Agents),
+		RigCount:        len(cfg.Rigs),
+	}
+}
+
+func (s *Server) patchCitySuspended(suspend bool) error {
+	sm, ok := s.state.(StateMutator)
+	if !ok {
+		return httpError{status: http.StatusNotImplemented, code: "internal", message: "mutations not supported"}
+	}
+	if suspend {
+		return sm.SuspendCity()
+	}
+	return sm.ResumeCity()
 }

@@ -112,6 +112,10 @@ func (sm *SupervisorMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 
 	// Supervisor-level endpoints.
+	if path == "/v0/ws" && r.Method == http.MethodGet {
+		sm.handleWebSocket(w, r)
+		return
+	}
 	if path == "/v0/cities" && r.Method == http.MethodGet {
 		sm.handleCities(w, r)
 		return
@@ -270,9 +274,7 @@ func supervisorServicePath(path string) bool {
 }
 
 func (sm *SupervisorMux) handleCities(w http.ResponseWriter, _ *http.Request) {
-	cities := sm.resolver.ListCities()
-	sort.Slice(cities, func(i, j int) bool { return cities[i].Name < cities[j].Name })
-	writeJSON(w, http.StatusOK, listResponse{Items: cities, Total: len(cities)})
+	writeJSON(w, http.StatusOK, sm.citiesList())
 }
 
 // handleGlobalEventStream streams SSE events from all running cities,
@@ -358,6 +360,16 @@ func (sm *SupervisorMux) buildMultiplexer() *events.Multiplexer {
 }
 
 func (sm *SupervisorMux) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, sm.healthResponse())
+}
+
+func (sm *SupervisorMux) citiesList() listResponse {
+	cities := sm.resolver.ListCities()
+	sort.Slice(cities, func(i, j int) bool { return cities[i].Name < cities[j].Name })
+	return listResponse{Items: cities, Total: len(cities)}
+}
+
+func (sm *SupervisorMux) healthResponse() map[string]any {
 	cities := sm.resolver.ListCities()
 	var running int
 	// Use the first city for startup info (single-city deployments).
@@ -382,7 +394,7 @@ func (sm *SupervisorMux) handleHealth(w http.ResponseWriter, _ *http.Request) {
 			}
 		}
 	}
-	resp := map[string]any{
+	return map[string]any{
 		"status":         "ok",
 		"version":        sm.version,
 		"uptime_sec":     int(time.Since(sm.startedAt).Seconds()),
@@ -390,9 +402,24 @@ func (sm *SupervisorMux) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"cities_running": running,
 	}
 	if startup != nil {
-		resp["startup"] = startup
+		// Map mutation after literal creation keeps the response builder compact.
+		resp := map[string]any{
+			"status":         "ok",
+			"version":        sm.version,
+			"uptime_sec":     int(time.Since(sm.startedAt).Seconds()),
+			"cities_total":   len(cities),
+			"cities_running": running,
+			"startup":        startup,
+		}
+		return resp
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return map[string]any{
+		"status":         "ok",
+		"version":        sm.version,
+		"uptime_sec":     int(time.Since(sm.startedAt).Seconds()),
+		"cities_total":   len(cities),
+		"cities_running": running,
+	}
 }
 
 // allStartupPhases returns the ordered list of all startup phases.
