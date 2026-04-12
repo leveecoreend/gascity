@@ -3,7 +3,6 @@
 package tutorialgoldens
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	helpers "github.com/gastownhall/gascity/test/acceptance/helpers"
+	"github.com/joho/godotenv"
 )
 
 const canonicalTutorialRoot = "docs/tutorials"
@@ -325,37 +325,22 @@ func stageProviderBinaries(dstHome string) error {
 }
 
 func loadTutorialEnvFile() error {
-	path := filepath.Join(helpers.FindModuleRoot(), ".env")
-	f, err := os.Open(path)
+	return loadEnvFile(filepath.Join(helpers.FindModuleRoot(), ".env"))
+}
+
+func loadEnvFile(path string) error {
+	values, err := godotenv.Read(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+	for key, value := range values {
+		if os.Getenv(key) != "" {
 			continue
 		}
-		line = strings.TrimPrefix(line, "export ")
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		if key == "" || os.Getenv(key) != "" {
-			continue
-		}
-		value = strings.TrimSpace(value)
-		value = strings.Trim(value, `"'`)
 		_ = os.Setenv(key, value)
-	}
-	if err := scanner.Err(); err != nil {
-		return err
 	}
 	return nil
 }
@@ -383,16 +368,7 @@ func hasValidClaudeOAuthToken() bool {
 		}
 		cmd.Env = append(cmd.Env, key+"="+value)
 	}
-	userName := strings.TrimSpace(os.Getenv("USER"))
-	login := strings.TrimSpace(os.Getenv("LOGNAME"))
-	if current, err := user.Current(); err == nil {
-		if userName == "" {
-			userName = strings.TrimSpace(current.Username)
-		}
-		if login == "" {
-			login = strings.TrimSpace(current.Username)
-		}
-	}
+	userName, login := resolveTutorialUserIdentity(os.Getenv("USER"), os.Getenv("LOGNAME"))
 	appendNonEmptyEnv("USER", userName)
 	appendNonEmptyEnv("LOGNAME", login)
 	appendNonEmptyEnv("SHELL", os.Getenv("SHELL"))
@@ -408,8 +384,18 @@ func ensureTutorialUserEnv(env *helpers.Env) {
 	if env == nil {
 		return
 	}
-	userName := strings.TrimSpace(env.Get("USER"))
-	login := strings.TrimSpace(env.Get("LOGNAME"))
+	userName, login := resolveTutorialUserIdentity(env.Get("USER"), env.Get("LOGNAME"))
+	if userName != "" {
+		env.With("USER", userName)
+	}
+	if login != "" {
+		env.With("LOGNAME", login)
+	}
+}
+
+func resolveTutorialUserIdentity(userName, login string) (string, string) {
+	userName = strings.TrimSpace(userName)
+	login = strings.TrimSpace(login)
 	if current, err := user.Current(); err == nil {
 		if userName == "" {
 			userName = strings.TrimSpace(current.Username)
@@ -424,12 +410,7 @@ func ensureTutorialUserEnv(env *helpers.Env) {
 	if login == "" {
 		login = userName
 	}
-	if userName != "" {
-		env.With("USER", userName)
-	}
-	if login != "" {
-		env.With("LOGNAME", login)
-	}
+	return userName, login
 }
 
 func acceptanceTempRoot() (string, error) {
