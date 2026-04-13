@@ -1,4 +1,5 @@
 .DS_Store
+.env
 CLAUDE.local.md
 coverage.txt
 /bin/
@@ -28,3 +29,5 @@ reports/
 # Beads / Dolt files (added by bd init)
 .beads-credential-key
 .cache/
+.vscode/settings.json
+.env

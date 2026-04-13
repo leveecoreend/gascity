@@ -206,11 +206,21 @@ func (cr *CityRuntime) crashTrack() crashTracker {
 func (cr *CityRuntime) run(ctx context.Context) {
 	dirty := &atomic.Bool{}
 	if cr.tomlPath != "" {
-		dirs := cr.watchDirs
-		if len(dirs) == 0 {
-			dirs = []string{filepath.Dir(cr.tomlPath)}
+		watchPaths := append([]string{}, cr.watchDirs...)
+		if len(watchPaths) == 0 {
+			watchPaths = []string{filepath.Dir(cr.tomlPath)}
 		}
-		cleanup := watchConfigDirs(dirs, dirty, cr.stderr)
+		var hasTomlPath bool
+		for _, path := range watchPaths {
+			if samePath(path, cr.tomlPath) {
+				hasTomlPath = true
+				break
+			}
+		}
+		if !hasTomlPath {
+			watchPaths = append(watchPaths, cr.tomlPath)
+		}
+		cleanup := watchConfigDirs(watchPaths, dirty, cr.pokeCh, cr.stderr)
 		defer cleanup()
 	}
 
@@ -283,6 +293,16 @@ func (cr *CityRuntime) run(ctx context.Context) {
 	startupTrace := cr.beginTraceCycle("startup", "initial_reconcile", sessionBeads)
 	result := cr.buildDesiredState(sessionBeads, startupTrace)
 	sessionBeads = cr.syncBeadsAndUpdateIndex(result.State, sessionBeads)
+	result = refreshDesiredStateWithSessionBeads(
+		result,
+		cr.cityName,
+		cr.cityPath,
+		cr.cfg,
+		cr.sp,
+		cr.cityBeadStore(),
+		sessionBeads,
+		cr.stderr,
+	)
 	if ctx.Err() != nil {
 		if startupTrace != nil {
 			startupTrace.end(TraceCompletionAborted, traceRecordPayload{"phase": "startup"})
@@ -392,6 +412,9 @@ func (cr *CityRuntime) tick(
 	if dirty.Swap(false) {
 		cr.reloadConfigTraced(ctx, lastProviderName, cityRoot, trace)
 	}
+	if ctx.Err() != nil {
+		return
+	}
 
 	// Session bead sync BEFORE reconciliation (one-tick state lag; see run()).
 	// Post-reconcile sync was intentionally removed: the daemon's next tick
@@ -404,10 +427,23 @@ func (cr *CityRuntime) tick(
 	// stamped on adopted beads). The CachingStore has the updated data
 	// from SetMetadataBatch write-through.
 	sessionBeads = cr.loadSessionBeadSnapshot()
+	result = refreshDesiredStateWithSessionBeads(
+		result,
+		cr.cityName,
+		cr.cityPath,
+		cr.cfg,
+		cr.sp,
+		cr.cityBeadStore(),
+		sessionBeads,
+		cr.stderr,
+	)
 
 	// Bead-driven reconciliation (requires bead store / drain tracker).
 	if cr.sessionDrains != nil {
 		cr.beadReconcileTick(ctx, result, sessionBeads, trace)
+	}
+	if ctx.Err() != nil {
+		return
 	}
 
 	// Wisp GC: purge expired closed molecules.
@@ -420,9 +456,16 @@ func (cr *CityRuntime) tick(
 		}
 	}
 
+	if ctx.Err() != nil {
+		return
+	}
+
 	// Order dispatch.
 	if cr.od != nil {
 		cr.od.dispatch(ctx, cityRoot, time.Now())
+	}
+	if ctx.Err() != nil {
+		return
 	}
 
 	if cr.svc != nil {
@@ -432,6 +475,9 @@ func (cr *CityRuntime) tick(
 	// Chat session auto-suspend: suspend detached idle sessions.
 	if idleTimeout := cr.cfg.ChatSessions.IdleTimeoutDuration(); idleTimeout > 0 {
 		autoSuspendChatSessions(cr.cityBeadStore(), cr.sp, idleTimeout, clock.Real{}, cr.stdout, cr.stderr)
+	}
+	if ctx.Err() != nil {
+		return
 	}
 
 	// Drain queued convergence requests (CLI commands) BEFORE tick so
@@ -692,7 +738,7 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 
 	cfgNames := configuredSessionNamesWithSnapshot(cr.cfg, cityName, sessionBeads)
 
-	readyWaitSet, err := prepareWaitWakeState(store, time.Now())
+	readyWaitSet, err := prepareWaitWakeState(store, cr.rigBeadStores(), time.Now())
 	if err != nil {
 		fmt.Fprintf(cr.stderr, "%s: preparing waits: %v\n", cr.logPrefix, err) //nolint:errcheck
 		readyWaitSet = nil
@@ -789,6 +835,7 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 		cr.cfg.Daemon.DriftDrainTimeoutDuration(),
 		cr.stdout, cr.stderr, trace,
 	)
+	cr.requestDeferredDrainFollowUpTick()
 	if trace != nil {
 		for _, bead := range open {
 			template := normalizedSessionTemplate(bead, cr.cfg)
@@ -806,6 +853,19 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 	}
 
 	// Idle recovery: detect pool sessions stuck at the prompt after
+}
+
+func (cr *CityRuntime) requestDeferredDrainFollowUpTick() {
+	if cr == nil || cr.sessionDrains == nil {
+		return
+	}
+	if !cr.sessionDrains.consumeFollowUpTick() {
+		return
+	}
+	select {
+	case cr.pokeCh <- struct{}{}:
+	default:
+	}
 }
 
 func sweepUndesiredPoolSessionBeads(
@@ -914,6 +974,7 @@ func (cr *CityRuntime) controlDispatcherTick(ctx context.Context) {
 		cr.stdout,
 		cr.stderr,
 	)
+	cr.requestDeferredDrainFollowUpTick()
 }
 
 // syncBeadsAndUpdateIndex runs syncSessionBeads.
@@ -980,6 +1041,12 @@ func (cr *CityRuntime) buildDesiredState(sessionBeads *sessionBeadSnapshot, trac
 }
 
 func buildStandaloneRigStores(cfg *config.City, cityPath string, stderr io.Writer) map[string]beads.Store {
+	return buildRigStores(cfg, cityPath, "gc supervisor", stderr)
+}
+
+// buildRigStores opens bead stores for all rigs attached to the city.
+// Errors on individual rigs are logged with logPrefix and skipped.
+func buildRigStores(cfg *config.City, cityPath, logPrefix string, stderr io.Writer) map[string]beads.Store {
 	if cfg == nil || len(cfg.Rigs) == 0 {
 		return nil
 	}
@@ -987,7 +1054,7 @@ func buildStandaloneRigStores(cfg *config.City, cityPath string, stderr io.Write
 	for _, rig := range cfg.Rigs {
 		store, err := openStoreAtForCity(rig.Path, cityPath)
 		if err != nil {
-			fmt.Fprintf(stderr, "gc supervisor: rig bead store %q: %v\n", rig.Name, err) //nolint:errcheck // best-effort stderr
+			fmt.Fprintf(stderr, "%s: rig bead store %q: %v\n", logPrefix, rig.Name, err) //nolint:errcheck // best-effort stderr
 			continue
 		}
 		stores[rig.Name] = store

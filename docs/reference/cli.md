@@ -20,7 +20,6 @@ gc [flags]
 | Subcommand | Description |
 |------------|-------------|
 | [gc agent](#gc-agent) | Manage agent configuration |
-| [gc backstage](#gc-backstage) | Commands from the backstage import |
 | [gc bd](#gc-bd) | Run bd in the correct rig directory |
 | [gc beads](#gc-beads) | Manage the beads provider |
 | [gc build-image](#gc-build-image) | Build a prebaked agent container image |
@@ -30,7 +29,6 @@ gc [flags]
 | [gc convoy](#gc-convoy) | Manage convoys — graphs of related work |
 | [gc dashboard](#gc-dashboard) | Web dashboard for monitoring the city |
 | [gc doctor](#gc-doctor) | Check workspace health |
-| [gc dolt](#gc-dolt) | Commands from the dolt import |
 | [gc event](#gc-event) | Event operations |
 | [gc events](#gc-events) | Show the event log |
 | [gc formula](#gc-formula) | Manage and inspect formulas |
@@ -42,7 +40,7 @@ gc [flags]
 | [gc init](#gc-init) | Initialize a new city |
 | [gc mail](#gc-mail) | Send and receive messages between agents and humans |
 | [gc nudge](#gc-nudge) | Inspect and deliver deferred nudges |
-| [gc order](#gc-order) | Manage orders (periodic formula dispatch) |
+| [gc order](#gc-order) | Manage orders (scheduled and event-driven dispatch) |
 | [gc pack](#gc-pack) | Manage remote pack sources |
 | [gc prime](#gc-prime) | Output the behavioral prompt for an agent |
 | [gc register](#gc-register) | Register a city with the machine-wide supervisor |
@@ -134,24 +132,6 @@ replaced if they exit. Use "gc agent resume" to restore.
 
 ```
 gc agent suspend <name>
-```
-
-## gc backstage
-
-Commands from the backstage import
-
-```
-gc backstage
-```
-
-| Subcommand | Description |
-|------------|-------------|
-| [gc backstage hello](#gc-backstage-hello) |  |
-
-## gc backstage hello
-
-```
-gc backstage hello
 ```
 
 ## gc bd
@@ -697,107 +677,6 @@ gc doctor
 |------|------|---------|-------------|
 | `--fix` | bool |  | attempt to fix issues automatically |
 | `-v`, `--verbose` | bool |  | show extra diagnostic details |
-
-## gc dolt
-
-Commands from the dolt import
-
-```
-gc dolt
-```
-
-| Subcommand | Description |
-|------------|-------------|
-| [gc dolt cleanup](#gc-dolt-cleanup) | Find and remove orphaned Dolt databases |
-| [gc dolt health](#gc-dolt-health) | Check Dolt data-plane health |
-| [gc dolt list](#gc-dolt-list) | List Dolt databases |
-| [gc dolt logs](#gc-dolt-logs) | Tail the Dolt server log file |
-| [gc dolt recover](#gc-dolt-recover) | Recover Dolt from read-only state |
-| [gc dolt rollback](#gc-dolt-rollback) | List or restore from migration backups |
-| [gc dolt sql](#gc-dolt-sql) | Open an interactive Dolt SQL shell |
-| [gc dolt start](#gc-dolt-start) | Start the Dolt server if not already running |
-| [gc dolt status](#gc-dolt-status) | Check if the Dolt server is running |
-| [gc dolt sync](#gc-dolt-sync) | Push databases to configured remotes |
-
-## gc dolt cleanup
-
-Find and remove orphaned Dolt databases
-
-```
-gc dolt cleanup
-```
-
-## gc dolt health
-
-Check Dolt data-plane health
-
-```
-gc dolt health
-```
-
-## gc dolt list
-
-List Dolt databases
-
-```
-gc dolt list
-```
-
-## gc dolt logs
-
-Tail the Dolt server log file
-
-```
-gc dolt logs
-```
-
-## gc dolt recover
-
-Recover Dolt from read-only state
-
-```
-gc dolt recover
-```
-
-## gc dolt rollback
-
-List or restore from migration backups
-
-```
-gc dolt rollback
-```
-
-## gc dolt sql
-
-Open an interactive Dolt SQL shell
-
-```
-gc dolt sql
-```
-
-## gc dolt start
-
-Start the Dolt server if not already running
-
-```
-gc dolt start
-```
-
-## gc dolt status
-
-Check if the Dolt server is running
-
-```
-gc dolt status
-```
-
-## gc dolt sync
-
-Push databases to configured remotes
-
-```
-gc dolt sync
-```
 
 ## gc event
 
@@ -1350,11 +1229,12 @@ gc nudge status [session]
 
 ## gc order
 
-Manage orders — formulas with gate conditions for periodic dispatch.
+Manage orders — scheduled or event-driven dispatch of formulas and scripts.
 
-Orders are formulas annotated with scheduling gates (interval, cron
-schedule, or shell check commands). The controller evaluates gates
-periodically and dispatches order formulas when they are due.
+Orders live in orders/NAME/order.toml files. Each order pairs a gate
+condition (cooldown, cron, condition, event, or manual) with an action
+(a formula or an exec script). The controller evaluates gates on each
+tick and dispatches work when a gate opens.
 
 ```
 gc order
@@ -1398,8 +1278,8 @@ gc order history [name] [flags]
 
 List all available orders with their gate type, schedule, and target.
 
-Scans formula layers for formulas that have order metadata
-(gate, interval, schedule, check, pool).
+Scans orders/ directories for order.toml files defining gate conditions,
+scheduling parameters, and target pools.
 
 ```
 gc order list
@@ -1573,6 +1453,10 @@ Use --prefix to set the bead ID prefix explicitly (default: derived from name).
 Use --start-suspended to add the rig in a suspended state (dormant-by-default).
 The rig's agents won't spawn until explicitly resumed with "gc rig resume".
 
+Use --adopt to register a directory that already has a fully initialized
+.beads/ directory (must include both metadata.json and config.yaml).
+Skips beads init; the git repo check remains informational.
+
 ```
 gc rig add <path> [flags]
 ```
@@ -1585,10 +1469,12 @@ gc rig add /path/to/project
   gc rig add /path/to/project --prefix r1
   gc rig add ./my-project --include packs/gastown
   gc rig add ./my-project --include packs/gastown --start-suspended
+  gc rig add /path/to/existing --adopt
 ```
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--adopt` | bool |  | adopt existing .beads/ directory (skip init) |
 | `--include` | string |  | pack directory for rig agents |
 | `--name` | string |  | rig name (default: directory basename) |
 | `--prefix` | string |  | bead ID prefix (default: derived from name) |
