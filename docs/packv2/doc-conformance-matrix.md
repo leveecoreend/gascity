@@ -69,6 +69,7 @@ These are settled enough, and implemented enough, to block CI now.
 | Commands discovery | The default `commands/<name>/run.sh` discovery path works; final manifest shape remains non-gating | Unit + testscript | `internal/config/command_discovery.go` |
 | Doctor discovery | The default `doctor/<name>/run.sh` discovery path works | Unit + testscript | `internal/config/doctor_discovery.go` |
 | Legacy migration rewrite | `gc doctor` inventories legacy Pack/City v1 usage and `gc doctor --fix` performs the safe mechanical rewrites for agent directories, prompt/overlay/namepool moves, and import-oriented composition. Legacy remote `workspace.includes` is a hard-break migration issue, not a runtime compatibility target. | Testscript | `cmd/gc/doctor_v2_checks.go`, migration fix path TBD |
+| Registration aliasing | `gc register --name` stores a machine-local registration alias and persists it into `workspace.name`; default no-flag registration uses `workspace.name` when present, otherwise falls back to `[pack].name` and persists that into `workspace.name` | Unit | `cmd/gc/cmd_register.go`, `cmd/gc/cmd_supervisor_city.go`, `internal/supervisor/registry.go` |
 
 ## Add To CI When Warning Plumbing Lands
 
@@ -98,7 +99,6 @@ unsettled to be reliable release gates.
 |---|---|---|
 | `[defaults.rig.imports]` loader support | documented intent, not implemented | Migration tooling may write it, but the loader does not yet honor it |
 | `[agent_defaults] provider` driving runtime provider selection | migration target is documented, but runtime behavior is not aligned enough to gate | Current implementation still resolves runtime defaults through `workspace.provider` / `ResolveProvider`; locking in the future rule now would create false failures |
-| `gc register --name` | documented in design docs, not implemented | Release docs mention it, but `skew-analysis.md` marks it red, so the suite must not assume it exists |
 | `patches/` directory convention for imported prompt replacements | documented in v.next docs, not implemented | Current implementation still relies on explicit patch fields rather than full loader-discovered patch files |
 | Pack `skills/` discovery | documented, not implemented | First slice is current-city-pack only with list-only visibility; imported-pack catalogs are later |
 | `mcp/` TOML abstraction | documented, not implemented | Same first-slice scope as skills: current-city-pack only, list-only visibility first, provider projection later |
