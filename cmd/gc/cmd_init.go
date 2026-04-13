@@ -443,14 +443,6 @@ func cmdInitFromTOMLFileWithOptions(fs fsys.FS, tomlSrc, cityPath, nameOverride 
 	// --file creates a new city from a template; default to target dir name.
 	cityName := resolveCityName(nameOverride, cityPath)
 	cfg.Workspace.Name = cityName
-	rewriteInitPromptTemplates(cfg)
-
-	// Re-marshal so the name is updated.
-	content, err := cfg.Marshal()
-	if err != nil {
-		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
-		return 1
-	}
 
 	// Create directory structure.
 	if cityAlreadyInitializedFS(fs, cityPath) {
@@ -489,6 +481,17 @@ func cmdInitFromTOMLFileWithOptions(fs fsys.FS, tomlSrc, cityPath, nameOverride 
 	formulasInitDir := filepath.Join(cityPath, citylayout.FormulasRoot)
 	if rfErr := ResolveFormulas(cityPath, []string{formulasInitDir}); rfErr != nil {
 		fmt.Fprintf(stderr, "gc init: resolving formulas: %v\n", rfErr) //nolint:errcheck // best-effort stderr
+	}
+
+	// Rewrite legacy prompt paths only after we've copied the embedded prompt
+	// scaffolds that still live under prompts/.
+	rewriteInitPromptTemplates(cfg)
+
+	// Re-marshal so the name and rewritten prompt paths are updated.
+	content, err := cfg.Marshal()
+	if err != nil {
+		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
+		return 1
 	}
 
 	// Write city.toml.
