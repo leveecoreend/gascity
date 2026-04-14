@@ -24,6 +24,8 @@ Every endpoint is **WS-only** or **HTTP-only**, never both. When migration is co
 | `/svc/*` | TCP/HTTP proxy passthrough to workspace services |
 | `/debug/pprof/*` | Go runtime profiling, developer tool |
 | `GET /v0/ws` | WS upgrade endpoint (inherently HTTP) |
+| `GET /v0/asyncapi.yaml` | Auto-generated spec discovery — clients need contract before WS connect |
+| `GET /v0/openapi.yaml` | Auto-generated spec discovery — clients need contract before WS connect |
 
 ### Architecture
 
@@ -215,7 +217,7 @@ The implementation can migrate these in phases, but the plan must inventory them
 
 Every former HTTP route is classified as **WS-only** (migrated), **HTTP-only** (justified survivor), or **Removed** (dead).
 
-#### HTTP-only survivors (6 routes)
+#### HTTP-only survivors (8 routes)
 
 | Route | Justification |
 |-------|--------------|
@@ -225,6 +227,8 @@ Every former HTTP route is classified as **WS-only** (migrated), **HTTP-only** (
 | `GET /v0/provider-readiness` | Operational probe |
 | `POST /v0/city` | Process manager registration, not client API |
 | `/svc/*` | TCP/HTTP proxy passthrough to workspace services |
+| `GET /v0/asyncapi.yaml` | Auto-generated spec discovery — clients need contract before WS connect |
+| `GET /v0/openapi.yaml` | Auto-generated spec discovery — clients need contract before WS connect |
 
 #### WS-only actions (119 actions)
 
