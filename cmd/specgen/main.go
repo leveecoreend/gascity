@@ -29,7 +29,8 @@ import (
 )
 
 func main() {
-	registry := gcapi.BuildActionRegistry()
+	// Import all dispatch_*.go registrations by referencing the api package.
+	registry := gcapi.ActionTableRegistry()
 
 	root := repoRoot()
 	asyncAPIPath := filepath.Join(root, "contracts", "supervisor-ws", "asyncapi.yaml")

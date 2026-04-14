@@ -20,10 +20,32 @@ channels:
     publish:
       message:
         $ref: '#/components/messages/ApiAgentCreateRequest'
+  actions/agent.create/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Create an agent
+        description: agent.create response payload
   actions/agent.delete/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/agent.delete/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Delete an agent
+        description: agent.delete response payload
   actions/agent.get/request:
     publish:
       message:
@@ -31,19 +53,53 @@ channels:
   actions/agent.get/response:
     subscribe:
       message:
-        $ref: '#/components/messages/ApiAgentResponse'
+        summary: Get agent details
+        description: agent.get response payload
   actions/agent.resume/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/agent.resume/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Resume an agent
+        description: agent.resume response payload
   actions/agent.suspend/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/agent.suspend/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Suspend an agent
+        description: agent.suspend response payload
   actions/agent.update/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketAgentUpdatePayload'
+  actions/agent.update/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Update an agent
+        description: agent.update response payload
   actions/agents.list/request:
     publish:
       message:
@@ -59,7 +115,14 @@ channels:
   actions/bead.assign/response:
     subscribe:
       message:
-        $ref: '#/components/messages/BeadsBead'
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Assign a bead
+        description: bead.assign response payload
   actions/bead.close/request:
     publish:
       message:
@@ -67,23 +130,45 @@ channels:
   actions/bead.close/response:
     subscribe:
       message:
-        $ref: '#/components/messages/BeadsBead'
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Close a bead
+        description: bead.close response payload
   actions/bead.create/request:
-    publish:
-      message:
-        $ref: '#/components/messages/ApiBeadCreateRequest'
-  actions/bead.create/response:
-    subscribe:
-      message:
-        $ref: '#/components/messages/BeadsBead'
+    description: Create a bead
   actions/bead.delete/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketIDPayload'
+  actions/bead.delete/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Delete a bead
+        description: bead.delete response payload
   actions/bead.deps/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketIDPayload'
+  actions/bead.deps/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties: {}
+          type:
+          - "null"
+          - object
+        summary: Get bead dependencies
+        description: bead.deps response payload
   actions/bead.get/request:
     publish:
       message:
@@ -99,19 +184,38 @@ channels:
   actions/bead.reopen/response:
     subscribe:
       message:
-        $ref: '#/components/messages/BeadsBead'
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Reopen a bead
+        description: bead.reopen response payload
   actions/bead.update/request:
     publish:
       message:
-        $ref: '#/components/messages/ApiSocketIDPayload'
+        summary: Update a bead
+        description: bead.update request payload
   actions/bead.update/response:
     subscribe:
       message:
-        $ref: '#/components/messages/BeadsBead'
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Update a bead
+        description: bead.update response payload
   actions/beads.graph/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketBeadGraphPayload'
+  actions/beads.graph/response:
+    subscribe:
+      message:
+        $ref: '#/components/messages/ApiBeadGraphResponseJSON'
   actions/beads.list/request:
     publish:
       message:
@@ -128,54 +232,141 @@ channels:
         $ref: '#/components/messages/ApiListResponse'
   actions/cities.list/request:
     description: List managed cities (supervisor)
-  actions/cities.list/response:
-    subscribe:
-      message:
-        $ref: '#/components/messages/ApiListResponse'
   actions/city.get/request:
     description: Get city details
+  actions/city.get/response:
+    subscribe:
+      message:
+        summary: Get city details
+        description: city.get response payload
   actions/city.patch/request:
     publish:
       message:
         $ref: '#/components/messages/ApiCityPatchRequest'
+  actions/city.patch/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Update city (suspend/resume)
+        description: city.patch response payload
   actions/config.explain/request:
     description: Explain config resolution
+  actions/config.explain/response:
+    subscribe:
+      message:
+        summary: Explain config resolution
+        description: config.explain response payload
   actions/config.get/request:
     description: Get parsed city configuration
   actions/config.get/response:
     subscribe:
       message:
-        $ref: '#/components/messages/ApiConfigResponse'
+        summary: Get parsed city configuration
+        description: config.get response payload
   actions/config.validate/request:
     description: Validate city configuration
+  actions/config.validate/response:
+    subscribe:
+      message:
+        summary: Validate city configuration
+        description: config.validate response payload
   actions/convoy.add/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketConvoyItemsPayload'
+  actions/convoy.add/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Add items to a convoy
+        description: convoy.add response payload
   actions/convoy.check/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketIDPayload'
+  actions/convoy.check/response:
+    subscribe:
+      message:
+        summary: Check convoy completion
+        description: convoy.check response payload
   actions/convoy.close/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketIDPayload'
+  actions/convoy.close/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Close a convoy
+        description: convoy.close response payload
   actions/convoy.create/request:
     publish:
       message:
         $ref: '#/components/messages/ApiConvoyCreateRequest'
+  actions/convoy.create/response:
+    subscribe:
+      message:
+        summary: Create a convoy
+        description: convoy.create response payload
   actions/convoy.delete/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketIDPayload'
+  actions/convoy.delete/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Delete a convoy
+        description: convoy.delete response payload
   actions/convoy.get/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketIDPayload'
+  actions/convoy.get/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties: {}
+          type:
+          - "null"
+          - object
+        summary: Get convoy details
+        description: convoy.get response payload
   actions/convoy.remove/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketConvoyItemsPayload'
+  actions/convoy.remove/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Remove items from a convoy
+        description: convoy.remove response payload
   actions/convoys.list/request:
     description: List convoys
   actions/convoys.list/response:
@@ -185,7 +376,18 @@ channels:
   actions/event.emit/request:
     publish:
       message:
-        $ref: '#/components/messages/EventsEvent'
+        $ref: '#/components/messages/ApiEventEmitRequest'
+  actions/event.emit/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Emit an event
+        description: event.emit response payload
   actions/events.list/request:
     publish:
       message:
@@ -195,51 +397,177 @@ channels:
       message:
         $ref: '#/components/messages/ApiListResponse'
   actions/extmsg.adapters.list/request:
-    description: List messaging adapters
+    description: List external message adapters
+  actions/extmsg.adapters.list/response:
+    subscribe:
+      message:
+        summary: List external message adapters
+        description: extmsg.adapters.list response payload
   actions/extmsg.adapters.register/request:
-    description: Register messaging adapter
+    publish:
+      message:
+        $ref: '#/components/messages/ApiExtmsgAdapterRegisterRequest'
+  actions/extmsg.adapters.register/response:
+    subscribe:
+      message:
+        summary: Register external message adapter
+        description: extmsg.adapters.register response payload
   actions/extmsg.adapters.unregister/request:
-    description: Unregister messaging adapter
+    publish:
+      message:
+        $ref: '#/components/messages/ApiExtmsgAdapterUnregisterRequest'
+  actions/extmsg.adapters.unregister/response:
+    subscribe:
+      message:
+        summary: Unregister external message adapter
+        description: extmsg.adapters.unregister response payload
   actions/extmsg.bind/request:
-    description: Bind external messaging channel
+    publish:
+      message:
+        $ref: '#/components/messages/ApiExtmsgBindRequest'
+  actions/extmsg.bind/response:
+    subscribe:
+      message:
+        summary: Bind external message channel
+        description: extmsg.bind response payload
   actions/extmsg.bindings.list/request:
-    description: List external message bindings
+    publish:
+      message:
+        $ref: '#/components/messages/ApiSocketExtMsgBindingsPayload'
+  actions/extmsg.bindings.list/response:
+    subscribe:
+      message:
+        summary: List external message bindings
+        description: extmsg.bindings.list response payload
   actions/extmsg.groups.ensure/request:
-    description: Ensure messaging group exists
+    publish:
+      message:
+        $ref: '#/components/messages/ApiExtmsgGroupEnsureRequest'
+  actions/extmsg.groups.ensure/response:
+    subscribe:
+      message:
+        summary: Ensure external message group exists
+        description: extmsg.groups.ensure response payload
   actions/extmsg.groups.lookup/request:
-    description: Look up messaging groups
+    publish:
+      message:
+        $ref: '#/components/messages/ApiExtmsgGroupLookupRequest'
+  actions/extmsg.groups.lookup/response:
+    subscribe:
+      message:
+        summary: Look up external message group
+        description: extmsg.groups.lookup response payload
   actions/extmsg.inbound/request:
-    description: Process inbound external message
+    publish:
+      message:
+        $ref: '#/components/messages/ApiExtmsgInboundRequest'
+  actions/extmsg.inbound/response:
+    subscribe:
+      message:
+        summary: Process inbound external message
+        description: extmsg.inbound response payload
   actions/extmsg.outbound/request:
-    description: Send outbound external message
+    publish:
+      message:
+        $ref: '#/components/messages/ApiExtmsgOutboundRequest'
+  actions/extmsg.outbound/response:
+    subscribe:
+      message:
+        summary: Process outbound external message
+        description: extmsg.outbound response payload
   actions/extmsg.participant.remove/request:
-    description: Remove messaging participant
+    publish:
+      message:
+        $ref: '#/components/messages/ApiExtmsgParticipantRemoveRequest'
+  actions/extmsg.participant.remove/response:
+    subscribe:
+      message:
+        summary: Remove external message participant
+        description: extmsg.participant.remove response payload
   actions/extmsg.participant.upsert/request:
-    description: Add/update messaging participant
+    publish:
+      message:
+        $ref: '#/components/messages/ApiExtmsgParticipantUpsertRequest'
+  actions/extmsg.participant.upsert/response:
+    subscribe:
+      message:
+        summary: Upsert external message participant
+        description: extmsg.participant.upsert response payload
   actions/extmsg.transcript.ack/request:
-    description: Acknowledge transcript messages
+    publish:
+      message:
+        $ref: '#/components/messages/ApiExtmsgTranscriptAckRequest'
+  actions/extmsg.transcript.ack/response:
+    subscribe:
+      message:
+        summary: Acknowledge external message transcript
+        description: extmsg.transcript.ack response payload
   actions/extmsg.transcript.list/request:
-    description: List external message transcript
+    publish:
+      message:
+        $ref: '#/components/messages/ApiExtmsgTranscriptListRequest'
+  actions/extmsg.transcript.list/response:
+    subscribe:
+      message:
+        summary: List external message transcript
+        description: extmsg.transcript.list response payload
   actions/extmsg.unbind/request:
-    description: Unbind external messaging channel
+    publish:
+      message:
+        $ref: '#/components/messages/ApiExtmsgUnbindRequest'
+  actions/extmsg.unbind/response:
+    subscribe:
+      message:
+        summary: Unbind external message channel
+        description: extmsg.unbind response payload
   actions/formula.get/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketFormulaGetPayload'
+  actions/formula.get/response:
+    subscribe:
+      message:
+        summary: Get formula details
+        description: formula.get response payload
   actions/formula.runs/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketFormulaRunsPayload'
+  actions/formula.runs/response:
+    subscribe:
+      message:
+        summary: Get formula run history
+        description: formula.runs response payload
   actions/formulas.feed/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketFormulaFeedPayload'
+  actions/formulas.feed/response:
+    subscribe:
+      message:
+        summary: Get formula activity feed
+        description: formulas.feed response payload
   actions/formulas.list/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketFormulaScopePayload'
+  actions/formulas.list/response:
+    subscribe:
+      message:
+        summary: List formulas
+        description: formulas.list response payload
   actions/health.get/request:
     description: Health check
+  actions/health.get/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties: {}
+          type:
+          - "null"
+          - object
+        summary: Health check
+        description: health.get response payload
   actions/mail.archive/request:
     publish:
       message:
@@ -247,15 +575,44 @@ channels:
   actions/mail.archive/response:
     subscribe:
       message:
-        $ref: '#/components/messages/MailMessage'
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Archive a mail message
+        description: mail.archive response payload
   actions/mail.count/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketMailCountPayload'
+  actions/mail.count/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: integer
+          type:
+          - "null"
+          - object
+        summary: Count mail messages
+        description: mail.count response payload
   actions/mail.delete/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketMailGetPayload'
+  actions/mail.delete/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Delete a mail message
+        description: mail.delete response payload
   actions/mail.get/request:
     publish:
       message:
@@ -279,7 +636,14 @@ channels:
   actions/mail.mark_unread/response:
     subscribe:
       message:
-        $ref: '#/components/messages/MailMessage'
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Mark mail as unread
+        description: mail.mark_unread response payload
   actions/mail.read/request:
     publish:
       message:
@@ -287,19 +651,24 @@ channels:
   actions/mail.read/response:
     subscribe:
       message:
-        $ref: '#/components/messages/MailMessage'
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Mark mail as read
+        description: mail.read response payload
   actions/mail.reply/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketMailReplyPayload'
-  actions/mail.send/request:
-    publish:
-      message:
-        $ref: '#/components/messages/ApiMailSendRequest'
-  actions/mail.send/response:
+  actions/mail.reply/response:
     subscribe:
       message:
         $ref: '#/components/messages/MailMessage'
+  actions/mail.send/request:
+    description: Send a mail message
   actions/mail.thread/request:
     publish:
       message:
@@ -312,14 +681,40 @@ channels:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/order.disable/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Disable an order
+        description: order.disable response payload
   actions/order.enable/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/order.enable/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Enable an order
+        description: order.enable response payload
   actions/order.get/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/order.get/response:
+    subscribe:
+      message:
+        $ref: '#/components/messages/ApiOrderResponse'
   actions/order.history.detail/request:
     publish:
       message:
@@ -327,61 +722,248 @@ channels:
   actions/order.history.detail/response:
     subscribe:
       message:
-        $ref: '#/components/messages/BeadsBead'
+        summary: Get order history detail
+        description: order.history.detail response payload
   actions/orders.check/request:
     description: Check order gate conditions
+  actions/orders.check/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties: {}
+          type:
+          - "null"
+          - object
+        summary: Check order gate conditions
+        description: orders.check response payload
   actions/orders.feed/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketOrdersFeedPayload'
+  actions/orders.feed/response:
+    subscribe:
+      message:
+        summary: Get order activity feed
+        description: orders.feed response payload
   actions/orders.history/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketOrdersHistoryPayload'
+  actions/orders.history/response:
+    subscribe:
+      message:
+        summary: Get order execution history
+        description: orders.history response payload
   actions/orders.list/request:
     description: List orders
+  actions/orders.list/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties: {}
+          type:
+          - "null"
+          - object
+        summary: List orders
+        description: orders.list response payload
   actions/packs.list/request:
-    description: List installed packs
+    description: List packs
+  actions/packs.list/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties: {}
+          type:
+          - "null"
+          - object
+        summary: List packs
+        description: packs.list response payload
   actions/patches.agent.delete/request:
-    description: Delete agent patch
+    publish:
+      message:
+        $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/patches.agent.delete/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Delete agent patch
+        description: patches.agent.delete response payload
   actions/patches.agent.get/request:
-    description: Get agent patch
+    publish:
+      message:
+        $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/patches.agent.get/response:
+    subscribe:
+      message:
+        $ref: '#/components/messages/ConfigAgentPatch'
   actions/patches.agents.list/request:
     description: List agent patches
+  actions/patches.agents.list/response:
+    subscribe:
+      message:
+        $ref: '#/components/messages/ApiListResponse'
   actions/patches.agents.set/request:
-    description: Set agent patch
+    publish:
+      message:
+        $ref: '#/components/messages/ConfigAgentPatch'
+  actions/patches.agents.set/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Set agent patch
+        description: patches.agents.set response payload
   actions/patches.provider.delete/request:
-    description: Delete provider patch
+    publish:
+      message:
+        $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/patches.provider.delete/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Delete provider patch
+        description: patches.provider.delete response payload
   actions/patches.provider.get/request:
-    description: Get provider patch
+    publish:
+      message:
+        $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/patches.provider.get/response:
+    subscribe:
+      message:
+        $ref: '#/components/messages/ConfigProviderPatch'
   actions/patches.providers.list/request:
     description: List provider patches
+  actions/patches.providers.list/response:
+    subscribe:
+      message:
+        $ref: '#/components/messages/ApiListResponse'
   actions/patches.providers.set/request:
-    description: Set provider patch
+    publish:
+      message:
+        $ref: '#/components/messages/ConfigProviderPatch'
+  actions/patches.providers.set/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Set provider patch
+        description: patches.providers.set response payload
   actions/patches.rig.delete/request:
-    description: Delete rig patch
+    publish:
+      message:
+        $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/patches.rig.delete/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Delete rig patch
+        description: patches.rig.delete response payload
   actions/patches.rig.get/request:
-    description: Get rig patch
+    publish:
+      message:
+        $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/patches.rig.get/response:
+    subscribe:
+      message:
+        $ref: '#/components/messages/ConfigRigPatch'
   actions/patches.rigs.list/request:
     description: List rig patches
+  actions/patches.rigs.list/response:
+    subscribe:
+      message:
+        $ref: '#/components/messages/ApiListResponse'
   actions/patches.rigs.set/request:
-    description: Set rig patch
+    publish:
+      message:
+        $ref: '#/components/messages/ConfigRigPatch'
+  actions/patches.rigs.set/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Set rig patch
+        description: patches.rigs.set response payload
   actions/provider.create/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketProviderCreatePayload'
+  actions/provider.create/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Create a provider
+        description: provider.create response payload
   actions/provider.delete/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/provider.delete/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Delete a provider
+        description: provider.delete response payload
   actions/provider.get/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/provider.get/response:
+    subscribe:
+      message:
+        summary: Get provider details
+        description: provider.get response payload
   actions/provider.update/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketProviderUpdatePayload'
+  actions/provider.update/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Update a provider
+        description: provider.update response payload
   actions/providers.list/request:
     publish:
       message:
@@ -394,30 +976,83 @@ channels:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketRigCreatePayload'
+  actions/rig.create/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Create a rig
+        description: rig.create response payload
   actions/rig.delete/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/rig.delete/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Delete a rig
+        description: rig.delete response payload
   actions/rig.get/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/rig.get/response:
+    subscribe:
+      message:
+        summary: Get rig details
+        description: rig.get response payload
   actions/rig.restart/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/rig.restart/response:
+    subscribe:
+      message:
+        summary: Restart a rig
+        description: rig.restart response payload
   actions/rig.resume/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/rig.resume/response:
+    subscribe:
+      message:
+        summary: Resume a rig
+        description: rig.resume response payload
   actions/rig.suspend/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/rig.suspend/response:
+    subscribe:
+      message:
+        summary: Suspend a rig
+        description: rig.suspend response payload
   actions/rig.update/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketRigUpdatePayload'
+  actions/rig.update/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Update a rig
+        description: rig.update response payload
   actions/rigs.list/request:
     description: List rigs
   actions/rigs.list/response:
@@ -431,13 +1066,25 @@ channels:
   actions/service.get/response:
     subscribe:
       message:
-        $ref: '#/components/messages/WorkspacesvcStatus'
+        summary: Get service details
+        description: service.get response payload
   actions/service.restart/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketNamePayload'
+  actions/service.restart/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Restart a service
+        description: service.restart response payload
   actions/services.list/request:
-    description: List workspace services
+    description: List services
   actions/services.list/response:
     subscribe:
       message:
@@ -446,6 +1093,11 @@ channels:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketSessionAgentGetPayload'
+  actions/session.agent.get/response:
+    subscribe:
+      message:
+        summary: Get agent details in a session
+        description: session.agent.get response payload
   actions/session.agents.list/request:
     publish:
       message:
@@ -453,15 +1105,25 @@ channels:
   actions/session.agents.list/response:
     subscribe:
       message:
-        $ref: '#/components/messages/ApiListResponse'
+        summary: List agents in a session
+        description: session.agents.list response payload
   actions/session.close/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketSessionTargetPayload'
-  actions/session.create/request:
-    publish:
+  actions/session.close/response:
+    subscribe:
       message:
-        $ref: '#/components/messages/ApiSessionCreateRequest'
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Close a session
+        description: session.close response payload
+  actions/session.create/request:
+    description: Create a session
   actions/session.get/request:
     publish:
       message:
@@ -474,46 +1136,128 @@ channels:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketSessionTargetPayload'
+  actions/session.kill/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Kill a session
+        description: session.kill response payload
   actions/session.messages/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketSessionMessagesPayload'
+  actions/session.messages/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Send a user message to a session
+        description: session.messages response payload
   actions/session.patch/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketSessionPatchPayload'
+  actions/session.patch/response:
+    subscribe:
+      message:
+        summary: Patch session metadata
+        description: session.patch response payload
   actions/session.pending/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketSessionTargetPayload'
+  actions/session.pending/response:
+    subscribe:
+      message:
+        $ref: '#/components/messages/ApiSessionPendingResponse'
   actions/session.rename/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketSessionRenamePayload'
+  actions/session.rename/response:
+    subscribe:
+      message:
+        $ref: '#/components/messages/ApiSessionResponse'
   actions/session.respond/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketSessionRespondPayload'
+  actions/session.respond/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Respond to a session prompt
+        description: session.respond response payload
   actions/session.stop/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketSessionTargetPayload'
-  actions/session.submit/request:
-    publish:
+  actions/session.stop/response:
+    subscribe:
       message:
-        $ref: '#/components/messages/ApiSocketSessionSubmitPayload'
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Stop a session turn
+        description: session.stop response payload
+  actions/session.submit/request:
+    description: Submit a message to a session
   actions/session.suspend/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketSessionTargetPayload'
+  actions/session.suspend/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Suspend a session
+        description: session.suspend response payload
   actions/session.transcript/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketSessionTranscriptPayload'
+  actions/session.transcript/response:
+    subscribe:
+      message:
+        summary: Get session transcript
+        description: session.transcript response payload
   actions/session.wake/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketSessionTargetPayload'
+  actions/session.wake/response:
+    subscribe:
+      message:
+        payload:
+          additionalProperties:
+            type: string
+          type:
+          - "null"
+          - object
+        summary: Wake a suspended session
+        description: session.wake response payload
   actions/sessions.list/request:
     publish:
       message:
@@ -526,20 +1270,29 @@ channels:
     publish:
       message:
         $ref: '#/components/messages/ApiSlingBody'
+  actions/sling.run/response:
+    subscribe:
+      message:
+        summary: Run sling dispatch
+        description: sling.run response payload
   actions/status.get/request:
     description: City status snapshot
-  actions/subscription.start/request:
-    description: Start an event or session stream subscription
-  actions/subscription.stop/request:
-    description: Stop a subscription
+  actions/status.get/response:
+    subscribe:
+      message:
+        summary: City status snapshot
+        description: status.get response payload
   actions/workflow.delete/request:
     publish:
       message:
         $ref: '#/components/messages/ApiSocketWorkflowDeletePayload'
-  actions/workflow.get/request:
-    publish:
+  actions/workflow.delete/response:
+    subscribe:
       message:
-        $ref: '#/components/messages/ApiSocketWorkflowGetPayload'
+        summary: Delete a workflow
+        description: workflow.delete response payload
+  actions/workflow.get/request:
+    description: Get workflow snapshot
 components:
   schemas:
     ApiAgentCreateRequest:
@@ -553,71 +1306,22 @@ components:
         scope:
           type: string
       type: object
-    ApiAgentResponse:
+    ApiBeadGraphResponseJSON:
       properties:
-        active_bead:
-          type: string
-        activity:
-          type: string
-        available:
-          type: boolean
-        context_pct:
-          type:
-          - "null"
-          - integer
-        context_window:
-          type:
-          - "null"
-          - integer
-        description:
-          type: string
-        display_name:
-          type: string
-        last_output:
-          type: string
-        model:
-          type: string
-        name:
-          type: string
-        pool:
-          type: string
-        provider:
-          type: string
-        rig:
-          type: string
-        running:
-          type: boolean
-        session:
-          $ref: '#/components/schemas/ApiSessionInfo'
-        state:
-          type: string
-        suspended:
-          type: boolean
-        unavailable_reason:
-          type: string
-      type: object
-    ApiBeadCreateRequest:
-      properties:
-        assignee:
-          type: string
-        description:
-          type: string
-        labels:
+        beads:
           items:
-            type: string
+            $ref: '#/components/schemas/BeadsBead'
           type:
           - array
           - "null"
-        priority:
+        deps:
+          items:
+            $ref: '#/components/schemas/ApiWorkflowDepResponse'
           type:
+          - array
           - "null"
-          - integer
-        rig:
-          type: string
-        title:
-          type: string
-        type:
-          type: string
+        root:
+          $ref: '#/components/schemas/BeadsBead'
       type: object
     ApiCityPatchRequest:
       properties:
@@ -625,64 +1329,6 @@ components:
           type:
           - "null"
           - boolean
-      type: object
-    ApiConfigAgentResponse:
-      properties:
-        dir:
-          type: string
-        is_pool:
-          type: boolean
-        name:
-          type: string
-        provider:
-          type: string
-        scope:
-          type: string
-        suspended:
-          type: boolean
-      type: object
-    ApiConfigPatchesResponse:
-      properties:
-        agent_count:
-          type: integer
-        provider_count:
-          type: integer
-        rig_count:
-          type: integer
-      type: object
-    ApiConfigResponse:
-      properties:
-        agents:
-          items:
-            $ref: '#/components/schemas/ApiConfigAgentResponse'
-          type:
-          - array
-          - "null"
-        patches:
-          $ref: '#/components/schemas/ApiConfigPatchesResponse'
-        providers:
-          additionalProperties:
-            $ref: '#/components/schemas/ApiProviderSpecJSON'
-          type: object
-        rigs:
-          items:
-            $ref: '#/components/schemas/ApiConfigRigResponse'
-          type:
-          - array
-          - "null"
-        workspace:
-          $ref: '#/components/schemas/ApiWorkspaceResponse'
-      type: object
-    ApiConfigRigResponse:
-      properties:
-        name:
-          type: string
-        path:
-          type: string
-        prefix:
-          type: string
-        suspended:
-          type: boolean
       type: object
     ApiConvoyCreateRequest:
       properties:
@@ -697,6 +1343,152 @@ components:
         title:
           type: string
       type: object
+    ApiEventEmitRequest:
+      properties:
+        actor:
+          type: string
+        message:
+          type: string
+        subject:
+          type: string
+        type:
+          type: string
+      type: object
+    ApiExtmsgAdapterRegisterRequest:
+      properties:
+        account_id:
+          type: string
+        callback_url:
+          type: string
+        capabilities:
+          $ref: '#/components/schemas/ExtmsgAdapterCapabilities'
+        name:
+          type: string
+        provider:
+          type: string
+      type: object
+    ApiExtmsgAdapterUnregisterRequest:
+      properties:
+        account_id:
+          type: string
+        provider:
+          type: string
+      type: object
+    ApiExtmsgBindRequest:
+      properties:
+        conversation:
+          $ref: '#/components/schemas/ExtmsgConversationRef'
+        metadata:
+          additionalProperties:
+            type: string
+          type: object
+        session_id:
+          type: string
+      type: object
+    ApiExtmsgGroupEnsureRequest:
+      properties:
+        default_handle:
+          type: string
+        metadata:
+          additionalProperties:
+            type: string
+          type: object
+        mode:
+          type: string
+        root_conversation:
+          $ref: '#/components/schemas/ExtmsgConversationRef'
+      type: object
+    ApiExtmsgGroupLookupRequest:
+      properties:
+        account_id:
+          type: string
+        conversation_id:
+          type: string
+        kind:
+          type: string
+        provider:
+          type: string
+        scope_id:
+          type: string
+      type: object
+    ApiExtmsgInboundRequest:
+      properties:
+        account_id:
+          type: string
+        message:
+          $ref: '#/components/schemas/ExtmsgExternalInboundMessage'
+        payload:
+          format: base64
+          type: string
+        provider:
+          type: string
+      type: object
+    ApiExtmsgOutboundRequest:
+      properties:
+        conversation:
+          $ref: '#/components/schemas/ExtmsgConversationRef'
+        idempotency_key:
+          type: string
+        reply_to_message_id:
+          type: string
+        session_id:
+          type: string
+        text:
+          type: string
+      type: object
+    ApiExtmsgParticipantRemoveRequest:
+      properties:
+        group_id:
+          type: string
+        handle:
+          type: string
+      type: object
+    ApiExtmsgParticipantUpsertRequest:
+      properties:
+        group_id:
+          type: string
+        handle:
+          type: string
+        metadata:
+          additionalProperties:
+            type: string
+          type: object
+        public:
+          type: boolean
+        session_id:
+          type: string
+      type: object
+    ApiExtmsgTranscriptAckRequest:
+      properties:
+        conversation:
+          $ref: '#/components/schemas/ExtmsgConversationRef'
+        sequence:
+          type: integer
+        session_id:
+          type: string
+      type: object
+    ApiExtmsgTranscriptListRequest:
+      properties:
+        account_id:
+          type: string
+        conversation_id:
+          type: string
+        kind:
+          type: string
+        parent_conversation_id:
+          type: string
+        provider:
+          type: string
+        scope_id:
+          type: string
+      type: object
+    ApiExtmsgUnbindRequest:
+      properties:
+        conversation:
+          $ref: '#/components/schemas/ExtmsgConversationRef'
+        session_id:
+          type: string
+      type: object
     ApiListResponse:
       properties:
         items: {}
@@ -705,78 +1497,51 @@ components:
         total:
           type: integer
       type: object
-    ApiMailSendRequest:
+    ApiOrderResponse:
       properties:
-        body:
+        capture_output:
+          type: boolean
+        check:
           type: string
-        from:
+        description:
+          type: string
+        enabled:
+          type: boolean
+        exec:
+          type: string
+        formula:
+          type: string
+        gate:
+          type: string
+        interval:
+          type: string
+        name:
+          type: string
+        "on":
+          type: string
+        pool:
           type: string
         rig:
           type: string
-        subject:
+        schedule:
           type: string
-        to:
+        scoped_name:
           type: string
-      type: object
-    ApiProviderSpecJSON:
-      properties:
-        args:
-          items:
-            type: string
-          type: array
-        command:
+        timeout:
           type: string
-        display_name:
-          type: string
-        env:
-          additionalProperties:
-            type: string
-          type: object
-        prompt_flag:
-          type: string
-        prompt_mode:
-          type: string
-        ready_delay_ms:
+        timeout_ms:
           type: integer
+        type:
+          type: string
       type: object
     ApiProviderUpdate:
       type: object
-    ApiSessionCreateRequest:
+    ApiSessionPendingResponse:
       properties:
-        alias:
-          type: string
-        async:
+        pending:
+          $ref: '#/components/schemas/RuntimePendingInteraction'
+        supported:
           type: boolean
-        kind:
-          type: string
-        message:
-          type: string
-        name:
-          type: string
-        options:
-          additionalProperties:
-            type: string
-          type: object
-        project_id:
-          type: string
-        session_name:
-          type:
-          - "null"
-          - string
-        title:
-          type: string
-      type: object
-    ApiSessionInfo:
-      properties:
-        attached:
-          type: boolean
-        last_activity:
-          format: date-time
-          type:
-          - "null"
-          - string
-        name:
-          type: string
       type: object
     ApiSessionResponse:
       properties:
@@ -945,6 +1710,11 @@ components:
         since:
           type: string
         type:
+          type: string
+      type: object
+    ApiSocketExtMsgBindingsPayload:
+      properties:
+        session_id:
           type: string
       type: object
     ApiSocketFormulaFeedPayload:
@@ -1154,15 +1924,6 @@ components:
         text:
           type: string
       type: object
-    ApiSocketSessionSubmitPayload:
-      properties:
-        id:
-          type: string
-        intent:
-          type: string
-        message:
-          type: string
-      type: object
     ApiSocketSessionTargetPayload:
       properties:
         id:
@@ -1207,25 +1968,14 @@ components:
         scope_ref:
           type: string
       type: object
-    ApiSocketWorkflowGetPayload:
+    ApiWorkflowDepResponse:
       properties:
-        id:
+        from:
           type: string
-        scope_kind:
+        kind:
           type: string
-        scope_ref:
+        to:
           type: string
-      type: object
-    ApiWorkspaceResponse:
-      properties:
-        name:
-          type: string
-        provider:
-          type: string
-        session_template:
-          type: string
-        suspended:
-          type: boolean
       type: object
     BeadsBead:
       properties:
@@ -1280,24 +2030,71 @@ components:
         type:
           type: string
       type: object
+    ConfigAgentPatch:
+      type: object
+    ConfigProviderPatch:
+      type: object
     ConfigProviderSpec:
       type: object
-    EventsEvent:
+    ConfigRigPatch:
+      type: object
+    ExtmsgAdapterCapabilities:
+      type: object
+    ExtmsgConversationRef:
+      properties:
+        account_id:
+          type: string
+        conversation_id:
+          type: string
+        kind:
+          type: string
+        parent_conversation_id:
+          type: string
+        provider:
+          type: string
+        scope_id:
+          type: string
+      type: object
+    ExtmsgExternalActor:
+      properties:
+        display_name:
+          type: string
+        id:
+          type: string
+        is_bot:
+          type: boolean
+      type: object
+    ExtmsgExternalAttachment:
+      properties:
+        mime_type:
+          type: string
+        provider_id:
+          type: string
+        url:
+          type: string
+      type: object
+    ExtmsgExternalInboundMessage:
       properties:
         actor:
+          $ref: '#/components/schemas/ExtmsgExternalActor'
+        attachments:
+          items:
+            $ref: '#/components/schemas/ExtmsgExternalAttachment'
+          type: array
+        conversation:
+          $ref: '#/components/schemas/ExtmsgConversationRef'
+        dedup_key:
           type: string
-        message:
+        explicit_target:
           type: string
-        payload: {}
-        seq:
-          minimum: 0
-          type: integer
-        subject:
+        provider_message_id:
           type: string
-        ts:
+        received_at:
           format: date-time
           type: string
-        type:
+        reply_to_message_id:
+          type: string
+        text:
           type: string
       type: object
     MailMessage:
@@ -1330,6 +2127,23 @@ components:
         to:
           type: string
       type: object
+    RuntimePendingInteraction:
+      properties:
+        kind:
+          type: string
+        metadata:
+          additionalProperties:
+            type: string
+          type: object
+        options:
+          items:
+            type: string
+          type: array
+        prompt:
+          type: string
+        request_id:
+          type: string
+      type: object
     SessionSubmissionCapabilities:
       properties:
         supports_follow_up:
@@ -1337,91 +2151,112 @@ components:
         supports_interrupt_now:
           type: boolean
       type: object
-    WorkspacesvcStatus:
-      properties:
-        allow_websockets:
-          type: boolean
-        hostname:
-          type: string
-        kind:
-          type: string
-        local_state:
-          type: string
-        mount_path:
-          type: string
-        publication_state:
-          type: string
-        publish_mode:
-          type: string
-        reason:
-          type: string
-        service_name:
-          type: string
-        state:
-          type: string
-        state_root:
-          type: string
-        updated_at:
-          format: date-time
-          type: string
-        url:
-          type: string
-        visibility:
-          type: string
-        workflow_contract:
-          type: string
-      type: object
   messages:
     ApiAgentCreateRequest:
       payload:
         $ref: '#/components/schemas/ApiAgentCreateRequest'
       summary: Create an agent
       description: agent.create request payload
-    ApiAgentResponse:
+    ApiBeadGraphResponseJSON:
       payload:
-        $ref: '#/components/schemas/ApiAgentResponse'
-      summary: Get agent details
-      description: agent.get response payload
-    ApiBeadCreateRequest:
-      payload:
-        $ref: '#/components/schemas/ApiBeadCreateRequest'
-      summary: Create a new bead
-      description: bead.create request payload
+        $ref: '#/components/schemas/ApiBeadGraphResponseJSON'
+      summary: Get bead dependency graph
+      description: beads.graph response payload
     ApiCityPatchRequest:
       payload:
         $ref: '#/components/schemas/ApiCityPatchRequest'
       summary: Update city (suspend/resume)
       description: city.patch request payload
-    ApiConfigResponse:
-      payload:
-        $ref: '#/components/schemas/ApiConfigResponse'
-      summary: Get parsed city configuration
-      description: config.get response payload
     ApiConvoyCreateRequest:
       payload:
         $ref: '#/components/schemas/ApiConvoyCreateRequest'
       summary: Create a convoy
       description: convoy.create request payload
+    ApiEventEmitRequest:
+      payload:
+        $ref: '#/components/schemas/ApiEventEmitRequest'
+      summary: Emit an event
+      description: event.emit request payload
+    ApiExtmsgAdapterRegisterRequest:
+      payload:
+        $ref: '#/components/schemas/ApiExtmsgAdapterRegisterRequest'
+      summary: Register external message adapter
+      description: extmsg.adapters.register request payload
+    ApiExtmsgAdapterUnregisterRequest:
+      payload:
+        $ref: '#/components/schemas/ApiExtmsgAdapterUnregisterRequest'
+      summary: Unregister external message adapter
+      description: extmsg.adapters.unregister request payload
+    ApiExtmsgBindRequest:
+      payload:
+        $ref: '#/components/schemas/ApiExtmsgBindRequest'
+      summary: Bind external message channel
+      description: extmsg.bind request payload
+    ApiExtmsgGroupEnsureRequest:
+      payload:
+        $ref: '#/components/schemas/ApiExtmsgGroupEnsureRequest'
+      summary: Ensure external message group exists
+      description: extmsg.groups.ensure request payload
+    ApiExtmsgGroupLookupRequest:
+      payload:
+        $ref: '#/components/schemas/ApiExtmsgGroupLookupRequest'
+      summary: Look up external message group
+      description: extmsg.groups.lookup request payload
+    ApiExtmsgInboundRequest:
+      payload:
+        $ref: '#/components/schemas/ApiExtmsgInboundRequest'
+      summary: Process inbound external message
+      description: extmsg.inbound request payload
+    ApiExtmsgOutboundRequest:
+      payload:
+        $ref: '#/components/schemas/ApiExtmsgOutboundRequest'
+      summary: Process outbound external message
+      description: extmsg.outbound request payload
+    ApiExtmsgParticipantRemoveRequest:
+      payload:
+        $ref: '#/components/schemas/ApiExtmsgParticipantRemoveRequest'
+      summary: Remove external message participant
+      description: extmsg.participant.remove request payload
+    ApiExtmsgParticipantUpsertRequest:
+      payload:
+        $ref: '#/components/schemas/ApiExtmsgParticipantUpsertRequest'
+      summary: Upsert external message participant
+      description: extmsg.participant.upsert request payload
+    ApiExtmsgTranscriptAckRequest:
+      payload:
+        $ref: '#/components/schemas/ApiExtmsgTranscriptAckRequest'
+      summary: Acknowledge external message transcript
+      description: extmsg.transcript.ack request payload
+    ApiExtmsgTranscriptListRequest:
+      payload:
+        $ref: '#/components/schemas/ApiExtmsgTranscriptListRequest'
+      summary: List external message transcript
+      description: extmsg.transcript.list request payload
+    ApiExtmsgUnbindRequest:
+      payload:
+        $ref: '#/components/schemas/ApiExtmsgUnbindRequest'
+      summary: Unbind external message channel
+      description: extmsg.unbind request payload
     ApiListResponse:
       payload:
         $ref: '#/components/schemas/ApiListResponse'
       summary: List sessions
       description: sessions.list response payload
-    ApiMailSendRequest:
+    ApiOrderResponse:
       payload:
-        $ref: '#/components/schemas/ApiMailSendRequest'
-      summary: Send a new mail message
-      description: mail.send request payload
-    ApiSessionCreateRequest:
+        $ref: '#/components/schemas/ApiOrderResponse'
+      summary: Get order details
+      description: order.get response payload
+    ApiSessionPendingResponse:
       payload:
-        $ref: '#/components/schemas/ApiSessionCreateRequest'
-      summary: Create a new session
-      description: session.create request payload
+        $ref: '#/components/schemas/ApiSessionPendingResponse'
+      summary: Get pending session requests
+      description: session.pending response payload
     ApiSessionResponse:
       payload:
         $ref: '#/components/schemas/ApiSessionResponse'
-      summary: Get session details
-      description: session.get response payload
+      summary: Rename a session
+      description: session.rename response payload
     ApiSlingBody:
       payload:
         $ref: '#/components/schemas/ApiSlingBody'
@@ -1430,7 +2265,7 @@ components:
     ApiSocketAgentUpdatePayload:
       payload:
         $ref: '#/components/schemas/ApiSocketAgentUpdatePayload'
-      summary: Update agent config
+      summary: Update an agent
       description: agent.update request payload
     ApiSocketAgentsListPayload:
       payload:
@@ -1440,7 +2275,7 @@ components:
     ApiSocketBeadAssignPayload:
       payload:
         $ref: '#/components/schemas/ApiSocketBeadAssignPayload'
-      summary: Assign a bead to an agent
+      summary: Assign a bead
       description: bead.assign request payload
     ApiSocketBeadGraphPayload:
       payload:
@@ -1450,7 +2285,7 @@ components:
     ApiSocketBeadsListPayload:
       payload:
         $ref: '#/components/schemas/ApiSocketBeadsListPayload'
-      summary: List beads with filters
+      summary: List beads
       description: beads.list request payload
     ApiSocketConvoyItemsPayload:
       payload:
@@ -1460,12 +2295,17 @@ components:
     ApiSocketEventsListPayload:
       payload:
         $ref: '#/components/schemas/ApiSocketEventsListPayload'
-      summary: List events with filters
+      summary: List events
       description: events.list request payload
+    ApiSocketExtMsgBindingsPayload:
+      payload:
+        $ref: '#/components/schemas/ApiSocketExtMsgBindingsPayload'
+      summary: List external message bindings
+      description: extmsg.bindings.list request payload
     ApiSocketFormulaFeedPayload:
       payload:
         $ref: '#/components/schemas/ApiSocketFormulaFeedPayload'
-      summary: Formula activity feed
+      summary: Get formula activity feed
       description: formulas.feed request payload
     ApiSocketFormulaGetPayload:
       payload:
@@ -1510,7 +2350,7 @@ components:
     ApiSocketMailThreadPayload:
       payload:
         $ref: '#/components/schemas/ApiSocketMailThreadPayload'
-      summary: Get a mail thread
+      summary: Get mail thread
       description: mail.thread request payload
     ApiSocketNamePayload:
       payload:
@@ -1520,12 +2360,12 @@ components:
     ApiSocketOrdersFeedPayload:
       payload:
         $ref: '#/components/schemas/ApiSocketOrdersFeedPayload'
-      summary: Order activity feed
+      summary: Get order activity feed
       description: orders.feed request payload
     ApiSocketOrdersHistoryPayload:
       payload:
         $ref: '#/components/schemas/ApiSocketOrdersHistoryPayload'
-      summary: Get order history
+      summary: Get order execution history
       description: orders.history request payload
     ApiSocketProviderCreatePayload:
       payload:
@@ -1535,12 +2375,12 @@ components:
     ApiSocketProviderUpdatePayload:
       payload:
         $ref: '#/components/schemas/ApiSocketProviderUpdatePayload'
-      summary: Update provider config
+      summary: Update a provider
       description: provider.update request payload
     ApiSocketProvidersListPayload:
       payload:
         $ref: '#/components/schemas/ApiSocketProvidersListPayload'
-      summary: List AI providers
+      summary: List providers
       description: providers.list request payload
     ApiSocketRigCreatePayload:
       payload:
@@ -1550,22 +2390,22 @@ components:
     ApiSocketRigUpdatePayload:
       payload:
         $ref: '#/components/schemas/ApiSocketRigUpdatePayload'
-      summary: Update rig config
+      summary: Update a rig
       description: rig.update request payload
     ApiSocketSessionAgentGetPayload:
       payload:
         $ref: '#/components/schemas/ApiSocketSessionAgentGetPayload'
-      summary: Get session agent details
+      summary: Get agent details in a session
       description: session.agent.get request payload
     ApiSocketSessionMessagesPayload:
       payload:
         $ref: '#/components/schemas/ApiSocketSessionMessagesPayload'
-      summary: Get session messages
+      summary: Send a user message to a session
       description: session.messages request payload
     ApiSocketSessionPatchPayload:
       payload:
         $ref: '#/components/schemas/ApiSocketSessionPatchPayload'
-      summary: Update session metadata
+      summary: Patch session metadata
       description: session.patch request payload
     ApiSocketSessionRenamePayload:
       payload:
@@ -1577,11 +2417,6 @@ components:
         $ref: '#/components/schemas/ApiSocketSessionRespondPayload'
       summary: Respond to a session prompt
       description: session.respond request payload
-    ApiSocketSessionSubmitPayload:
-      payload:
-        $ref: '#/components/schemas/ApiSocketSessionSubmitPayload'
-      summary: Submit work to a session
-      description: session.submit request payload
     ApiSocketSessionTargetPayload:
       payload:
         $ref: '#/components/schemas/ApiSocketSessionTargetPayload'
@@ -1602,28 +2437,28 @@ components:
         $ref: '#/components/schemas/ApiSocketWorkflowDeletePayload'
       summary: Delete a workflow
       description: workflow.delete request payload
-    ApiSocketWorkflowGetPayload:
-      payload:
-        $ref: '#/components/schemas/ApiSocketWorkflowGetPayload'
-      summary: Get workflow details
-      description: workflow.get request payload
     BeadsBead:
       payload:
         $ref: '#/components/schemas/BeadsBead'
-      summary: Get order history detail
-      description: order.history.detail response payload
-    EventsEvent:
+      summary: Get bead details
+      description: bead.get response payload
+    ConfigAgentPatch:
       payload:
-        $ref: '#/components/schemas/EventsEvent'
-      summary: Emit a custom event
-      description: event.emit request payload
+        $ref: '#/components/schemas/ConfigAgentPatch'
+      summary: Set agent patch
+      description: patches.agents.set request payload
+    ConfigProviderPatch:
+      payload:
+        $ref: '#/components/schemas/ConfigProviderPatch'
+      summary: Set provider patch
+      description: patches.providers.set request payload
+    ConfigRigPatch:
+      payload:
+        $ref: '#/components/schemas/ConfigRigPatch'
+      summary: Set rig patch
+      description: patches.rigs.set request payload
     MailMessage:
       payload:
         $ref: '#/components/schemas/MailMessage'
-      summary: Send a new mail message
-      description: mail.send response payload
-    WorkspacesvcStatus:
-      payload:
-        $ref: '#/components/schemas/WorkspacesvcStatus'
-      summary: Get service status
-      description: service.get response payload
+      summary: Reply to a mail message
+      description: mail.reply response payload

@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+
+	"github.com/gastownhall/gascity/internal/api/specgen"
 )
 
 // ActionDef holds the metadata for registering a WebSocket action.
@@ -125,6 +127,23 @@ func (s *Server) dispatchAction(req *socketRequestEnvelope) (socketActionResult,
 			"mutations disabled: server bound to non-localhost address")
 	}
 	return entry.Handler(s, req)
+}
+
+// ActionTableRegistry builds a specgen.Registry from the action table.
+// Used by cmd/specgen to generate specs from the same source of truth
+// that drives runtime dispatch.
+func ActionTableRegistry() *specgen.Registry {
+	r := specgen.NewRegistry()
+	for _, entry := range actionTable {
+		r.Register(specgen.ActionDef{
+			Action:       entry.Name,
+			Description:  entry.Description,
+			RequestType:  entry.RequestType,
+			ResponseType: entry.ResponseType,
+			IsMutation:   entry.IsMutation,
+		})
+	}
+	return r
 }
 
 // actionTableCapabilities returns sorted action names for the hello envelope.
