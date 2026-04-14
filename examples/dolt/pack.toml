@@ -3,9 +3,7 @@
 # Provides lifecycle commands (status, start, logs, sql, list, recover, sync,
 # rollback, cleanup, health) for the Dolt SQL server backing bead storage.
 #
-# Also provides a fallback "dog" agent so the pack works standalone.
-# When composed with a pack that provides its own non-fallback dog
-# (e.g. maintenance), the consumer's fully-configured dog wins silently.
+# Dog-backed formulas and orders rely on the city's maintenance pack.
 
 [pack]
 name = "dolt"
