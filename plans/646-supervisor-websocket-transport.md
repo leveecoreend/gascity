@@ -209,9 +209,53 @@ The implementation can migrate these in phases, but the plan must inventory them
 
 ### Out of scope for #646
 
-- dashboard browser rewrite into a client-rendered SPA
 - new remote mutation auth model for non-localhost supervisor access
-- replacing workspace service HTTP proxy mounts (`/svc/`) with WebSocket
+
+### Route disposition matrix
+
+Every former HTTP route is classified as **WS-only** (migrated), **HTTP-only** (justified survivor), or **Removed** (dead).
+
+#### HTTP-only survivors (6 routes)
+
+| Route | Justification |
+|-------|--------------|
+| `GET /v0/ws` | WS upgrade endpoint (inherently HTTP) |
+| `GET /health` | K8s/LB probe — probes can't do WS upgrade |
+| `GET /v0/readiness` | Operational probe |
+| `GET /v0/provider-readiness` | Operational probe |
+| `POST /v0/city` | Process manager registration, not client API |
+| `/svc/*` | TCP/HTTP proxy passthrough to workspace services |
+
+#### WS-only actions (119 actions)
+
+| Domain | WS Actions |
+|--------|-----------|
+| Health/Status | `health.get`, `status.get` |
+| City/Config | `city.get`, `city.patch`, `config.get`, `config.explain`, `config.validate`, `cities.list` |
+| Agents | `agents.list`, `agent.get`, `agent.create`, `agent.update`, `agent.delete`, `agent.suspend`, `agent.resume` |
+| Rigs | `rigs.list`, `rig.get`, `rig.create`, `rig.update`, `rig.delete`, `rig.suspend`, `rig.resume`, `rig.restart` |
+| Providers | `providers.list`, `provider.get`, `provider.create`, `provider.update`, `provider.delete` |
+| Beads | `beads.list`, `beads.ready`, `beads.graph`, `bead.get`, `bead.deps`, `bead.create`, `bead.close`, `bead.update`, `bead.reopen`, `bead.assign`, `bead.delete` |
+| Mail | `mail.list`, `mail.get`, `mail.count`, `mail.thread`, `mail.read`, `mail.mark_unread`, `mail.archive`, `mail.reply`, `mail.send`, `mail.delete` |
+| Sessions | `sessions.list`, `session.get`, `session.create`, `session.patch`, `session.submit`, `session.messages`, `session.stop`, `session.kill`, `session.suspend`, `session.close`, `session.wake`, `session.rename`, `session.respond`, `session.pending`, `session.transcript`, `session.agents.list`, `session.agent.get` |
+| Convoys | `convoys.list`, `convoy.get`, `convoy.create`, `convoy.add`, `convoy.remove`, `convoy.check`, `convoy.close`, `convoy.delete` |
+| Events | `events.list`, `event.emit` |
+| Orders | `orders.list`, `orders.check`, `orders.feed`, `orders.history`, `order.get`, `order.enable`, `order.disable`, `order.history.detail` |
+| Formulas | `formulas.list`, `formulas.feed`, `formula.get`, `formula.runs` |
+| Workflows | `workflow.get`, `workflow.delete` |
+| Sling | `sling.run` |
+| Services | `services.list`, `service.get`, `service.restart` |
+| Packs | `packs.list` |
+| Patches | `patches.agents.list`, `patches.agent.get`, `patches.agents.set`, `patches.agent.delete`, `patches.rigs.list`, `patches.rig.get`, `patches.rigs.set`, `patches.rig.delete`, `patches.providers.list`, `patches.provider.get`, `patches.providers.set`, `patches.provider.delete` |
+| ExtMsg | `extmsg.inbound`, `extmsg.outbound`, `extmsg.bindings.list`, `extmsg.bind`, `extmsg.unbind`, `extmsg.groups.lookup`, `extmsg.groups.ensure`, `extmsg.participant.upsert`, `extmsg.participant.remove`, `extmsg.transcript.list`, `extmsg.transcript.ack`, `extmsg.adapters.list`, `extmsg.adapters.register`, `extmsg.adapters.unregister` |
+| Subscriptions | `subscription.start` (events, session.stream), `subscription.stop` |
+
+#### Removed (SSE endpoints)
+
+| Former Route | Replacement |
+|-------------|------------|
+| `GET /v0/events/stream` | `subscription.start {kind: "events"}` |
+| `GET /v0/session/{id}/stream` | `subscription.start {kind: "session.stream"}` |
 
 ## Implementation Phases
 
