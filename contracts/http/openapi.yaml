@@ -1,0 +1,135 @@
+openapi: 3.1.0
+info:
+  title: Gas City HTTP API
+  version: 1.0.0
+  description: >
+    HTTP-only operational endpoints for the Gas City API server and supervisor.
+    All domain operations use WebSocket at GET /v0/ws — see the AsyncAPI spec
+    at GET /v0/asyncapi.yaml for the full WS protocol.
+
+    These HTTP endpoints exist because their consumers (load balancers, health
+    probes, process managers) cannot use WebSocket upgrade.
+servers:
+  - url: http://localhost:8080
+    description: Default standalone API server
+paths:
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health probe
+      description: >
+        Returns 200 OK when the API server is running. Used by Kubernetes
+        liveness probes and load balancers.
+      responses:
+        '200':
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /v0/readiness:
+    get:
+      operationId: readinessCheck
+      summary: Readiness probe
+      description: Returns 200 when the server is ready to accept requests.
+      responses:
+        '200':
+          description: Server is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+  /v0/provider-readiness:
+    get:
+      operationId: providerReadinessCheck
+      summary: Provider readiness probe
+      description: Returns 200 when at least one AI provider is configured and reachable.
+      responses:
+        '200':
+          description: At least one provider is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+        '503':
+          description: No providers are ready
+  /v0/city:
+    post:
+      operationId: createCity
+      summary: Register a city with the supervisor
+      description: >
+        Process manager endpoint for registering a new city directory.
+        Not part of the client API.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+                  description: Absolute filesystem path to the city directory
+                name:
+                  type: string
+                  description: Optional display name override
+      responses:
+        '201':
+          description: City registered
+        '409':
+          description: City already registered
+  /v0/ws:
+    get:
+      operationId: websocketUpgrade
+      summary: WebSocket upgrade endpoint
+      description: >
+        Upgrades to WebSocket for the full domain API. See the AsyncAPI spec
+        at GET /v0/asyncapi.yaml for the complete protocol documentation.
+      responses:
+        '101':
+          description: Switching Protocols (WebSocket upgrade)
+  /v0/asyncapi.yaml:
+    get:
+      operationId: getAsyncAPISpec
+      summary: AsyncAPI specification
+      description: Returns the AsyncAPI YAML spec for the WebSocket protocol.
+      responses:
+        '200':
+          description: AsyncAPI spec
+          content:
+            text/yaml:
+              schema:
+                type: string
+  /v0/openapi.yaml:
+    get:
+      operationId: getOpenAPISpec
+      summary: OpenAPI specification
+      description: Returns this OpenAPI YAML spec for the HTTP endpoints.
+      responses:
+        '200':
+          description: OpenAPI spec
+          content:
+            text/yaml:
+              schema:
+                type: string
+components:
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        version:
+          type: string
+        uptime_sec:
+          type: integer

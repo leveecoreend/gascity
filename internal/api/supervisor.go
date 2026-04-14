@@ -133,6 +133,16 @@ func (sm *SupervisorMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sm.handleHealth(w, r)
 		return
 	}
+	// API specs — self-documenting endpoints.
+	if path == "/v0/asyncapi.yaml" && r.Method == http.MethodGet {
+		handleAsyncAPISpec(w, r)
+		return
+	}
+	if path == "/v0/openapi.yaml" && r.Method == http.MethodGet {
+		handleOpenAPISpec(w, r)
+		return
+	}
+
 	// City creation is supervisor-level.
 	if path == "/v0/city" && r.Method == http.MethodPost {
 		if sm.readOnly {
@@ -396,7 +406,7 @@ func (sm *SupervisorMux) healthResponse() map[string]any {
 			}
 		}
 	}
-	return map[string]any{
+	resp := map[string]any{
 		"status":         "ok",
 		"version":        sm.version,
 		"uptime_sec":     int(time.Since(sm.startedAt).Seconds()),
@@ -404,24 +414,9 @@ func (sm *SupervisorMux) healthResponse() map[string]any {
 		"cities_running": running,
 	}
 	if startup != nil {
-		// Map mutation after literal creation keeps the response builder compact.
-		resp := map[string]any{
-			"status":         "ok",
-			"version":        sm.version,
-			"uptime_sec":     int(time.Since(sm.startedAt).Seconds()),
-			"cities_total":   len(cities),
-			"cities_running": running,
-			"startup":        startup,
-		}
-		return resp
+		resp["startup"] = startup
 	}
-	return map[string]any{
-		"status":         "ok",
-		"version":        sm.version,
-		"uptime_sec":     int(time.Since(sm.startedAt).Seconds()),
-		"cities_total":   len(cities),
-		"cities_running": running,
-	}
+	return resp
 }
 
 // allStartupPhases returns the ordered list of all startup phases.

@@ -15,7 +15,7 @@ import (
 // Serve starts the dashboard HTTP server. The dashboard serves static files
 // only — all API operations go from the browser directly to the supervisor
 // via WebSocket.
-func Serve(port int, cityPath, cityName, apiURL, initialCityScope string) error {
+func Serve(port int, _, _ string, apiURL, initialCityScope string) error {
 	apiURL = strings.TrimRight(apiURL, "/")
 	if err := ValidateAPI(apiURL); err != nil {
 		return err
@@ -31,17 +31,7 @@ func Serve(port int, cityPath, cityName, apiURL, initialCityScope string) error 
 		log.Printf("dashboard: supervisor mode detected")
 	}
 
-	mux, err := NewDashboardMux(
-		nil, // fetcher not needed — browser uses WS directly
-		cityPath,
-		cityName,
-		apiURL,
-		initialCityScope,
-		isSupervisor,
-		8*time.Second,
-		30*time.Second,
-		60*time.Second,
-	)
+	mux, err := NewDashboardMux(apiURL, initialCityScope)
 	if err != nil {
 		return fmt.Errorf("dashboard: failed to create handler: %w", err)
 	}

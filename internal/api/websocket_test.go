@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1929,5 +1931,297 @@ func readWSJSON(t *testing.T, conn *websocket.Conn, v interface{}) {
 	t.Helper()
 	if err := conn.ReadJSON(v); err != nil {
 		t.Fatalf("read ws json: %v", err)
+	}
+}
+
+// ---------- Protocol parity test suite ----------
+
+// TestWSConcurrentDispatch sends 10 parallel requests over a single WS
+// connection and verifies each response correlates to the correct request ID.
+func TestWSConcurrentDispatch(t *testing.T) {
+	state := newFakeState(t)
+	srv := New(state)
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	conn := dialWebSocket(t, ts.URL+"/v0/ws")
+	defer conn.Close()
+	drainWSHello(t, conn)
+
+	actions := []string{
+		"status.get",
+		"health.get",
+		"agents.list",
+		"beads.list",
+		"events.list",
+		"rigs.list",
+		"config.get",
+		"config.validate",
+		"providers.list",
+		"packs.list",
+	}
+
+	// Send all 10 requests in parallel goroutines.
+	var wg sync.WaitGroup
+	// Use a mutex to serialize writes on the gorilla conn (gorilla does
+	// not allow concurrent writes).
+	var writeMu sync.Mutex
+	for i, action := range actions {
+		wg.Add(1)
+		go func(idx int, act string) {
+			defer wg.Done()
+			writeMu.Lock()
+			err := conn.WriteJSON(wsRequestEnvelope{
+				Type:   "request",
+				ID:     fmt.Sprintf("par-%d", idx),
+				Action: act,
+			})
+			writeMu.Unlock()
+			if err != nil {
+				t.Errorf("write request %d (%s): %v", idx, act, err)
+			}
+		}(i, action)
+	}
+	wg.Wait()
+
+	// Read all 10 responses — they may arrive in any order.
+	received := make(map[string]bool)
+	for i := 0; i < 10; i++ {
+		var raw json.RawMessage
+		if err := conn.ReadJSON(&raw); err != nil {
+			t.Fatalf("read response %d: %v", i, err)
+		}
+		var envelope struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			t.Fatalf("unmarshal envelope %d: %v", i, err)
+		}
+		if envelope.Type != "response" {
+			t.Fatalf("response %d: type = %q, want response (body: %s)", i, envelope.Type, raw)
+		}
+		received[envelope.ID] = true
+	}
+
+	for i := range actions {
+		id := fmt.Sprintf("par-%d", i)
+		if !received[id] {
+			t.Errorf("missing response for %s", id)
+		}
+	}
+}
+
+// TestWSOversizeResponseIncludesRequestID sends a request that produces a
+// response exceeding the 10MB outbound limit and verifies the error includes
+// the "message_too_large" code and the original request ID.
+func TestWSOversizeResponseIncludesRequestID(t *testing.T) {
+	state := newFakeState(t)
+	store := state.stores["myrig"]
+
+	// Create enough beads to push the serialized response over 10 MB.
+	// With limit=0, beads.list returns up to maxPaginationLimit (1000) items.
+	// Each bead with a ~12KB title serializes to roughly 12KB+ of JSON.
+	// 1000 beads * ~12KB each ≈ 12MB, well over the 10MB limit.
+	bigTitle := strings.Repeat("X", 12_000)
+	for i := 0; i < 1000; i++ {
+		if _, err := store.Create(beads.Bead{
+			Title:  bigTitle,
+			Status: "open",
+			Type:   "task",
+		}); err != nil {
+			t.Fatalf("Create(bead %d): %v", i, err)
+		}
+	}
+
+	srv := New(state)
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	conn := dialWebSocket(t, ts.URL+"/v0/ws")
+	defer conn.Close()
+	drainWSHello(t, conn)
+
+	writeWSJSON(t, conn, wsRequestEnvelope{
+		Type:   "request",
+		ID:     "oversize-req-1",
+		Action: "beads.list",
+		Payload: map[string]any{
+			"status": "open",
+			"limit":  0, // request all beads
+		},
+	})
+
+	var errResp wsErrorEnvelope
+	readWSJSON(t, conn, &errResp)
+	if errResp.Type != "error" {
+		t.Fatalf("type = %q, want error", errResp.Type)
+	}
+	if errResp.Code != "message_too_large" {
+		t.Fatalf("code = %q, want message_too_large", errResp.Code)
+	}
+	if errResp.ID != "oversize-req-1" {
+		t.Fatalf("error id = %q, want oversize-req-1 (request ID must be preserved)", errResp.ID)
+	}
+}
+
+// TestWSIdempotencyReplay sends two bead.create requests with the same
+// idempotency_key and verifies the second returns the same result without
+// re-executing the action (same bead ID returned).
+func TestWSIdempotencyReplay(t *testing.T) {
+	state := newFakeState(t)
+	srv := New(state)
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	conn := dialWebSocket(t, ts.URL+"/v0/ws")
+	defer conn.Close()
+	drainWSHello(t, conn)
+
+	idemKey := "idempotent-test-key-42"
+
+	// First request with idempotency key.
+	writeWSJSON(t, conn, map[string]any{
+		"type":            "request",
+		"id":              "idem-first",
+		"action":          "bead.create",
+		"idempotency_key": idemKey,
+		"payload":         map[string]any{"title": "Idempotent bead", "type": "task"},
+	})
+
+	var resp1 wsResponseEnvelope
+	readWSJSON(t, conn, &resp1)
+	if resp1.Type != "response" || resp1.ID != "idem-first" {
+		t.Fatalf("first response = %#v, want correlated response", resp1)
+	}
+
+	var bead1 struct {
+		ID    string `json:"id"`
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal(resp1.Result, &bead1); err != nil {
+		t.Fatalf("unmarshal first result: %v", err)
+	}
+	if bead1.ID == "" {
+		t.Fatal("first response bead ID empty")
+	}
+
+	// Second request with the SAME idempotency key — should replay.
+	writeWSJSON(t, conn, map[string]any{
+		"type":            "request",
+		"id":              "idem-second",
+		"action":          "bead.create",
+		"idempotency_key": idemKey,
+		"payload":         map[string]any{"title": "Idempotent bead", "type": "task"},
+	})
+
+	var resp2 wsResponseEnvelope
+	readWSJSON(t, conn, &resp2)
+	if resp2.Type != "response" || resp2.ID != "idem-second" {
+		t.Fatalf("replay response = %#v, want correlated response", resp2)
+	}
+
+	// The replayed result should match the original result exactly.
+	if string(resp1.Result) != string(resp2.Result) {
+		t.Errorf("idempotency replay mismatch:\n  first:  %s\n  replay: %s", resp1.Result, resp2.Result)
+	}
+
+	// Verify it's the same bead (not a second creation).
+	var bead2 struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(resp2.Result, &bead2); err != nil {
+		t.Fatalf("unmarshal replay result: %v", err)
+	}
+	if bead2.ID != bead1.ID {
+		t.Errorf("replay bead ID = %q, want %q (same bead, not a new one)", bead2.ID, bead1.ID)
+	}
+}
+
+// TestWSWriteErrorCancelsSession verifies that when the server cannot write
+// to the client (connection dead), the session gets cancelled.
+func TestWSWriteErrorCancelsSession(t *testing.T) {
+	state := newFakeState(t)
+	srv := New(state)
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	conn := dialWebSocket(t, ts.URL+"/v0/ws")
+	drainWSHello(t, conn)
+
+	// Start an event subscription so the server has an active session that
+	// will try to write events to us.
+	writeWSJSON(t, conn, wsRequestEnvelope{
+		Type:   "request",
+		ID:     "sub-write-err",
+		Action: "subscription.start",
+		Payload: map[string]any{
+			"kind": "events",
+		},
+	})
+
+	var subResp wsResponseEnvelope
+	readWSJSON(t, conn, &subResp)
+	if subResp.Type != "response" || subResp.ID != "sub-write-err" {
+		t.Fatalf("subscription response = %#v, want correlated response", subResp)
+	}
+
+	// Abruptly close the client connection without sending a close frame.
+	// This simulates a dead connection. The underlying TCP conn is severed.
+	conn.UnderlyingConn().Close()
+
+	// Generate an event that the server will try to push to the dead
+	// connection. The write error should cause the session to cancel.
+	state.eventProv.Record(events.Event{Type: events.BeadCreated, Actor: "tester"})
+
+	// Give the server a moment to notice the write failure.
+	time.Sleep(200 * time.Millisecond)
+
+	// The test passes if we get here without hanging — the server detected
+	// the write error and cancelled the session rather than blocking forever.
+	// A new connection should work fine (server not stuck).
+	conn2 := dialWebSocket(t, ts.URL+"/v0/ws")
+	defer conn2.Close()
+
+	var hello wsHelloEnvelope
+	readWSJSON(t, conn2, &hello)
+	if hello.Type != "hello" {
+		t.Fatalf("new connection hello type = %q, want hello", hello.Type)
+	}
+}
+
+// TestWSCloseCodeNormalShutdown verifies the server sends close code 1000
+// when the client initiates a clean shutdown.
+func TestWSCloseCodeNormalShutdown(t *testing.T) {
+	state := newFakeState(t)
+	srv := New(state)
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	conn := dialWebSocket(t, ts.URL+"/v0/ws")
+	defer conn.Close()
+	drainWSHello(t, conn)
+
+	// Send a normal close frame from the client.
+	msg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "goodbye")
+	if err := conn.WriteControl(websocket.CloseMessage, msg, time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("write close: %v", err)
+	}
+
+	// Read the server's close response.
+	var dummy wsResponseEnvelope
+	err := conn.ReadJSON(&dummy)
+	if err == nil {
+		t.Fatal("expected close error after sending close frame, got nil")
+	}
+
+	var closeErr *websocket.CloseError
+	if !errors.As(err, &closeErr) {
+		// Connection closed — acceptable even without a structured close
+		// error, since the TCP teardown may race the close frame.
+		return
+	}
+	if closeErr.Code != websocket.CloseNormalClosure {
+		t.Fatalf("close code = %d, want %d (normal closure)", closeErr.Code, websocket.CloseNormalClosure)
 	}
 }

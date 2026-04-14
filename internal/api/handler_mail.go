@@ -127,7 +127,6 @@ func (s *Server) listMailMessages(agent, status, rig string) ([]mail.Message, er
 	default:
 		return nil, httpError{status: http.StatusBadRequest, code: "invalid", message: "unsupported status filter: " + status + "; supported: unread, all"}
 	}
-	return []mail.Message{}, nil
 }
 
 func (s *Server) handleMailGet(w http.ResponseWriter, r *http.Request) {

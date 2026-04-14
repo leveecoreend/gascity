@@ -2,10 +2,12 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1314,5 +1316,288 @@ func TestClientSupervisorWebSocketRequiresCityWhenMultipleRunning(t *testing.T) 
 	}
 	if got := err.Error(); got != "API error: multiple cities running; use scope.city to specify which city" {
 		t.Fatalf("ListServices error = %q, want city_required", got)
+	}
+}
+
+// newRawWSServer creates a WS server with a handler that gets the raw connection.
+// The handler receives the conn after the hello envelope is sent.
+func newRawWSServer(t *testing.T, handler func(conn *websocket.Conn)) *httptest.Server {
+	t.Helper()
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v0/ws" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+		// Send hello.
+		_ = conn.WriteJSON(map[string]any{"type": "hello", "protocol": "gc-ws-v0"})
+		handler(conn)
+	}))
+}
+
+// wsTestServer is a test WS server that responds to any request with a
+// configurable handler. It properly loops reading messages.
+func wsTestServer(t *testing.T, handler func(action string, req map[string]any, conn *websocket.Conn)) *httptest.Server {
+	t.Helper()
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v0/ws" {
+			http.NotFound(w, r)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		_ = conn.WriteJSON(map[string]any{"type": "hello", "protocol": "gc-ws-v0"})
+		for {
+			var raw map[string]any
+			if err := conn.ReadJSON(&raw); err != nil {
+				return
+			}
+			action, _ := raw["action"].(string)
+			handler(action, raw, conn)
+		}
+	}))
+}
+
+func TestClientSubscribeEvents(t *testing.T) {
+	eventSent := make(chan struct{}, 1)
+	srv := wsTestServer(t, func(action string, req map[string]any, conn *websocket.Conn) {
+		id, _ := req["id"].(string)
+		switch action {
+		case "subscription.start":
+			payload, _ := req["payload"].(map[string]any)
+			if payload["kind"] != "events" {
+				t.Errorf("kind = %v, want events", payload["kind"])
+			}
+			_ = conn.WriteJSON(map[string]any{
+				"type":   "response",
+				"id":     id,
+				"result": map[string]any{"subscription_id": "sub-1", "status": "ok"},
+			})
+			_ = conn.WriteJSON(map[string]any{
+				"type":            "event",
+				"subscription_id": "sub-1",
+				"event_type":      "bead.created",
+				"index":           42,
+				"payload":         map[string]any{"id": "bead-abc"},
+			})
+		case "subscription.stop":
+			_ = conn.WriteJSON(map[string]any{
+				"type":   "response",
+				"id":     id,
+				"result": map[string]any{"subscription_id": "sub-1", "status": "ok"},
+			})
+		}
+	})
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	defer c.Close()
+
+	var gotEvent SubscriptionEvent
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	subID, err := c.SubscribeEvents(ctx, 0, func(evt SubscriptionEvent) {
+		gotEvent = evt
+		select {
+		case eventSent <- struct{}{}:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatalf("SubscribeEvents: %v", err)
+	}
+	if subID != "sub-1" {
+		t.Fatalf("subscription_id = %q, want sub-1", subID)
+	}
+
+	select {
+	case <-eventSent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for event")
+	}
+
+	if gotEvent.EventType != "bead.created" {
+		t.Errorf("event_type = %q, want bead.created", gotEvent.EventType)
+	}
+	if gotEvent.Index != 42 {
+		t.Errorf("index = %d, want 42", gotEvent.Index)
+	}
+}
+
+func TestClientSubscribeSessionStream(t *testing.T) {
+	eventSent := make(chan struct{}, 1)
+	srv := wsTestServer(t, func(action string, req map[string]any, conn *websocket.Conn) {
+		id, _ := req["id"].(string)
+		switch action {
+		case "subscription.start":
+			payload, _ := req["payload"].(map[string]any)
+			if payload["kind"] != "session.stream" {
+				t.Errorf("kind = %v, want session.stream", payload["kind"])
+			}
+			if payload["target"] != "sess-abc" {
+				t.Errorf("target = %v, want sess-abc", payload["target"])
+			}
+			if payload["format"] != "jsonl" {
+				t.Errorf("format = %v, want jsonl", payload["format"])
+			}
+			_ = conn.WriteJSON(map[string]any{
+				"type":   "response",
+				"id":     id,
+				"result": map[string]any{"subscription_id": "sub-2", "status": "ok"},
+			})
+			_ = conn.WriteJSON(map[string]any{
+				"type":            "event",
+				"subscription_id": "sub-2",
+				"event_type":      "session.turn",
+				"payload":         map[string]any{"role": "assistant", "text": "hello"},
+			})
+		case "subscription.stop":
+			_ = conn.WriteJSON(map[string]any{
+				"type":   "response",
+				"id":     id,
+				"result": map[string]any{"subscription_id": "sub-2", "status": "ok"},
+			})
+		}
+	})
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	defer c.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var gotEvent SubscriptionEvent
+	subID, err := c.SubscribeSessionStream(ctx, "sess-abc", "jsonl", 0, func(evt SubscriptionEvent) {
+		gotEvent = evt
+		select {
+		case eventSent <- struct{}{}:
+		default:
+		}
+	})
+	if err != nil {
+		t.Fatalf("SubscribeSessionStream: %v", err)
+	}
+	if subID != "sub-2" {
+		t.Fatalf("subscription_id = %q, want sub-2", subID)
+	}
+
+	select {
+	case <-eventSent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timeout waiting for session stream event")
+	}
+
+	if gotEvent.EventType != "session.turn" {
+		t.Errorf("event_type = %q, want session.turn", gotEvent.EventType)
+	}
+}
+
+func TestClientUnsubscribe(t *testing.T) {
+	subStarted := make(chan struct{}, 1)
+	unsubDone := make(chan struct{}, 1)
+	srv := wsTestServer(t, func(action string, req map[string]any, conn *websocket.Conn) {
+		id, _ := req["id"].(string)
+		switch action {
+		case "subscription.start":
+			_ = conn.WriteJSON(map[string]any{
+				"type":   "response",
+				"id":     id,
+				"result": map[string]any{"subscription_id": "sub-99", "status": "ok"},
+			})
+			select {
+			case subStarted <- struct{}{}:
+			default:
+			}
+		case "subscription.stop":
+			_ = conn.WriteJSON(map[string]any{
+				"type":   "response",
+				"id":     id,
+				"result": map[string]any{"subscription_id": "sub-99", "status": "ok"},
+			})
+			// Send an event AFTER unsubscribe — callback must NOT fire.
+			_ = conn.WriteJSON(map[string]any{
+				"type":            "event",
+				"subscription_id": "sub-99",
+				"event_type":      "bead.created",
+				"payload":         map[string]any{"id": "should-not-see"},
+			})
+			select {
+			case unsubDone <- struct{}{}:
+			default:
+			}
+		}
+	})
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	defer c.Close()
+
+	var callCount atomic.Int32
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	subID, err := c.SubscribeEvents(ctx, 0, func(evt SubscriptionEvent) {
+		callCount.Add(1)
+	})
+	if err != nil {
+		t.Fatalf("SubscribeEvents: %v", err)
+	}
+
+	<-subStarted
+
+	if err := c.Unsubscribe(subID); err != nil {
+		t.Fatalf("Unsubscribe: %v", err)
+	}
+
+	<-unsubDone
+	// Give time for the post-unsub event to arrive.
+	time.Sleep(200 * time.Millisecond)
+
+	if n := callCount.Load(); n != 0 {
+		t.Errorf("callback called %d times after unsubscribe, want 0", n)
+	}
+}
+
+func TestClientCloseDoesNotDeadlock(t *testing.T) {
+	srv := newRawWSServer(t, func(conn *websocket.Conn) {
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	// Force WS connection in a background goroutine (the server never responds,
+	// so this blocks until Close() kills the connection).
+	go func() {
+		_, _ = c.ListCities()
+	}()
+	// Give the goroutine time to connect.
+	time.Sleep(100 * time.Millisecond)
+
+	// Close must not deadlock. If it does, the test will timeout.
+	done := make(chan struct{})
+	go func() {
+		c.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close() deadlocked")
 	}
 }

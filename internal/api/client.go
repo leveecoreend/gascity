@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -76,8 +77,12 @@ type Client struct {
 	wsBackoff   time.Time // don't attempt WS before this time
 	nextReqID   uint64
 	// Concurrent WebSocket transport.
-	wsReaderDone chan struct{}
-	pending      sync.Map // map[string]chan wsClientResult
+	wsReaderDone  chan struct{}
+	pending       sync.Map // map[string]chan wsClientResult
+	// Subscriptions: routing event frames to callbacks.
+	subMu    sync.Mutex
+	subs     map[string]func(SubscriptionEvent)
+	eventBuf []SubscriptionEvent // buffered events for not-yet-registered subscriptions
 }
 
 // SessionSubmitResponse mirrors POST /v0/session/{id}/submit.
@@ -542,14 +547,116 @@ func wsBackoffDuration(failCount int) time.Duration {
 // Close shuts down the WebSocket connection and waits for the reader to exit.
 func (c *Client) Close() {
 	c.wsMu.Lock()
-	defer c.wsMu.Unlock()
-	if c.wsConn != nil {
-		_ = c.wsConn.Close()
-		c.wsConn = nil
+	conn := c.wsConn
+	done := c.wsReaderDone
+	c.wsConn = nil
+	c.wsMu.Unlock()
+
+	if conn != nil {
+		_ = conn.Close()
 	}
-	if c.wsReaderDone != nil {
-		<-c.wsReaderDone
+	// Wait for the reader goroutine to finish AFTER releasing wsMu,
+	// since wsReadLoop acquires wsMu on connection death.
+	if done != nil {
+		<-done
 	}
+}
+
+// SubscriptionEvent represents an event received via a WebSocket subscription.
+type SubscriptionEvent struct {
+	SubscriptionID string          `json:"subscription_id"`
+	EventType      string          `json:"event_type"`
+	Index          uint64          `json:"index,omitempty"`
+	Cursor         string          `json:"cursor,omitempty"`
+	Payload        json.RawMessage `json:"payload,omitempty"`
+}
+
+// SubscribeEvents starts an event subscription and delivers events to the
+// callback until ctx is cancelled or Unsubscribe is called. Returns the
+// subscription ID assigned by the server.
+func (c *Client) SubscribeEvents(ctx context.Context, afterSeq uint64, callback func(SubscriptionEvent)) (string, error) {
+	payload := map[string]any{"kind": "events"}
+	if afterSeq > 0 {
+		payload["after_seq"] = afterSeq
+	}
+	return c.startSubscription(ctx, payload, callback)
+}
+
+// SubscribeSessionStream starts a session stream subscription and delivers
+// events to the callback. The target identifies the session (bead ID or name).
+// Format is optional ("text", "jsonl", etc.). Turns controls how many recent
+// turns to replay (0 = all).
+func (c *Client) SubscribeSessionStream(ctx context.Context, target, format string, turns int, callback func(SubscriptionEvent)) (string, error) {
+	payload := map[string]any{
+		"kind":   "session.stream",
+		"target": target,
+	}
+	if format != "" {
+		payload["format"] = format
+	}
+	if turns > 0 {
+		payload["turns"] = turns
+	}
+	return c.startSubscription(ctx, payload, callback)
+}
+
+func (c *Client) startSubscription(ctx context.Context, payload map[string]any, callback func(SubscriptionEvent)) (string, error) {
+	var resp struct {
+		SubscriptionID string `json:"subscription_id"`
+	}
+	used, err := c.doSocketJSON("subscription.start", nil, payload, &resp)
+	if err != nil {
+		return "", err
+	}
+	if !used {
+		return "", fmt.Errorf("websocket not available for subscriptions")
+	}
+	if resp.SubscriptionID == "" {
+		return "", fmt.Errorf("server returned empty subscription_id")
+	}
+
+	// Register the callback under subMu and drain any buffered events
+	// that arrived between the response and this registration.
+	c.subMu.Lock()
+	if c.subs == nil {
+		c.subs = make(map[string]func(SubscriptionEvent))
+	}
+	c.subs[resp.SubscriptionID] = callback
+	var kept []SubscriptionEvent
+	for _, evt := range c.eventBuf {
+		if evt.SubscriptionID == resp.SubscriptionID {
+			callback(evt)
+		} else {
+			kept = append(kept, evt)
+		}
+	}
+	c.eventBuf = kept
+	c.subMu.Unlock()
+
+	// Auto-cleanup when caller's ctx is cancelled.
+	go func() {
+		<-ctx.Done()
+		c.subMu.Lock()
+		delete(c.subs, resp.SubscriptionID)
+		c.subMu.Unlock()
+		// Best-effort server-side cleanup.
+		_, _ = c.doSocketJSON("subscription.stop", nil, map[string]any{
+			"subscription_id": resp.SubscriptionID,
+		}, nil)
+	}()
+
+	return resp.SubscriptionID, nil
+}
+
+// Unsubscribe stops a subscription by ID.
+func (c *Client) Unsubscribe(subscriptionID string) error {
+	c.subMu.Lock()
+	delete(c.subs, subscriptionID)
+	c.subMu.Unlock()
+	_, err := c.doSocketJSON("subscription.stop", nil, map[string]any{
+		"subscription_id": subscriptionID,
+	}, nil)
+	return err
 }
 
 func (c *Client) doSocketRequest(action string, scope *socketScope, payload any) (socketClientResponseEnvelope, bool, error) {
@@ -621,12 +728,13 @@ func (c *Client) doSocketRequest(action string, scope *socketScope, payload any)
 
 // wsReadLoop is the background reader goroutine. It reads all incoming
 // messages and dispatches responses/errors to the appropriate pending
-// request channel by ID.
-func (c *Client) wsReadLoop() {
+// request channel by ID. The conn parameter is captured at launch time
+// so the loop is safe from concurrent Close() setting c.wsConn to nil.
+func (c *Client) wsReadLoop(conn *websocket.Conn) {
 	defer close(c.wsReaderDone)
 	for {
 		var raw map[string]json.RawMessage
-		if err := c.wsConn.ReadJSON(&raw); err != nil {
+		if err := conn.ReadJSON(&raw); err != nil {
 			// Connection died — notify all pending requests.
 			connErr := &connError{err: fmt.Errorf("websocket read failed: %w", err)}
 			c.pending.Range(func(key, val any) bool {
@@ -669,7 +777,18 @@ func (c *Client) wsReadLoop() {
 				val.(chan wsClientResult) <- wsClientResult{err: goErr}
 			}
 		case "event":
-			// Future: route to subscription callbacks.
+			var evt SubscriptionEvent
+			if err := decodeRawMessage(raw, &evt); err != nil {
+				continue
+			}
+			c.subMu.Lock()
+			if cb, ok := c.subs[evt.SubscriptionID]; ok {
+				c.subMu.Unlock()
+				cb(evt)
+			} else {
+				c.eventBuf = append(c.eventBuf, evt)
+				c.subMu.Unlock()
+			}
 		default:
 			// Ignore unknown message types (e.g., pings handled by gorilla).
 		}
@@ -722,7 +841,7 @@ func (c *Client) ensureWSConnLocked() error {
 	}
 	c.wsConn = conn
 	c.wsReaderDone = make(chan struct{})
-	go c.wsReadLoop()
+	go c.wsReadLoop(conn)
 	return nil
 }
 

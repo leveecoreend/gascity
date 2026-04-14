@@ -174,6 +174,10 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /v0/provider-readiness", handleProviderReadiness)
 	s.mux.HandleFunc("POST /v0/city", handleCityCreate)
 
+	// API specs — self-documenting endpoints.
+	s.mux.HandleFunc("GET /v0/asyncapi.yaml", handleAsyncAPISpec)
+	s.mux.HandleFunc("GET /v0/openapi.yaml", handleOpenAPISpec)
+
 	// Workspace service proxy — HTTP passthrough to backend services.
 	s.mux.HandleFunc("/svc/", s.handleServiceProxy)
 
