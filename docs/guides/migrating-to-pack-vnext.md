@@ -556,11 +556,7 @@ schema, plus the qualified rows that matter most during migration.
 |---|---|---|
 | `include` | Merged extra config fragments into `city.toml` before load | Remove as part of migration. Move real composition to imports and move remaining config to `pack.toml`, `city.toml`, or discovered directories. |
 | `[workspace]` | Held city metadata and pack composition in one place | Split across the root `pack.toml`, `city.toml`, and `.gc/`. |
-<<<<<<< HEAD
 | `workspace.name` | Workspace identity | Transitional in this wave. Keep it in `city.toml` for the current 0.15.0 migration slice. Fresh `gc init` keeps it aligned with `pack.name`; `gc register` keeps it aligned with the registered city name, using `workspace.name` when present and backfilling it from `pack.name` when absent. Full removal from `city.toml` still waits for the broader site-binding cutover; track [#602](https://github.com/gastownhall/gascity/issues/602). |
-=======
-| `workspace.name` | Workspace identity | Keep in `city.toml` for the current 15.0 wave. Longer-term it is expected to move toward pack identity plus machine-local registration; track [#602](https://github.com/gastownhall/gascity/issues/602). |
->>>>>>> 6c1d77b5 (docs: clarify packv2 migration guide)
 | `workspace.includes` | City-level pack composition | Move to `[imports.*]` in the root city `pack.toml`. |
 | `workspace.default_rig_includes` | Default pack composition for newly added rigs | Move to `[defaults.rig.imports]` in the root city `pack.toml`. This is the target shape, but loader-backed support is still tracked in [#360](https://github.com/gastownhall/gascity/issues/360). |
 | `[providers.*]` | Named provider presets | Usually move to `[providers.*]` in the root city `pack.toml`, unless the setting is truly deployment-only. |
