@@ -1567,8 +1567,11 @@ func TestDoRigAdd_DerivedPrefixConflictsWithExistingBeads(t *testing.T) {
 	}
 }
 
-// Matching prefix (explicit or derived) succeeds even when .beads exists.
-func TestDoRigAdd_MatchingPrefixSucceeds(t *testing.T) {
+// A fresh "gc rig add" against a pre-existing .beads/ directory must fail
+// fast and point the user at --adopt — even when the existing prefix would
+// have matched the derived one. Falling through to bd init on a populated
+// Dolt store produces confusing "signal: killed" failures (see fo-5zeij).
+func TestDoRigAdd_ExistingBeadsRequiresAdopt(t *testing.T) {
 	cityPath := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(cityPath, ".gc"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1578,7 +1581,9 @@ func TestDoRigAdd_MatchingPrefixSucceeds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Rig "alpha-beta" derives prefix "ab", and .beads already has "ab".
+	// Rig "alpha-beta" derives prefix "ab", and .beads already has "ab"
+	// — so the prefix-conflict guard does not trip and we reach the new
+	// "exists without --adopt" guard.
 	rigPath := filepath.Join(t.TempDir(), "alpha-beta")
 	beadsDir := filepath.Join(rigPath, ".beads")
 	if err := os.MkdirAll(beadsDir, 0o700); err != nil {
@@ -1594,8 +1599,15 @@ func TestDoRigAdd_MatchingPrefixSucceeds(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	code := doRigAdd(fsys.OSFS{}, cityPath, rigPath, nil, "", "", false, false, &stdout, &stderr)
-	if code != 0 {
-		t.Fatalf("expected success for matching prefix, got code %d; stderr: %s", code, stderr.String())
+	if code != 1 {
+		t.Fatalf("expected failure for pre-existing .beads/ without --adopt, got code %d; stdout: %s", code, stdout.String())
+	}
+	errMsg := stderr.String()
+	if !strings.Contains(errMsg, ".beads already exists") {
+		t.Errorf("stderr should mention pre-existing .beads/: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "--adopt") {
+		t.Errorf("stderr should hint at --adopt: %s", errMsg)
 	}
 }
 

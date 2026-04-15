@@ -279,15 +279,43 @@ func doRigAdd(fs fsys.FS, cityPath, rigPath string, includes []string, nameOverr
 	}
 
 	if existingPrefix, ok := readBeadsPrefix(fs, rigPath); ok && existingPrefix != prefix {
-		if reAdd {
-			_, _ = fmt.Fprintf(stderr, "gc rig add: rig %q has bead prefix %q but city.toml has %q; edit city.toml to set prefix = %q, or remove %s/.beads to reinitialize\n",
+		switch {
+		case reAdd:
+			// On re-add, --prefix is ignored (we use the existing rig's
+			// configured prefix). Direct the user to edit city.toml.
+			fmt.Fprintf(stderr, "gc rig add: rig %q has bead prefix %q but city.toml has %q; "+ //nolint:errcheck // best-effort stderr
+				"edit city.toml to set prefix = %q, or remove %s/.beads to reinitialize\n",
 				name, existingPrefix, prefix, existingPrefix, rigPath)
-		} else {
-			_, _ = fmt.Fprintf(stderr, "gc rig add: rig %q already has bead prefix %q (requested %q); use --prefix %s to match, or remove %s/.beads to reinitialize\n",
+		case adopt:
+			// On --adopt, the user explicitly wants the existing store.
+			// "Remove .beads to reinitialize" is the wrong recovery here:
+			// nudge them toward matching the existing prefix instead.
+			fmt.Fprintf(stderr, "gc rig add: --adopt: rig %q already has bead prefix %q (requested %q); "+ //nolint:errcheck // best-effort stderr
+				"use --prefix %s (or omit --prefix) to match the existing store\n",
+				name, existingPrefix, prefix, existingPrefix)
+		default:
+			fmt.Fprintf(stderr, "gc rig add: rig %q already has bead prefix %q (requested %q); "+ //nolint:errcheck // best-effort stderr
+				"use --prefix %s to match, or remove %s/.beads to reinitialize\n",
 				name, existingPrefix, prefix, existingPrefix, rigPath)
 		}
 		return 1
 	}
+
+	// Guard: on a fresh add (not a re-add) without --adopt, refuse to run
+	// if .beads/ is already present. Without this, doRigAdd falls through
+	// to bd init against an existing Dolt store and typically dies with
+	// "bd init: signal: killed" after the probe times out — an unhelpful
+	// failure mode for the common "register existing store" workflow.
+	if !reAdd && !adopt {
+		if fi, err := fs.Stat(filepath.Join(rigPath, ".beads")); err == nil && fi.IsDir() {
+			fmt.Fprintf(stderr, "gc rig add: %s/.beads already exists; "+ //nolint:errcheck // best-effort stderr
+				"use --adopt to register the existing store, or remove %s/.beads to reinitialize\n",
+				rigPath, rigPath)
+			return 1
+		}
+	}
+
+	// --- Phase 1: Infrastructure (all fallible, before touching city.toml) ---
 
 	w := func(s string) { fmt.Fprintln(stdout, s) } //nolint:errcheck // best-effort stdout
 	if reAdd {
