@@ -110,9 +110,13 @@ test-worker-core:
 ## test-worker-core-phase2: run WorkerCore phase 2 startup/interaction/tool conformance
 test-worker-core-phase2:
 	PROFILE="$(PROFILE)" go test -count=1 ./internal/worker/workertest -run 'TestPhase2'
+	PROFILE="$(PROFILE)" go test -count=1 ./cmd/gc -run 'TestPhase2(StartupMaterialization|InitialInputDelivery|InputResultFailureClassification)'
 
-## test-worker-core-phase3: run WorkerCore phase 3 catalog checks
-test-worker-core-phase3:
+## test-worker-core-phase3: compatibility alias for WorkerInference phase 3 catalog checks
+test-worker-core-phase3: test-worker-inference-phase3
+
+## test-worker-inference-phase3: run WorkerInference phase 3 catalog checks
+test-worker-inference-phase3:
 	PROFILE="$(PROFILE)" go test -count=1 ./internal/worker/workertest -run 'TestPhase3'
 
 ## test-worker-inference: run live WorkerInference acceptance tests for PROFILE
