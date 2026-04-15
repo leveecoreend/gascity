@@ -1523,6 +1523,151 @@ func TestRouteMatrixParity_GET_v0_patches_providers_ViaWS(t *testing.T) {
 	}
 }
 
+func TestRouteMatrixParity_PUT_v0_patches_agents_ViaWS(t *testing.T) {
+	state, _, conn := openRouteMatrixMutatorSocket(t)
+	suspended := true
+
+	writeWSJSON(t, conn, wsRequestEnvelope{
+		Type:   "request",
+		ID:     "route-agent-patch-set",
+		Action: "patches.agents.set",
+		Payload: config.AgentPatch{
+			Dir:       "rig1",
+			Name:      "worker",
+			Suspended: &suspended,
+		},
+	})
+
+	var resp wsResponseEnvelope
+	readWSJSON(t, conn, &resp)
+	if resp.Type != "response" || resp.ID != "route-agent-patch-set" {
+		t.Fatalf("response = %#v, want correlated response", resp)
+	}
+	if len(state.cfg.Patches.Agents) != 1 {
+		t.Fatalf("agent patches = %+v, want one patch", state.cfg.Patches.Agents)
+	}
+}
+
+func TestRouteMatrixParity_DELETE_v0_patches_agent_name_ViaWS(t *testing.T) {
+	state, _, conn := openRouteMatrixMutatorSocket(t)
+	suspended := true
+	state.cfg.Patches.Agents = []config.AgentPatch{{Dir: "rig1", Name: "worker", Suspended: &suspended}}
+
+	writeWSJSON(t, conn, wsRequestEnvelope{
+		Type:   "request",
+		ID:     "route-agent-patch-delete",
+		Action: "patches.agent.delete",
+		Payload: map[string]any{
+			"name": "rig1/worker",
+		},
+	})
+
+	var resp wsResponseEnvelope
+	readWSJSON(t, conn, &resp)
+	if resp.Type != "response" || resp.ID != "route-agent-patch-delete" {
+		t.Fatalf("response = %#v, want correlated response", resp)
+	}
+	if len(state.cfg.Patches.Agents) != 0 {
+		t.Fatalf("agent patches = %+v, want empty after delete", state.cfg.Patches.Agents)
+	}
+}
+
+func TestRouteMatrixParity_PUT_v0_patches_rigs_ViaWS(t *testing.T) {
+	state, _, conn := openRouteMatrixMutatorSocket(t)
+	suspended := true
+
+	writeWSJSON(t, conn, wsRequestEnvelope{
+		Type:   "request",
+		ID:     "route-rig-patch-set",
+		Action: "patches.rigs.set",
+		Payload: config.RigPatch{
+			Name:      "myrig",
+			Suspended: &suspended,
+		},
+	})
+
+	var resp wsResponseEnvelope
+	readWSJSON(t, conn, &resp)
+	if resp.Type != "response" || resp.ID != "route-rig-patch-set" {
+		t.Fatalf("response = %#v, want correlated response", resp)
+	}
+	if len(state.cfg.Patches.Rigs) != 1 {
+		t.Fatalf("rig patches = %+v, want one patch", state.cfg.Patches.Rigs)
+	}
+}
+
+func TestRouteMatrixParity_DELETE_v0_patches_rig_name_ViaWS(t *testing.T) {
+	state, _, conn := openRouteMatrixMutatorSocket(t)
+	suspended := true
+	state.cfg.Patches.Rigs = []config.RigPatch{{Name: "myrig", Suspended: &suspended}}
+
+	writeWSJSON(t, conn, wsRequestEnvelope{
+		Type:   "request",
+		ID:     "route-rig-patch-delete",
+		Action: "patches.rig.delete",
+		Payload: map[string]any{
+			"name": "myrig",
+		},
+	})
+
+	var resp wsResponseEnvelope
+	readWSJSON(t, conn, &resp)
+	if resp.Type != "response" || resp.ID != "route-rig-patch-delete" {
+		t.Fatalf("response = %#v, want correlated response", resp)
+	}
+	if len(state.cfg.Patches.Rigs) != 0 {
+		t.Fatalf("rig patches = %+v, want empty after delete", state.cfg.Patches.Rigs)
+	}
+}
+
+func TestRouteMatrixParity_PUT_v0_patches_providers_ViaWS(t *testing.T) {
+	state, _, conn := openRouteMatrixMutatorSocket(t)
+	cmd := "my-claude"
+
+	writeWSJSON(t, conn, wsRequestEnvelope{
+		Type:   "request",
+		ID:     "route-provider-patch-set",
+		Action: "patches.providers.set",
+		Payload: config.ProviderPatch{
+			Name:    "claude",
+			Command: &cmd,
+		},
+	})
+
+	var resp wsResponseEnvelope
+	readWSJSON(t, conn, &resp)
+	if resp.Type != "response" || resp.ID != "route-provider-patch-set" {
+		t.Fatalf("response = %#v, want correlated response", resp)
+	}
+	if len(state.cfg.Patches.Providers) != 1 {
+		t.Fatalf("provider patches = %+v, want one patch", state.cfg.Patches.Providers)
+	}
+}
+
+func TestRouteMatrixParity_DELETE_v0_patches_provider_name_ViaWS(t *testing.T) {
+	state, _, conn := openRouteMatrixMutatorSocket(t)
+	cmd := "my-claude"
+	state.cfg.Patches.Providers = []config.ProviderPatch{{Name: "claude", Command: &cmd}}
+
+	writeWSJSON(t, conn, wsRequestEnvelope{
+		Type:   "request",
+		ID:     "route-provider-patch-delete",
+		Action: "patches.provider.delete",
+		Payload: map[string]any{
+			"name": "claude",
+		},
+	})
+
+	var resp wsResponseEnvelope
+	readWSJSON(t, conn, &resp)
+	if resp.Type != "response" || resp.ID != "route-provider-patch-delete" {
+		t.Fatalf("response = %#v, want correlated response", resp)
+	}
+	if len(state.cfg.Patches.Providers) != 0 {
+		t.Fatalf("provider patches = %+v, want empty after delete", state.cfg.Patches.Providers)
+	}
+}
+
 func TestRouteMatrixParity_GET_v0_packs_ViaWS(t *testing.T) {
 	state := newFakeState(t)
 	state.cfg.Packs = map[string]config.PackSource{
