@@ -50,7 +50,9 @@ gc [flags]
 | [gc runtime](#gc-runtime) | Process-intrinsic runtime operations |
 | [gc service](#gc-service) | Inspect workspace services |
 | [gc session](#gc-session) | Manage interactive chat sessions |
-| [gc skill](#gc-skill) | Show command reference for a topic |
+| [gc skill](#gc-skill) | List Pack/City skills |
+| [gc skills](#gc-skills) | Legacy topic reference/help surface |
+| [gc mcp](#gc-mcp) | List MCP catalog visibility (first slice) |
 | [gc sling](#gc-sling) | Route work to an agent or pool |
 | [gc start](#gc-start) | Start the city under the machine-wide supervisor |
 | [gc status](#gc-status) | Show city-wide status overview |
@@ -1988,21 +1990,60 @@ gc session wake gc-42
 
 ## gc skill
 
-Show curated command reference for a Gas City topic.
+List Pack/City skills.
 
-Without arguments, lists available topics. With a topic name,
-prints the full command reference for that topic.
+The first-slice skills surface is list-only. Use this command to inspect
+the current city pack's skills catalog and retained skills.
 
 ```
-gc skill [topic]
+gc skill list
+gc skill list --agent <name>
+gc skill list --session <id>
 ```
 
 **Example:**
 
 ```
-gc skill work       # beads command reference
-  gc skill dispatch   # sling and formula reference
-  gc skill            # list all topics
+gc skill list
+  gc skill list --agent mayor
+  gc skill list --session gc-42
+```
+
+The list-only surface is the first skills implementation slice;
+promotion and retention remain later.
+
+The old topic-reference/help surface lives under `gc skills`.
+
+## gc skills
+
+Show the legacy curated command reference for a Gas City topic.
+
+Without arguments, lists available topics. With a topic name,
+prints the full command reference for that topic.
+
+```
+gc skills [topic]
+```
+
+**Example:**
+
+```
+gc skills work       # beads command reference
+  gc skills dispatch   # sling and formula reference
+  gc skills            # list all topics
+```
+
+## gc mcp
+
+List MCP catalog visibility for the current city pack.
+
+The first MCP slice is list-only. Provider projection and reconciliation
+remain later.
+
+```
+gc mcp list
+gc mcp list --agent <name>
+gc mcp list --session <id>
 ```
 
 ## gc sling
@@ -2406,4 +2447,3 @@ Manually mark a wait ready
 ```
 gc wait ready <wait-id>
 ```
-
