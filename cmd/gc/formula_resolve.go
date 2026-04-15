@@ -9,17 +9,18 @@ import (
 )
 
 // ResolveFormulas computes per-formula-name winners from layered formula
-// directories and creates canonical .toml symlinks in targetDir/.beads/formulas/.
+// directories and creates formula symlinks in targetDir/.beads/formulas/.
 //
 // Layers are ordered lowest→highest priority. For each formula name (derived
 // from either canonical or legacy filename form), the highest-priority layer
-// wins. Winners are symlinked into targetDir/.beads/formulas/<name>.toml so
-// bd finds them natively using the canonical filename, regardless of the
-// source file's on-disk name.
+// wins. Winners are symlinked into targetDir/.beads/formulas using both the
+// canonical filename (<name>.toml) and a legacy compatibility alias
+// (<name>.formula.toml). Gas City's internal parser prefers the canonical
+// filename; the legacy alias keeps older external bd binaries working while
+// they still probe only the infixed TOML form.
 //
 // Idempotent: correct symlinks are left alone, stale ones are updated,
-// and symlinks for formulas no longer in any layer are removed (including
-// any stray legacy-suffixed symlinks from earlier runs). Real files
+// and symlinks for formulas no longer in any layer are removed. Real files
 // (non-symlinks) in the target directory are never overwritten.
 func ResolveFormulas(targetDir string, layers []string) error {
 	if len(layers) == 0 {
@@ -65,17 +66,18 @@ func ResolveFormulas(targetDir string, layers []string) error {
 		}
 	}
 
-	// Build the set of canonical filenames we will emit. cleanStaleFormulaSymlinks
-	// uses this to garbage-collect any legacy-suffixed symlinks from prior runs.
-	canonicalNames := make(map[string]string, len(winners))
+	// Build the set of formula link names we will emit. Each winning formula
+	// gets a canonical link plus a legacy compatibility alias.
+	linkTargets := make(map[string]string, len(winners)*2)
 	for name, src := range winners {
-		canonicalNames[name+formula.CanonicalTOMLExt] = src
+		linkTargets[name+formula.CanonicalTOMLExt] = src
+		linkTargets[name+formula.LegacyTOMLExt] = src
 	}
 
 	symlinkDir := filepath.Join(targetDir, ".beads", "formulas")
 
 	if len(winners) == 0 {
-		return cleanStaleFormulaSymlinks(symlinkDir, canonicalNames)
+		return cleanStaleFormulaSymlinks(symlinkDir, linkTargets)
 	}
 
 	// Ensure target symlink directory exists.
@@ -83,10 +85,10 @@ func ResolveFormulas(targetDir string, layers []string) error {
 		return fmt.Errorf("creating formula symlink dir: %w", err)
 	}
 
-	// Create/update canonical symlinks for winners. The link is always named
-	// <formula-name>.toml regardless of whether the winning source file on
-	// disk uses the canonical or legacy extension.
-	for linkName, srcPath := range canonicalNames {
+	// Create/update symlinks for winners. Both link names always point to the
+	// same winning source regardless of whether the source file on disk uses
+	// the canonical or legacy extension.
+	for linkName, srcPath := range linkTargets {
 		linkPath := filepath.Join(symlinkDir, linkName)
 
 		// Check if a real file (non-symlink) exists — don't overwrite.
@@ -110,7 +112,7 @@ func ResolveFormulas(targetDir string, layers []string) error {
 		}
 	}
 
-	return cleanStaleFormulaSymlinks(symlinkDir, canonicalNames)
+	return cleanStaleFormulaSymlinks(symlinkDir, linkTargets)
 }
 
 // cleanStaleFormulaSymlinks removes symlinks in symlinkDir that are not in

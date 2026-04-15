@@ -39,7 +39,9 @@ func TestResolveFormulas_SingleLayer(t *testing.T) {
 		linkName, srcName string
 	}{
 		{"mol-a.toml", "mol-a.toml"},
+		{"mol-a.formula.toml", "mol-a.toml"},
 		{"mol-b.toml", "mol-b.formula.toml"},
+		{"mol-b.formula.toml", "mol-b.formula.toml"},
 	}
 	for _, c := range cases {
 		linkPath := filepath.Join(symlinkDir, c.linkName)
@@ -127,17 +129,14 @@ func TestResolveFormulas_MixedLayerPrefersCanonical(t *testing.T) {
 	}
 
 	symlinkDir := filepath.Join(target, ".beads", "formulas")
-	// Only one canonical symlink; it must point at the canonical source.
-	dest, err := os.Readlink(filepath.Join(symlinkDir, "mol-a.toml"))
-	if err != nil {
-		t.Fatalf("mol-a readlink: %v", err)
-	}
-	if dest != filepath.Join(layer, "mol-a.toml") {
-		t.Errorf("mol-a target = %q, want canonical source", dest)
-	}
-	// The legacy-named symlink must NOT exist — we emit only canonical.
-	if _, err := os.Lstat(filepath.Join(symlinkDir, "mol-a.formula.toml")); !os.IsNotExist(err) {
-		t.Errorf("legacy mol-a.formula.toml symlink should not exist: %v", err)
+	for _, linkName := range []string{"mol-a.toml", "mol-a.formula.toml"} {
+		dest, err := os.Readlink(filepath.Join(symlinkDir, linkName))
+		if err != nil {
+			t.Fatalf("%s readlink: %v", linkName, err)
+		}
+		if dest != filepath.Join(layer, "mol-a.toml") {
+			t.Errorf("%s target = %q, want canonical source", linkName, dest)
+		}
 	}
 }
 
@@ -159,14 +158,14 @@ func TestResolveFormulas_HigherLayerLegacyWinsOverLowerCanonical(t *testing.T) {
 		t.Fatalf("ResolveFormulas: %v", err)
 	}
 
-	// The canonical link name must point to layer2's (legacy-named) source,
-	// because layer2 is higher priority.
-	dest, err := os.Readlink(filepath.Join(target, ".beads", "formulas", "mol-a.toml"))
-	if err != nil {
-		t.Fatalf("mol-a readlink: %v", err)
-	}
-	if dest != filepath.Join(layer2, "mol-a.formula.toml") {
-		t.Errorf("mol-a target = %q, want layer2 legacy source", dest)
+	for _, linkName := range []string{"mol-a.toml", "mol-a.formula.toml"} {
+		dest, err := os.Readlink(filepath.Join(target, ".beads", "formulas", linkName))
+		if err != nil {
+			t.Fatalf("%s readlink: %v", linkName, err)
+		}
+		if dest != filepath.Join(layer2, "mol-a.formula.toml") {
+			t.Errorf("%s target = %q, want layer2 legacy source", linkName, dest)
+		}
 	}
 }
 
@@ -186,13 +185,14 @@ func TestResolveFormulas_Idempotent(t *testing.T) {
 		t.Fatalf("second ResolveFormulas: %v", err)
 	}
 
-	// Symlink should still be correct (canonical link, legacy source).
-	dest, err := os.Readlink(filepath.Join(target, ".beads", "formulas", "mol-a.toml"))
-	if err != nil {
-		t.Fatalf("readlink: %v", err)
-	}
-	if dest != filepath.Join(layer, "mol-a.formula.toml") {
-		t.Errorf("symlink target = %q, want %q", dest, filepath.Join(layer, "mol-a.formula.toml"))
+	for _, linkName := range []string{"mol-a.toml", "mol-a.formula.toml"} {
+		dest, err := os.Readlink(filepath.Join(target, ".beads", "formulas", linkName))
+		if err != nil {
+			t.Fatalf("%s readlink: %v", linkName, err)
+		}
+		if dest != filepath.Join(layer, "mol-a.formula.toml") {
+			t.Errorf("%s target = %q, want %q", linkName, dest, filepath.Join(layer, "mol-a.formula.toml"))
+		}
 	}
 }
 
@@ -220,21 +220,22 @@ func TestResolveFormulas_StaleCleanup(t *testing.T) {
 
 	symlinkDir := filepath.Join(target, ".beads", "formulas")
 
-	// mol-a should still exist under the canonical name.
-	if _, err := os.Lstat(filepath.Join(symlinkDir, "mol-a.toml")); err != nil {
-		t.Errorf("mol-a should still exist: %v", err)
+	for _, linkName := range []string{"mol-a.toml", "mol-a.formula.toml"} {
+		if _, err := os.Lstat(filepath.Join(symlinkDir, linkName)); err != nil {
+			t.Errorf("%s should still exist: %v", linkName, err)
+		}
 	}
 
-	// mol-b should be removed (stale).
-	if _, err := os.Lstat(filepath.Join(symlinkDir, "mol-b.toml")); !os.IsNotExist(err) {
-		t.Error("mol-b should have been removed (stale symlink)")
+	for _, linkName := range []string{"mol-b.toml", "mol-b.formula.toml"} {
+		if _, err := os.Lstat(filepath.Join(symlinkDir, linkName)); !os.IsNotExist(err) {
+			t.Errorf("%s should have been removed (stale symlink)", linkName)
+		}
 	}
 }
 
-// TestResolveFormulas_LegacySymlinkCleanup verifies that a legacy-named
-// symlink left over from an earlier gc version (or partial migration) is
-// garbage-collected on the next resolve pass.
-func TestResolveFormulas_LegacySymlinkCleanup(t *testing.T) {
+// TestResolveFormulas_LegacySymlinkCompatibility verifies that the legacy
+// compatibility alias is created and refreshed alongside the canonical link.
+func TestResolveFormulas_LegacySymlinkCompatibility(t *testing.T) {
 	dir := t.TempDir()
 	layer := filepath.Join(dir, "formulas")
 	writeFormulaFile(t, layer, "mol-a.toml", "formula a")
@@ -243,7 +244,7 @@ func TestResolveFormulas_LegacySymlinkCleanup(t *testing.T) {
 	symlinkDir := filepath.Join(target, ".beads", "formulas")
 	os.MkdirAll(symlinkDir, 0o755) //nolint:errcheck
 
-	// Simulate a stale legacy-named symlink from a prior run.
+	// Simulate a stale legacy compatibility link from a prior run.
 	stale := filepath.Join(symlinkDir, "mol-a.formula.toml")
 	if err := os.Symlink(filepath.Join(layer, "mol-a.toml"), stale); err != nil {
 		t.Fatalf("create stale symlink: %v", err)
@@ -253,11 +254,14 @@ func TestResolveFormulas_LegacySymlinkCleanup(t *testing.T) {
 		t.Fatalf("ResolveFormulas: %v", err)
 	}
 
-	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
-		t.Errorf("stale legacy symlink should have been removed: %v", err)
-	}
-	if _, err := os.Lstat(filepath.Join(symlinkDir, "mol-a.toml")); err != nil {
-		t.Errorf("canonical mol-a symlink should exist: %v", err)
+	for _, linkName := range []string{"mol-a.toml", "mol-a.formula.toml"} {
+		dest, err := os.Readlink(filepath.Join(symlinkDir, linkName))
+		if err != nil {
+			t.Fatalf("%s readlink: %v", linkName, err)
+		}
+		if dest != filepath.Join(layer, "mol-a.toml") {
+			t.Errorf("%s target = %q, want %q", linkName, dest, filepath.Join(layer, "mol-a.toml"))
+		}
 	}
 }
 
@@ -278,7 +282,8 @@ func TestResolveFormulas_RealFileNotOverwritten(t *testing.T) {
 		t.Fatalf("ResolveFormulas: %v", err)
 	}
 
-	// The real file should be preserved (not replaced with symlink).
+	// The real file should be preserved (not replaced with symlink), while the
+	// legacy compatibility alias is still created.
 	fi, err := os.Lstat(realFile)
 	if err != nil {
 		t.Fatalf("Lstat: %v", err)
@@ -292,6 +297,9 @@ func TestResolveFormulas_RealFileNotOverwritten(t *testing.T) {
 	}
 	if string(content) != "real file" {
 		t.Errorf("real file content = %q, want %q", content, "real file")
+	}
+	if _, err := os.Lstat(filepath.Join(symlinkDir, "mol-a.formula.toml")); err != nil {
+		t.Errorf("legacy compatibility alias should still exist: %v", err)
 	}
 }
 
@@ -317,9 +325,10 @@ func TestResolveFormulas_MissingLayerDir(t *testing.T) {
 		t.Fatalf("ResolveFormulas: %v", err)
 	}
 
-	// mol-a from the existing layer should still be resolved, under the canonical name.
-	if _, err := os.Lstat(filepath.Join(target, ".beads", "formulas", "mol-a.toml")); err != nil {
-		t.Errorf("mol-a should exist: %v", err)
+	for _, linkName := range []string{"mol-a.toml", "mol-a.formula.toml"} {
+		if _, err := os.Lstat(filepath.Join(target, ".beads", "formulas", linkName)); err != nil {
+			t.Errorf("%s should exist: %v", linkName, err)
+		}
 	}
 }
 
@@ -345,7 +354,7 @@ func TestResolveFormulas_NonFormulaFilesIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadDir: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Errorf("got %d entries, want 1 (only TOML formula files)", len(entries))
+	if len(entries) != 2 {
+		t.Errorf("got %d entries, want 2 (canonical + legacy compatibility links)", len(entries))
 	}
 }
