@@ -155,3 +155,118 @@ func TestAsyncAPISpecContainsExpectedProtocolChannels(t *testing.T) {
 		t.Fatal("asyncapi advertised HTTP-only action channel actions/health.get/request")
 	}
 }
+
+func TestAsyncAPISpecSubscriptionResumeSchema(t *testing.T) {
+	doc := fetchAsyncAPIDoc(t)
+
+	schema, ok := doc.Components.Schemas["ApiSubscriptionStartPayload"]
+	if !ok {
+		t.Fatal("asyncapi missing ApiSubscriptionStartPayload schema")
+	}
+
+	assertSchemaProperty(t, schema.Properties, "after_cursor", "string", "Resume from this cursor")
+	assertSchemaProperty(t, schema.Properties, "after_seq", "integer", "Resume from this event sequence")
+	assertSchemaProperty(t, schema.Properties, "format", "string", "Stream format")
+	assertSchemaProperty(t, schema.Properties, "kind", "string", "Subscription type")
+	assertSchemaProperty(t, schema.Properties, "target", "string", "Session ID or name")
+	assertSchemaProperty(t, schema.Properties, "turns", "integer", "Most recent N turns")
+
+	if got := schema.Properties["after_seq"].Minimum; got != 0 {
+		t.Fatalf("ApiSubscriptionStartPayload.after_seq minimum = %v, want 0", got)
+	}
+	if desc := schema.Properties["kind"].Description; !strings.Contains(desc, "events") || !strings.Contains(desc, "session.stream") {
+		t.Fatalf("ApiSubscriptionStartPayload.kind description = %q, want events + session.stream", desc)
+	}
+	if desc := schema.Properties["format"].Description; !strings.Contains(desc, "text") || !strings.Contains(desc, "raw") || !strings.Contains(desc, "jsonl") {
+		t.Fatalf("ApiSubscriptionStartPayload.format description = %q, want text/raw/jsonl", desc)
+	}
+}
+
+func TestAsyncAPISpecEventAndHelloSchemas(t *testing.T) {
+	doc := fetchAsyncAPIDoc(t)
+
+	eventSchema, ok := doc.Components.Schemas["ApiEventEnvelope"]
+	if !ok {
+		t.Fatal("asyncapi missing ApiEventEnvelope schema")
+	}
+	assertSchemaProperty(t, eventSchema.Properties, "cursor", "string", "Resume cursor for reconnection")
+	assertSchemaProperty(t, eventSchema.Properties, "subscription_id", "string", "Subscription that produced this event")
+
+	helloSchema, ok := doc.Components.Schemas["ApiHelloEnvelope"]
+	if !ok {
+		t.Fatal("asyncapi missing ApiHelloEnvelope schema")
+	}
+	assertSchemaProperty(t, helloSchema.Properties, "capabilities", "array", "Sorted list of supported action names")
+	assertSchemaProperty(t, helloSchema.Properties, "subscription_kinds", "array", "Supported subscription types")
+	assertSchemaProperty(t, helloSchema.Properties, "server_role", "string", "'city' or 'supervisor'")
+}
+
+type asyncAPIDoc struct {
+	Channels map[string]any `yaml:"channels"`
+	Components struct {
+		Schemas map[string]asyncAPISchema `yaml:"schemas"`
+	} `yaml:"components"`
+}
+
+type asyncAPISchema struct {
+	Description string                     `yaml:"description"`
+	Type        any                        `yaml:"type"`
+	Minimum     any                        `yaml:"minimum"`
+	Properties  map[string]asyncAPISchema  `yaml:"properties"`
+	Items       *asyncAPISchema            `yaml:"items"`
+}
+
+func fetchAsyncAPIDoc(t *testing.T) asyncAPIDoc {
+	t.Helper()
+
+	state := newFakeState(t)
+	srv := New(state)
+	ts := httptest.NewServer(srv.handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/v0/asyncapi.yaml")
+	if err != nil {
+		t.Fatalf("GET /v0/asyncapi.yaml: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	var doc asyncAPIDoc
+	if err := yaml.Unmarshal(body, &doc); err != nil {
+		t.Fatalf("unmarshal asyncapi yaml: %v", err)
+	}
+	return doc
+}
+
+func assertSchemaProperty(t *testing.T, props map[string]asyncAPISchema, name, wantType, wantDesc string) {
+	t.Helper()
+
+	prop, ok := props[name]
+	if !ok {
+		t.Fatalf("schema missing property %q", name)
+	}
+	if !schemaTypeIncludes(prop.Type, wantType) {
+		t.Fatalf("property %s type = %#v, want %s", name, prop.Type, wantType)
+	}
+	if !strings.Contains(prop.Description, wantDesc) {
+		t.Fatalf("property %s description = %q, want substring %q", name, prop.Description, wantDesc)
+	}
+}
+
+func schemaTypeIncludes(v any, want string) bool {
+	switch tv := v.(type) {
+	case string:
+		return tv == want
+	case []any:
+		for _, item := range tv {
+			if s, ok := item.(string); ok && s == want {
+				return true
+			}
+		}
+	}
+	return false
+}
