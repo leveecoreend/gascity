@@ -190,3 +190,20 @@ func TestDashboardCSSHidesHiddenErrorBanner(t *testing.T) {
 		t.Fatal("dashboard.css missing explicit hidden display override for error banner")
 	}
 }
+
+func TestDashboardJSUsesExplicitMayorIdentity(t *testing.T) {
+	data, err := os.ReadFile("static/dashboard.js")
+	if err != nil {
+		t.Fatalf("ReadFile(static/dashboard.js): %v", err)
+	}
+	js := string(data)
+	if !strings.Contains(js, "s.alias === 'mayor'") {
+		t.Fatal("dashboard.js missing mayor alias check")
+	}
+	if !strings.Contains(js, "s.session_name === 'mayor'") {
+		t.Fatal("dashboard.js missing mayor session_name check")
+	}
+	if strings.Contains(js, "if (!s.pool && !s.rig)") {
+		t.Fatal("dashboard.js still uses the broken mayor pool/rig heuristic")
+	}
+}

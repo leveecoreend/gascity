@@ -1215,10 +1215,14 @@ import { createDashboardTransport } from './dashboard_transport.js';
         var banner = document.getElementById('mayor-banner');
         if (!banner) return;
 
-        // Mayor: city-scoped, non-pool session.
+        // Mayor is the canonical named session materialized for the city.
+        // Do not infer it from pool/rig absence; the API now classifies the
+        // mayor session with pool metadata too.
         var mayor = null;
         (sessions || []).forEach(function(s) {
-            if (!s.pool && !s.rig) {
+            if (s.alias === 'mayor' ||
+                s.session_name === 'mayor' ||
+                (s.template === 'mayor' && s.configured_named_session)) {
                 mayor = s;
             }
         });
