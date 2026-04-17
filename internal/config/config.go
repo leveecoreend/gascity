@@ -223,6 +223,9 @@ type City struct {
 // template. Unlike Agent, it does not carry behavior itself; it only
 // declares runtime identity and controller policy.
 type NamedSession struct {
+	// Name is the configured public session identity. When omitted, Template
+	// remains the compatibility identity.
+	Name string `toml:"name,omitempty"`
 	// Template is the referenced agent template name.
 	Template string `toml:"template" jsonschema:"required"`
 	// Scope defines where this named session is instantiated in pack
@@ -248,9 +251,36 @@ type NamedSession struct {
 }
 
 // QualifiedName returns the canonical identity of the named session.
-// For V2 sessions with a binding, the template is qualified as
-// "binding.template".
+// For V2 sessions with a binding, the public identity is qualified as
+// "binding.name" or "binding.template".
 func (s *NamedSession) QualifiedName() string {
+	if s == nil {
+		return ""
+	}
+	identity := s.IdentityName()
+	if s.Dir == "" {
+		return identity
+	}
+	return s.Dir + "/" + identity
+}
+
+// IdentityName returns the unqualified configured public session identity.
+func (s *NamedSession) IdentityName() string {
+	if s == nil {
+		return ""
+	}
+	identity := s.Name
+	if identity == "" {
+		identity = s.Template
+	}
+	if s.BindingName != "" {
+		return s.BindingName + "." + identity
+	}
+	return identity
+}
+
+// TemplateQualifiedName returns the canonical backing agent config identity.
+func (s *NamedSession) TemplateQualifiedName() string {
 	if s == nil {
 		return ""
 	}
@@ -369,7 +399,7 @@ type AgentOverride struct {
 	Scope *string `toml:"scope,omitempty"`
 	// Suspended sets the agent's suspended state.
 	Suspended *bool `toml:"suspended,omitempty"`
-	// Pool overrides pool configuration fields.
+	// Pool overrides legacy [pool] fields that map to session scaling.
 	Pool *PoolOverride `toml:"pool,omitempty"`
 	// Env adds or overrides environment variables.
 	Env map[string]string `toml:"env,omitempty"`
@@ -968,7 +998,7 @@ type OrderOverride struct {
 	Check *string `toml:"check,omitempty"`
 	// On overrides the event gate event type.
 	On *string `toml:"on,omitempty"`
-	// Pool overrides the target agent/pool.
+	// Pool overrides the target session config.
 	Pool *string `toml:"pool,omitempty"`
 	// Timeout overrides the per-order timeout. Go duration string.
 	Timeout *string `toml:"timeout,omitempty"`
@@ -1251,8 +1281,8 @@ type AgentDefaults struct {
 	WakeMode string `toml:"wake_mode,omitempty" jsonschema:"enum=resume,enum=fresh"`
 	// DefaultSlingFormula is the city-level default formula used for agents
 	// that inherit [agent_defaults]. Explicit agents only receive this value
-	// when agent_defaults.default_sling_formula is set; implicit pool agents
-	// are seeded with "mol-do-work" elsewhere when no explicit default is set.
+	// when agent_defaults.default_sling_formula is set; implicit multi-session
+	// configs are seeded with "mol-do-work" elsewhere when no explicit default is set.
 	DefaultSlingFormula string `toml:"default_sling_formula,omitempty"`
 	// AllowOverlay is parsed and composed as a city-level allowlist for
 	// session overlays, but it is not yet inherited onto agents
@@ -1380,14 +1410,14 @@ type Agent struct {
 	// When the controller probes for demand without session context, only the
 	// routed_to tier applies. Override to integrate with external task systems.
 	WorkQuery string `toml:"work_query,omitempty"`
-	// SlingQuery is the command template to route a bead to this agent/pool.
+	// SlingQuery is the command template to route a bead to this session config.
 	// Used by gc sling to make a bead visible to the target's work_query.
 	// The placeholder {} is replaced with the bead ID at runtime.
 	// Default for all agents:
 	// "bd update {} --set-metadata gc.routed_to=<qualified-name>".
 	// Routing is metadata-based; sling stamps the target template and the
 	// reconciler/scale_check paths decide when sessions are created.
-	// Pool agents must set both sling_query and work_query, or neither.
+	// Custom sling_query and work_query can be overridden independently.
 	SlingQuery string `toml:"sling_query,omitempty"`
 	// IdleTimeout is the maximum time an agent session can be inactive before
 	// the controller kills and restarts it. Duration string (e.g., "15m", "1h").
@@ -1565,10 +1595,18 @@ func (a *Agent) EffectiveWorkQuery() string {
 			`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
 			`done; ` +
 			// Tier 3: ready unassigned routed to this config (shared routed queue).
-			// No GC_SESSION_ORIGIN gate here — only control-dispatchers restrict
-			// demand detection to ephemeral/controller probes (see legacy branch below).
-			`bd ready --metadata-field gc.routed_to=` + target +
-			` --unassigned --json --limit=1 2>/dev/null'`
+			// Only ephemeral sessions and controller probes consume generic config demand.
+			`case "$GC_SESSION_ORIGIN" in ` +
+			`ephemeral|"") ;; ` +
+			`*) exit 0 ;; ` +
+			`esac; ` +
+			`r=$(bd ready --metadata-field gc.routed_to=` + target +
+			` --unassigned --json --limit=1 2>/dev/null); ` +
+			`[ -n "$r" ] && [ "$r" != "[]" ] && printf "%s" "$r" && exit 0; ` +
+			// Tier 4: open routed molecule roots. scale_check already counts
+			// these, so startup must be able to see them too.
+			`bd list --metadata-field gc.routed_to=` + target +
+			` --status=open --type=molecule --no-assignee --json --limit=1 2>/dev/null'`
 	}
 	return `sh -c '` +
 		// Tier 1: in_progress assigned to any of my identifiers (crash recovery).
@@ -1595,7 +1633,7 @@ func (a *Agent) EffectiveWorkQuery() string {
 		`done; ` +
 		// Tier 3: ready unassigned routed to this config (shared routed queue),
 		// then the legacy workflow-control route for pre-rename graphs.
-		// Demand detection only runs for ephemeral sessions or controller probes.
+		// Only ephemeral sessions and controller probes consume generic config demand.
 		`case "$GC_SESSION_ORIGIN" in ` +
 		`ephemeral|"") ;; ` +
 		`*) exit 0 ;; ` +
@@ -1687,6 +1725,45 @@ func (a *Agent) EffectiveMinActiveSessions() int {
 	return 0
 }
 
+// SupportsGenericEphemeralSessions reports whether the template may satisfy
+// generic controller demand with ephemeral sessions. max_active_sessions = 0
+// disables generic session creation; all other values, including 1, still
+// represent generic capacity rather than a semantic singleton kind.
+func (a *Agent) SupportsGenericEphemeralSessions() bool {
+	if a == nil {
+		return false
+	}
+	if m := a.EffectiveMaxActiveSessions(); m != nil && *m == 0 {
+		return false
+	}
+	return true
+}
+
+// SupportsInstanceExpansion reports whether the template may have multiple
+// simultaneously addressable concrete instances and therefore needs instance
+// discovery / synthetic member naming.
+func (a *Agent) SupportsInstanceExpansion() bool {
+	if a == nil {
+		return false
+	}
+	if strings.TrimSpace(a.Namepool) != "" || len(a.NamepoolNames) > 0 {
+		return true
+	}
+	if m := a.EffectiveMaxActiveSessions(); m != nil {
+		return *m < 0 || *m > 1
+	}
+	return true
+}
+
+// HasUnlimitedSessionCapacity reports whether max_active_sessions is unbounded.
+func (a *Agent) HasUnlimitedSessionCapacity() bool {
+	if a == nil {
+		return false
+	}
+	m := a.EffectiveMaxActiveSessions()
+	return m == nil || *m < 0
+}
+
 // ResolvedMaxActiveSessions returns the effective max for this agent,
 // inheriting from rig then workspace if not set on the agent directly.
 func (a *Agent) ResolvedMaxActiveSessions(cfg *City) *int {
@@ -1709,8 +1786,8 @@ func (a *Agent) ResolvedMaxActiveSessions(cfg *City) *int {
 }
 
 // EffectiveOnDeath returns the on_death command for this agent.
-// If OnDeath is set, returns it. Otherwise returns a default that
-// unclaims in_progress beads assigned to this agent.
+// If OnDeath is set, returns it. Otherwise returns the default recovery hook
+// that unclaims in-progress work assigned to this concrete agent identity.
 func (a *Agent) EffectiveOnDeath() string {
 	if a.OnDeath != "" {
 		return a.OnDeath
@@ -1718,12 +1795,12 @@ func (a *Agent) EffectiveOnDeath() string {
 	return `bd list --assignee=` + a.QualifiedName() +
 		` --status=in_progress --json 2>/dev/null | ` +
 		`jq -r '.[].id' 2>/dev/null | ` +
-		`xargs -rI{} bd update {} --unclaim 2>/dev/null`
+		`xargs -rI{} bd update {} --assignee "" 2>/dev/null`
 }
 
 // EffectiveOnBoot returns the on_boot command for this agent.
-// If OnBoot is set, returns it. Otherwise returns a default that
-// unclaims all in_progress beads routed to this agent's template.
+// If OnBoot is set, returns it. Otherwise returns the default recovery hook
+// that unclaims in-progress work routed to this backing config.
 func (a *Agent) EffectiveOnBoot() string {
 	if a.OnBoot != "" {
 		return a.OnBoot
@@ -1735,7 +1812,7 @@ func (a *Agent) EffectiveOnBoot() string {
 	return `bd list --metadata-field gc.routed_to=` + template +
 		` --status=in_progress --json 2>/dev/null | ` +
 		`jq -r '.[].id' 2>/dev/null | ` +
-		`xargs -rI{} bd update {} --unclaim 2>/dev/null`
+		`xargs -rI{} bd update {} --assignee "" 2>/dev/null`
 }
 
 // InjectImplicitAgents adds on-demand agents for each configured provider at
@@ -2065,13 +2142,19 @@ func ValidateAgents(agents []Agent) error {
 	return nil
 }
 
-// ValidateNamedSessions checks named session declarations for structural
-// errors and cross-references against the expanded agent set.
+// ValidateNamedSessions checks named session declarations after pack expansion.
 func ValidateNamedSessions(cfg *City) error {
+	return validateNamedSessions(cfg, true)
+}
+
+// validateNamedSessions checks named session declarations for structural
+// errors. When requireBackingTemplate is true, it also requires every named
+// session to resolve to an expanded backing agent template.
+func validateNamedSessions(cfg *City, requireBackingTemplate bool) error {
 	if cfg == nil || len(cfg.NamedSessions) == 0 {
 		return nil
 	}
-	type sessionKey struct{ dir, template string }
+	type sessionKey struct{ dir, identity string }
 	seen := make(map[sessionKey]bool, len(cfg.NamedSessions))
 	reservedAliases := make(map[string]string, len(cfg.NamedSessions))
 	reservedSessionNames := make(map[string]string, len(cfg.NamedSessions))
@@ -2079,6 +2162,7 @@ func ValidateNamedSessions(cfg *City) error {
 	for i := range cfg.Agents {
 		agentsByTemplate[cfg.Agents[i].QualifiedName()] = &cfg.Agents[i]
 	}
+	alwaysByTemplate := make(map[string]int)
 	for i := range cfg.NamedSessions {
 		s := &cfg.NamedSessions[i]
 		if s.Template == "" {
@@ -2086,6 +2170,9 @@ func ValidateNamedSessions(cfg *City) error {
 		}
 		if !validAgentName.MatchString(s.Template) {
 			return fmt.Errorf("named_session[%d]: template %q must match [a-zA-Z0-9][a-zA-Z0-9_-]*", i, s.Template)
+		}
+		if s.Name != "" && !validAgentName.MatchString(s.Name) {
+			return fmt.Errorf("named_session[%d]: name %q must match [a-zA-Z0-9][a-zA-Z0-9_-]*", i, s.Name)
 		}
 		switch s.Scope {
 		case "", "city", "rig":
@@ -2099,14 +2186,16 @@ func ValidateNamedSessions(cfg *City) error {
 		default:
 			return fmt.Errorf("named_session %q: mode must be \"on_demand\", \"always\", or empty, got %q", s.QualifiedName(), s.Mode)
 		}
-		key := sessionKey{dir: s.Dir, template: s.Template}
+		key := sessionKey{dir: s.Dir, identity: s.IdentityName()}
 		if seen[key] {
 			return fmt.Errorf("named_session %q: duplicate identity", s.QualifiedName())
 		}
 		seen[key] = true
-		agent := agentsByTemplate[s.QualifiedName()]
+		agent := agentsByTemplate[s.TemplateQualifiedName()]
 		if agent == nil {
-			return fmt.Errorf("named_session %q: referenced template not found after pack expansion", s.QualifiedName())
+			if requireBackingTemplate {
+				return fmt.Errorf("named_session %q: referenced template not found after pack expansion", s.QualifiedName())
+			}
 		}
 		identity := s.QualifiedName()
 		sessionName := NamedSessionRuntimeName(cfg.EffectiveCityName(), cfg.Workspace, identity)
@@ -2130,7 +2219,14 @@ func ValidateNamedSessions(cfg *City) error {
 		}
 		reservedAliases[identity] = identity
 		reservedSessionNames[sessionName] = identity
-		if s.ModeOrDefault() == "always" {
+		if s.ModeOrDefault() == "always" && agent != nil {
+			alwaysByTemplate[agent.QualifiedName()]++
+			if maxActive := agent.EffectiveMaxActiveSessions(); maxActive != nil && *maxActive < alwaysByTemplate[agent.QualifiedName()] {
+				return fmt.Errorf(
+					"named_session %q: mode %q exceeds max_active_sessions capacity %d on template %q",
+					s.QualifiedName(), s.ModeOrDefault(), *maxActive, agent.QualifiedName(),
+				)
+			}
 			policy := ResolveSessionSleepPolicy(cfg, agent)
 			if normalized := NormalizeSleepAfterIdle(policy.Value); normalized != "" && normalized != SessionSleepOff {
 				return fmt.Errorf(
@@ -2331,6 +2427,12 @@ func Load(fs fsys.FS, path string) (*City, error) {
 		return nil, err
 	}
 	cfg.ResolvedWorkspaceName = filepath.Base(filepath.Dir(path))
+	// Load intentionally skips include and pack expansion, so validate the
+	// direct named-session declarations without requiring pack-provided
+	// backing templates to be present yet.
+	if err := validateNamedSessions(cfg, false); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 

@@ -48,13 +48,15 @@ func assignGraphStepRoute(step *formula.RecipeStep, executionBinding sling.Graph
 }
 
 // applyGraphRouting delegates to sling.ApplyGraphRouting with CLI interfaces.
-func applyGraphRouting(recipe *formula.Recipe, a *config.Agent, routedTo string, vars map[string]string, sourceBeadID, scopeKind, scopeRef, storeRef string, store beads.Store, cityName string, cfg *config.City) error {
+func applyGraphRouting(recipe *formula.Recipe, a *config.Agent, routedTo string, vars map[string]string, sourceBeadID, scopeKind, scopeRef, storeRef string, store beads.Store, cityName, cityPath string, cfg *config.City) error {
 	deps := sling.SlingDeps{
-		CityName: cityName,
-		Store:    store,
-		StoreRef: storeRef,
-		Cfg:      cfg,
-		Resolver: cliAgentResolver{},
+		CityName:              cityName,
+		CityPath:              cityPath,
+		Store:                 store,
+		StoreRef:              storeRef,
+		Cfg:                   cfg,
+		Resolver:              cliAgentResolver{},
+		DirectSessionResolver: cliDirectSessionResolver,
 	}
 	return sling.ApplyGraphRouting(recipe, a, routedTo, vars, sourceBeadID, scopeKind, scopeRef, storeRef, store, cityName, cfg, deps)
 }
@@ -145,6 +147,14 @@ func runWorkflowServe(agentName string, follow bool, _ io.Writer, stderr io.Writ
 	}
 	if agentName == "" {
 		agentName = os.Getenv("GC_AGENT")
+	}
+	if agentName == "" || agentName == strings.TrimSpace(os.Getenv("GC_ALIAS")) || agentName == strings.TrimSpace(os.Getenv("GC_AGENT")) {
+		template := strings.TrimSpace(os.Getenv("GC_TEMPLATE"))
+		hasSessionContext := strings.TrimSpace(os.Getenv("GC_SESSION_NAME")) != "" ||
+			strings.TrimSpace(os.Getenv("GC_SESSION_ID")) != ""
+		if template != "" && hasSessionContext {
+			agentName = template
+		}
 	}
 	if agentName == "" {
 		agentName = config.ControlDispatcherAgentName

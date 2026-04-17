@@ -56,7 +56,7 @@ type TemplateParams struct {
 	// For pool instances this is the base template (e.g., "dog"), not the instance.
 	TemplateName string
 	// InstanceName is the qualified instance name used for display and events.
-	// For singletons it equals TemplateName; for pool instances it's "dog-1".
+	// For non-expanding templates it equals TemplateName; for pool instances it's "dog-1".
 	InstanceName string
 	// RigName is the resolved rig association (empty if none).
 	RigName string
@@ -87,7 +87,7 @@ type TemplateParams struct {
 
 // DisplayName returns the name to use for log messages and event subjects.
 // For pool instances this is the instance name (e.g., "dog-1"); for
-// singletons it equals TemplateName.
+// non-expanding templates it equals TemplateName.
 func (tp TemplateParams) DisplayName() string {
 	if tp.InstanceName != "" {
 		return tp.InstanceName
@@ -190,13 +190,14 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 
 	// Step 8: Build agent environment.
 	agentEnv := map[string]string{
-		"GC_SESSION_NAME": sessName,
-		"GC_SESSION_ID":   sessionBeadID,
-		"GC_TEMPLATE":     templateNameFor(cfgAgent, qualifiedName),
-		"GC_AGENT":        qualifiedName,
-		"GC_ALIAS":        qualifiedName,
-		"BEADS_ACTOR":     sessName,
-		"GC_DIR":          workDir,
+		"GC_SESSION_NAME":   sessName,
+		"GC_SESSION_ID":     sessionBeadID,
+		"GC_TEMPLATE":       templateNameFor(cfgAgent, qualifiedName),
+		"GC_SESSION_ORIGIN": "ephemeral",
+		"GC_AGENT":          sessName,
+		"GC_ALIAS":          qualifiedName,
+		"BEADS_ACTOR":       sessName,
+		"GC_DIR":            workDir,
 		// Explicit empty values matter here. tmux session creation uses `env -u`
 		// only for keys present with empty strings, which prevents stale rig
 		// scope from leaking out of the tmux server's inherited environment.
@@ -212,7 +213,7 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 	for key, value := range citylayout.CityRuntimeEnvMap(p.cityPath) {
 		agentEnv[key] = value
 	}
-	agentEnv["GC_BEADS"] = beadsProvider(p.cityPath)
+	agentEnv["GC_BEADS"] = rawBeadsProvider(p.cityPath)
 	if exe, err := os.Executable(); err == nil && exe != "" {
 		agentEnv["GC_BIN"] = exe
 	}
@@ -401,21 +402,23 @@ func templateParamsToConfig(tp TemplateParams) runtime.Config {
 	var promptSuffix string
 	var promptFlag string
 	nudge := tp.Hints.Nudge
+	deliverStartupViaHooks := tp.HookEnabled && tp.ResolvedProvider != nil && tp.ResolvedProvider.SupportsHooks
 	if tp.Prompt != "" {
-		if tp.ResolvedProvider != nil && tp.ResolvedProvider.PromptMode == "none" {
-			// Hook-enabled providers prime themselves on startup, so the
-			// rendered role prompt must not also be replayed as a user nudge.
-			if !tp.HookEnabled || !tp.ResolvedProvider.SupportsHooks {
+		// Hook-enabled providers prime themselves on SessionStart via
+		// gc prime --hook, so the rendered role prompt must not also be
+		// replayed as argv or a delayed startup nudge.
+		if !deliverStartupViaHooks {
+			if tp.ResolvedProvider != nil && tp.ResolvedProvider.PromptMode == "none" {
 				if nudge != "" {
 					nudge = tp.Prompt + "\n\n---\n\n" + nudge
 				} else {
 					nudge = tp.Prompt
 				}
-			}
-		} else {
-			promptSuffix = shellquote.Quote(tp.Prompt)
-			if tp.ResolvedProvider != nil && tp.ResolvedProvider.PromptMode == "flag" && tp.ResolvedProvider.PromptFlag != "" {
-				promptFlag = tp.ResolvedProvider.PromptFlag
+			} else {
+				promptSuffix = shellquote.Quote(tp.Prompt)
+				if tp.ResolvedProvider != nil && tp.ResolvedProvider.PromptMode == "flag" && tp.ResolvedProvider.PromptFlag != "" {
+					promptFlag = tp.ResolvedProvider.PromptFlag
+				}
 			}
 		}
 	}

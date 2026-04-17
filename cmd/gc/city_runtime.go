@@ -742,7 +742,7 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 		store,
 		sessionBeads,
 		desiredState,
-		assignedWorkBeads,
+		result.OwnershipWorkBeads,
 		cr.cfg,
 		cr.sp,
 		result.StoreQueryPartial,
@@ -846,7 +846,7 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 	reconcileSessionBeadsTraced(
 		ctx, cr.cityPath, open, desiredState, cfgNames, cr.cfg, cr.sp, store,
 		cr.dops,
-		assignedWorkBeads, readyWaitSet, cr.sessionDrains, poolDesired,
+		assignedWorkBeads, result.OwnershipWorkBeads, readyWaitSet, cr.sessionDrains, poolDesired,
 		result.StoreQueryPartial,
 		workSet, cityName,
 		cr.it, clock.Real{}, cr.rec, cr.cfg.Session.StartupTimeoutDuration(),
@@ -906,7 +906,7 @@ func sweepUndesiredPoolSessionBeads(
 		if _, desired := desiredState[bead.Metadata["session_name"]]; desired {
 			continue
 		}
-		if bead.Metadata["manual_session"] == boolMetadata(true) || isNamedSessionBead(bead) {
+		if isManualSessionBead(bead) || isNamedSessionBead(bead) {
 			continue
 		}
 		if sp != nil && sp.IsRunning(bead.Metadata["session_name"]) {
@@ -914,7 +914,7 @@ func sweepUndesiredPoolSessionBeads(
 		}
 		template := normalizedSessionTemplate(bead, cfg)
 		agentCfg := findAgentByTemplate(cfg, template)
-		if agentCfg == nil || !isMultiSessionCfgAgent(agentCfg) {
+		if agentCfg == nil || !isEphemeralSessionBead(bead) {
 			continue
 		}
 		candidates = append(candidates, bead)
@@ -978,7 +978,8 @@ func (cr *CityRuntime) controlDispatcherTick(ctx context.Context) {
 		store,
 		cr.dops,
 		nil,
-		nil,
+		wfcResult.OwnershipWorkBeads,
+		nil, // control-dispatcher ticks only need ownership continuity, not main-tick assigned/ready snapshots
 		cr.sessionDrains,
 		poolDesired,
 		false, // storeQueryPartial: config-change path doesn't query work beads

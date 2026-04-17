@@ -46,9 +46,11 @@ func TestDecorateDynamicFragmentRecipeSupportsExplicitPerStepAgents(t *testing.T
 		Name: "expansion-review",
 		Steps: []formula.RecipeStep{
 			{
-				ID:       "expansion-review.review",
-				Title:    "Review",
-				Assignee: "reviewer",
+				ID:    "expansion-review.review",
+				Title: "Review",
+				Metadata: map[string]string{
+					"gc.run_target": "reviewer",
+				},
 			},
 			{
 				ID:    "expansion-review.review-scope-check",
@@ -69,7 +71,7 @@ func TestDecorateDynamicFragmentRecipeSupportsExplicitPerStepAgents(t *testing.T
 		},
 	}
 
-	if err := decorateDynamicFragmentRecipe(fragment, source, store, cfg.Workspace.Name, cfg); err != nil {
+	if err := decorateDynamicFragmentRecipe(fragment, source, store, cfg.Workspace.Name, "", cfg); err != nil {
 		t.Fatalf("decorateDynamicFragmentRecipe: %v", err)
 	}
 
@@ -259,7 +261,7 @@ func TestDecorateDynamicFragmentRecipePreservesPoolFallbackAndScopeMetadata(t *t
 		},
 	}
 
-	if err := decorateDynamicFragmentRecipe(fragment, source, store, cfg.Workspace.Name, cfg); err != nil {
+	if err := decorateDynamicFragmentRecipe(fragment, source, store, cfg.Workspace.Name, "", cfg); err != nil {
 		t.Fatalf("decorateDynamicFragmentRecipe: %v", err)
 	}
 
@@ -328,14 +330,16 @@ func TestDecorateDynamicFragmentRecipeUsesSourceRouteRigContextForBareTargets(t 
 		Name: "expansion-review",
 		Steps: []formula.RecipeStep{
 			{
-				ID:       "expansion-review.review",
-				Title:    "Review",
-				Assignee: "reviewer",
+				ID:    "expansion-review.review",
+				Title: "Review",
+				Metadata: map[string]string{
+					"gc.run_target": "reviewer",
+				},
 			},
 		},
 	}
 
-	if err := decorateDynamicFragmentRecipe(fragment, source, store, cfg.Workspace.Name, cfg); err != nil {
+	if err := decorateDynamicFragmentRecipe(fragment, source, store, cfg.Workspace.Name, "", cfg); err != nil {
 		t.Fatalf("decorateDynamicFragmentRecipe: %v", err)
 	}
 
@@ -393,7 +397,7 @@ func TestDecorateDynamicFragmentRecipeMarksRetryEvalAsScopedControl(t *testing.T
 		},
 	}
 
-	if err := decorateDynamicFragmentRecipe(fragment, source, store, cfg.Workspace.Name, cfg); err != nil {
+	if err := decorateDynamicFragmentRecipe(fragment, source, store, cfg.Workspace.Name, "", cfg); err != nil {
 		t.Fatalf("decorateDynamicFragmentRecipe: %v", err)
 	}
 
@@ -555,6 +559,81 @@ func TestRunWorkflowServeOverridesInheritedCityBeadsDir(t *testing.T) {
 	}
 	if foundBeadsDir != wantBeads {
 		t.Fatalf("BEADS_DIR = %q, want rig store %q (not inherited city value %q)", foundBeadsDir, wantBeads, cityBeads)
+	}
+}
+
+func TestRunWorkflowServeUsesGCTemplateForSessionContext(t *testing.T) {
+	clearGCEnv(t)
+	cityDir := t.TempDir()
+	rigDir := filepath.Join(cityDir, "rigrepo")
+
+	if err := os.MkdirAll(filepath.Join(cityDir, ".gc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(rigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cityToml := `[workspace]
+name = "test-city"
+
+[[rigs]]
+name = "rigrepo"
+path = "rigrepo"
+
+[[agent]]
+name = "polecat"
+dir = "rigrepo"
+
+[agent.pool]
+min = 0
+max = 5
+`
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte(cityToml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("GC_CITY", cityDir)
+	t.Setenv("GC_ALIAS", "rigrepo/furiosa")
+	t.Setenv("GC_AGENT", "rigrepo/furiosa")
+	t.Setenv("GC_TEMPLATE", "rigrepo/polecat")
+	t.Setenv("GC_SESSION_NAME", "rigrepo--furiosa")
+
+	prevCityFlag := cityFlag
+	prevList := workflowServeList
+	prevControl := controlDispatcherServe
+	prevInterval := workflowServeIdlePollInterval
+	prevAttempts := workflowServeIdlePollAttempts
+	cityFlag = ""
+	workflowServeIdlePollInterval = 0
+	workflowServeIdlePollAttempts = 0
+	t.Cleanup(func() {
+		cityFlag = prevCityFlag
+		workflowServeList = prevList
+		controlDispatcherServe = prevControl
+		workflowServeIdlePollInterval = prevInterval
+		workflowServeIdlePollAttempts = prevAttempts
+	})
+
+	var gotQuery string
+	var gotDir string
+	workflowServeList = func(workQuery, dir string, _ []string) ([]hookBead, error) {
+		gotQuery = workQuery
+		gotDir = dir
+		return nil, nil
+	}
+	controlDispatcherServe = func(_ string, _ io.Writer, _ io.Writer) error {
+		t.Fatal("controlDispatcherServe should not run when no control work is returned")
+		return nil
+	}
+
+	if err := runWorkflowServe("", false, io.Discard, io.Discard); err != nil {
+		t.Fatalf("runWorkflowServe: %v", err)
+	}
+	if gotQuery == "" {
+		t.Fatal("workflowServeList query was empty, want polecat work query")
+	}
+	if canonicalTestPath(gotDir) != canonicalTestPath(rigDir) {
+		t.Fatalf("workflowServeList dir = %q, want rig root %q", gotDir, rigDir)
 	}
 }
 
@@ -820,7 +899,7 @@ func TestDecorateDynamicFragmentRecipeSynthesizesInheritedScopeChecks(t *testing
 		},
 	}
 
-	if err := decorateDynamicFragmentRecipe(fragment, source, store, cfg.Workspace.Name, cfg); err != nil {
+	if err := decorateDynamicFragmentRecipe(fragment, source, store, cfg.Workspace.Name, "", cfg); err != nil {
 		t.Fatalf("decorateDynamicFragmentRecipe: %v", err)
 	}
 
@@ -872,16 +951,18 @@ func TestResolveGraphStepBindingWorkflowFinalizeUsesFallback(t *testing.T) {
 
 	stepByID := map[string]*formula.RecipeStep{
 		"demo.owner": {
-			ID:       "demo.owner",
-			Title:    "Owner step",
-			Assignee: "control-dispatcher",
+			ID:    "demo.owner",
+			Title: "Owner step",
+			Metadata: map[string]string{
+				"gc.run_target": "control-dispatcher",
+			},
 		},
 		"demo.review": {
-			ID:       "demo.review",
-			Title:    "Review",
-			Assignee: "reviewer",
+			ID:    "demo.review",
+			Title: "Review",
 			Metadata: map[string]string{
-				"gc.kind": "retry-run",
+				"gc.kind":       "retry-run",
+				"gc.run_target": "reviewer",
 			},
 		},
 		"demo.workflow-finalize": {
@@ -900,7 +981,7 @@ func TestResolveGraphStepBindingWorkflowFinalizeUsesFallback(t *testing.T) {
 		SessionName:   lookupSessionNameOrLegacy(store, cfg.Workspace.Name, "mayor", cfg.Workspace.SessionTemplate),
 	}
 
-	binding, err := resolveGraphStepBinding("demo.workflow-finalize", stepByID, nil, depsByStep, map[string]graphRouteBinding{}, map[string]bool{}, fallback, "", store, cfg.Workspace.Name, cfg)
+	binding, err := resolveGraphStepBinding("demo.workflow-finalize", stepByID, nil, depsByStep, map[string]graphRouteBinding{}, map[string]bool{}, fallback, "", store, cfg.Workspace.Name, "", cfg)
 	if err != nil {
 		t.Fatalf("resolveGraphStepBinding(workflow-finalize): %v", err)
 	}
@@ -921,14 +1002,18 @@ func TestResolveGraphStepBindingCheckRejectsInconsistentDeps(t *testing.T) {
 
 	stepByID := map[string]*formula.RecipeStep{
 		"demo.review-a": {
-			ID:       "demo.review-a",
-			Title:    "Review A",
-			Assignee: "reviewer-a",
+			ID:    "demo.review-a",
+			Title: "Review A",
+			Metadata: map[string]string{
+				"gc.run_target": "reviewer-a",
+			},
 		},
 		"demo.review-b": {
-			ID:       "demo.review-b",
-			Title:    "Review B",
-			Assignee: "reviewer-b",
+			ID:    "demo.review-b",
+			Title: "Review B",
+			Metadata: map[string]string{
+				"gc.run_target": "reviewer-b",
+			},
 		},
 		"demo.check": {
 			ID:    "demo.check",
@@ -946,7 +1031,7 @@ func TestResolveGraphStepBindingCheckRejectsInconsistentDeps(t *testing.T) {
 		SessionName:   lookupSessionNameOrLegacy(store, cfg.Workspace.Name, "reviewer-a", cfg.Workspace.SessionTemplate),
 	}
 
-	if _, err := resolveGraphStepBinding("demo.check", stepByID, nil, depsByStep, map[string]graphRouteBinding{}, map[string]bool{}, fallback, "", store, cfg.Workspace.Name, cfg); err == nil || !strings.Contains(err.Error(), "inconsistent control routing") {
+	if _, err := resolveGraphStepBinding("demo.check", stepByID, nil, depsByStep, map[string]graphRouteBinding{}, map[string]bool{}, fallback, "", store, cfg.Workspace.Name, "", cfg); err == nil || !strings.Contains(err.Error(), "inconsistent control routing") {
 		t.Fatalf("resolveGraphStepBinding(check) error = %v, want inconsistent control routing", err)
 	}
 }
@@ -965,16 +1050,18 @@ func TestResolveGraphStepBindingRetryEvalUsesDependencyRoute(t *testing.T) {
 
 	stepByID := map[string]*formula.RecipeStep{
 		"demo.owner": {
-			ID:       "demo.owner",
-			Title:    "Owner step",
-			Assignee: "control-dispatcher",
+			ID:    "demo.owner",
+			Title: "Owner step",
+			Metadata: map[string]string{
+				"gc.run_target": "control-dispatcher",
+			},
 		},
 		"demo.review": {
-			ID:       "demo.review",
-			Title:    "Review",
-			Assignee: "reviewer",
+			ID:    "demo.review",
+			Title: "Review",
 			Metadata: map[string]string{
-				"gc.kind": "retry-run",
+				"gc.kind":       "retry-run",
+				"gc.run_target": "reviewer",
 			},
 		},
 		"demo.review.eval.1": {
@@ -993,7 +1080,7 @@ func TestResolveGraphStepBindingRetryEvalUsesDependencyRoute(t *testing.T) {
 		SessionName:   lookupSessionNameOrLegacy(store, cfg.Workspace.Name, "control-dispatcher", cfg.Workspace.SessionTemplate),
 	}
 
-	binding, err := resolveGraphStepBinding("demo.review.eval.1", stepByID, nil, depsByStep, map[string]graphRouteBinding{}, map[string]bool{}, fallback, "", store, cfg.Workspace.Name, cfg)
+	binding, err := resolveGraphStepBinding("demo.review.eval.1", stepByID, nil, depsByStep, map[string]graphRouteBinding{}, map[string]bool{}, fallback, "", store, cfg.Workspace.Name, "", cfg)
 	if err != nil {
 		t.Fatalf("resolveGraphStepBinding(retry-eval): %v", err)
 	}

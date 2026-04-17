@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/api"
 	"github.com/gastownhall/gascity/internal/bootstrap"
@@ -20,6 +21,11 @@ import (
 var (
 	initProbeProvidersReadiness = api.ProbeProviders
 	errInitProviderPreflight    = errors.New("provider readiness preflight failed")
+)
+
+var (
+	initVersionTimeout   = 5 * time.Second
+	initVersionWaitDelay = 250 * time.Millisecond
 )
 
 type initFinalizeOptions struct {
@@ -427,8 +433,15 @@ var initLookPath = exec.LookPath
 // initRunVersion runs "<binary> version" and returns the first line.
 // Tests can override this.
 var initRunVersion = func(binary string) (string, error) {
-	out, err := exec.Command(binary, "version").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), initVersionTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "version")
+	cmd.WaitDelay = initVersionWaitDelay
+	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("%s version: %w", binary, ctx.Err())
+		}
 		return "", err
 	}
 	line := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]

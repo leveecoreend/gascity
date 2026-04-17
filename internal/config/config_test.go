@@ -1323,6 +1323,9 @@ func TestEffectiveWorkQueryPoolDefault(t *testing.T) {
 	if !strings.Contains(got, "bd ready --metadata-field gc.routed_to=hello-world/polecat --unassigned --json --limit=1") {
 		t.Errorf("EffectiveWorkQuery() missing tier 3 routed_to: %q", got)
 	}
+	if !strings.Contains(got, "bd list --metadata-field gc.routed_to=hello-world/polecat --status=open --type=molecule --no-assignee --json --limit=1") {
+		t.Errorf("EffectiveWorkQuery() missing tier 4 molecule route: %q", got)
+	}
 }
 
 func TestEffectiveSlingQueryFixedAgent(t *testing.T) {
@@ -1373,6 +1376,9 @@ func TestEffectiveWorkQueryPoolNameOverride(t *testing.T) {
 	if !strings.Contains(got, "bd ready --metadata-field gc.routed_to=hello-world/dog --unassigned --json --limit=1") {
 		t.Errorf("EffectiveWorkQuery() missing tier 3 routed_to with pool name: %q", got)
 	}
+	if !strings.Contains(got, "bd list --metadata-field gc.routed_to=hello-world/dog --status=open --type=molecule --no-assignee --json --limit=1") {
+		t.Errorf("EffectiveWorkQuery() missing tier 4 molecule route with pool name: %q", got)
+	}
 }
 
 func TestEffectiveWorkQueryPoolNoPoolName(t *testing.T) {
@@ -1394,6 +1400,9 @@ func TestEffectiveWorkQueryControlDispatcherIncludesLegacyWorkflowControlRoute(t
 	}
 	if !strings.Contains(got, `workflow-control`) {
 		t.Fatalf("EffectiveWorkQuery() missing legacy assignee alias handling: %q", got)
+	}
+	if strings.Contains(got, "--type=molecule") {
+		t.Fatalf("EffectiveWorkQuery() should keep control-dispatcher on the no-molecule path: %q", got)
 	}
 }
 
@@ -1659,17 +1668,30 @@ func TestEffectiveScaleCheckMoleculeQuery(t *testing.T) {
 	}
 }
 
-func TestIsMultiSession(t *testing.T) {
-	a := Agent{Name: "worker", MinActiveSessions: ptrInt(0), MaxActiveSessions: ptrInt(5)}
-	maxSess := a.EffectiveMaxActiveSessions()
-	if maxSess == nil || *maxSess == 1 {
-		t.Error("agent with max=5 should be multi-session")
+func TestAgentSessionCapacityHelpers(t *testing.T) {
+	if got := (&Agent{Name: "worker", MaxActiveSessions: ptrInt(0)}).SupportsGenericEphemeralSessions(); got {
+		t.Fatal("max=0 agent should not support generic ephemeral sessions")
 	}
-
-	b := Agent{Name: "mayor"}
-	maxB := b.EffectiveMaxActiveSessions()
-	if maxB != nil {
-		t.Errorf("agent without scaling should have nil max, got %v", maxB)
+	if got := (&Agent{Name: "worker", MaxActiveSessions: ptrInt(1)}).SupportsGenericEphemeralSessions(); !got {
+		t.Fatal("max=1 agent should still support generic ephemeral sessions")
+	}
+	if got := (&Agent{Name: "worker", MaxActiveSessions: ptrInt(1)}).SupportsInstanceExpansion(); got {
+		t.Fatal("max=1 agent should not require instance expansion")
+	}
+	if got := (&Agent{Name: "worker", MaxActiveSessions: ptrInt(5)}).SupportsInstanceExpansion(); !got {
+		t.Fatal("max=5 agent should support instance expansion")
+	}
+	if got := (&Agent{Name: "worker", MaxActiveSessions: ptrInt(-1)}).SupportsInstanceExpansion(); !got {
+		t.Fatal("max=-1 agent should support instance expansion")
+	}
+	if got := (&Agent{Name: "worker"}).SupportsInstanceExpansion(); !got {
+		t.Fatal("unbounded agent should support instance expansion")
+	}
+	if got := (&Agent{Name: "worker"}).HasUnlimitedSessionCapacity(); !got {
+		t.Fatal("agent without explicit max should report unlimited capacity")
+	}
+	if got := (&Agent{Name: "worker", MaxActiveSessions: ptrInt(5)}).HasUnlimitedSessionCapacity(); got {
+		t.Fatal("bounded agent should not report unlimited capacity")
 	}
 }
 
@@ -3105,9 +3127,7 @@ func TestEffectiveMethodsQualifyConsistently(t *testing.T) {
 			if tt.agent.Dir == "" {
 				t.Skip("test only applies to rig-scoped agents")
 			}
-			maxSess := tt.agent.EffectiveMaxActiveSessions()
-			isMulti := maxSess == nil || *maxSess != 1
-			if !isMulti {
+			if !tt.agent.SupportsInstanceExpansion() {
 				t.Skip("fixed agents use env vars, not qualified names")
 			}
 
@@ -3538,15 +3558,11 @@ func TestEffectiveOnDeathDefault(t *testing.T) {
 		Dir:               "myrig",
 		MinActiveSessions: ptrInt(0), MaxActiveSessions: ptrInt(5),
 	}
-	cmd := a.EffectiveOnDeath()
-	if !strings.Contains(cmd, "--assignee=myrig/dog") {
-		t.Errorf("EffectiveOnDeath() = %q, want --assignee=myrig/dog", cmd)
-	}
-	if !strings.Contains(cmd, "--status=in_progress") {
-		t.Errorf("EffectiveOnDeath() = %q, want --status=in_progress", cmd)
-	}
-	if !strings.Contains(cmd, "--unclaim") {
-		t.Errorf("EffectiveOnDeath() = %q, want --unclaim", cmd)
+	got := a.EffectiveOnDeath()
+	for _, want := range []string{"bd list --assignee=myrig/dog", "--status=in_progress", "--assignee \"\""} {
+		if !strings.Contains(got, want) {
+			t.Errorf("EffectiveOnDeath() = %q, want %q", got, want)
+		}
 	}
 }
 
@@ -3563,12 +3579,11 @@ func TestEffectiveOnDeathCustom(t *testing.T) {
 
 func TestEffectiveOnDeathFixedAgent(t *testing.T) {
 	a := Agent{Name: "mayor"}
-	cmd := a.EffectiveOnDeath()
-	if !strings.Contains(cmd, "--assignee=mayor") {
-		t.Errorf("EffectiveOnDeath() = %q, want --assignee=mayor", cmd)
-	}
-	if !strings.Contains(cmd, "--unclaim") {
-		t.Errorf("EffectiveOnDeath() = %q, want --unclaim", cmd)
+	got := a.EffectiveOnDeath()
+	for _, want := range []string{"bd list --assignee=mayor", "--status=in_progress", "--assignee \"\""} {
+		if !strings.Contains(got, want) {
+			t.Errorf("EffectiveOnDeath() = %q, want %q", got, want)
+		}
 	}
 }
 
@@ -3578,15 +3593,11 @@ func TestEffectiveOnBootDefault(t *testing.T) {
 		Dir:               "myrig",
 		MinActiveSessions: ptrInt(0), MaxActiveSessions: ptrInt(5),
 	}
-	cmd := a.EffectiveOnBoot()
-	if !strings.Contains(cmd, "gc.routed_to=myrig/dog") {
-		t.Errorf("EffectiveOnBoot() = %q, want gc.routed_to=myrig/dog", cmd)
-	}
-	if !strings.Contains(cmd, "--status=in_progress") {
-		t.Errorf("EffectiveOnBoot() = %q, want --status=in_progress", cmd)
-	}
-	if !strings.Contains(cmd, "--unclaim") {
-		t.Errorf("EffectiveOnBoot() = %q, want --unclaim", cmd)
+	got := a.EffectiveOnBoot()
+	for _, want := range []string{"bd list --metadata-field gc.routed_to=myrig/dog", "--status=in_progress", "--assignee \"\""} {
+		if !strings.Contains(got, want) {
+			t.Errorf("EffectiveOnBoot() = %q, want %q", got, want)
+		}
 	}
 }
 
@@ -3598,9 +3609,11 @@ func TestEffectiveOnBootDefaultPoolName(t *testing.T) {
 		MinActiveSessions: ptrInt(0), MaxActiveSessions: ptrInt(5),
 		PoolName: "myrig/dog",
 	}
-	cmd := a.EffectiveOnBoot()
-	if !strings.Contains(cmd, "gc.routed_to=myrig/dog") {
-		t.Errorf("EffectiveOnBoot() = %q, want gc.routed_to=myrig/dog (from PoolName)", cmd)
+	got := a.EffectiveOnBoot()
+	for _, want := range []string{"bd list --metadata-field gc.routed_to=myrig/dog", "--status=in_progress", "--assignee \"\""} {
+		if !strings.Contains(got, want) {
+			t.Errorf("EffectiveOnBoot() = %q, want %q", got, want)
+		}
 	}
 }
 
@@ -3617,12 +3630,11 @@ func TestEffectiveOnBootCustom(t *testing.T) {
 
 func TestEffectiveOnBootNonPool(t *testing.T) {
 	a := Agent{Name: "mayor"}
-	cmd := a.EffectiveOnBoot()
-	if !strings.Contains(cmd, "gc.routed_to=mayor") {
-		t.Errorf("EffectiveOnBoot() = %q, want gc.routed_to=mayor", cmd)
-	}
-	if !strings.Contains(cmd, "--unclaim") {
-		t.Errorf("EffectiveOnBoot() = %q, want --unclaim", cmd)
+	got := a.EffectiveOnBoot()
+	for _, want := range []string{"bd list --metadata-field gc.routed_to=mayor", "--status=in_progress", "--assignee \"\""} {
+		if !strings.Contains(got, want) {
+			t.Errorf("EffectiveOnBoot() = %q, want %q", got, want)
+		}
 	}
 }
 
