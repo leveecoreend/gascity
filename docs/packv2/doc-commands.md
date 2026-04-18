@@ -422,13 +422,9 @@ That means:
 
 This keeps the common case obvious from the tree while preserving room for explicit metadata when the defaults are not enough.
 
-### Registry and tool examples
+### Import and registry examples
 
-In the current product, `gc import` is a built-in Go command surface. Imported
-packs are still expected to contribute their own namespaces such as `gc registry`
-or `gc tools`; they are not expected to own the built-in `gc import` tree.
-
-These command-surface docs are useful stress tests because they can be modeled either as:
+The import and registry docs are useful stress tests because they can be modeled either as:
 
 - two different packs
 - one shared implementation pack contributing to two top-level command trees
@@ -436,18 +432,18 @@ These command-surface docs are useful stress tests because they can be modeled e
 #### Case 1: separate packs
 
 ```toml
-[imports.tools]
-source = "https://github.com/gastownhall/gc-tools"
+[imports.import]
+source = "https://github.com/gastownhall/gc-import"
 
 [imports.registry]
 source = "https://github.com/gastownhall/gc-registry"
 ```
 
-Commands in the tools pack:
+Commands in the import pack:
 
 ```text
-commands/status/run.sh
-commands/cache/sync/run.sh
+commands/add/run.sh
+commands/install/run.sh
 ```
 
 Commands in the registry pack:
@@ -460,8 +456,8 @@ commands/search/run.sh
 Result:
 
 ```text
-gc tools status
-gc tools cache sync
+gc import add
+gc import install
 gc registry list
 gc registry search
 ```
@@ -485,21 +481,21 @@ with `command.toml` only added when the default mapping is not enough.
 #### Case 2: one shared implementation pack
 
 ```toml
-[imports.platform]
-source = "https://github.com/gastownhall/gc-platform"
+[imports.packman]
+source = "https://github.com/gastownhall/gc-packman"
 ```
 
 If this pack contributes only under its binding, the result would be:
 
 ```text
-gc platform tools status
-gc platform registry list
+gc packman import add
+gc packman registry list
 ```
 
 If this pack is allowed to contribute to extension roots, it could instead define entries that land under:
 
 ```text
-gc tools status
+gc import add
 gc registry list
 ```
 
