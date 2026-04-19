@@ -87,7 +87,7 @@ func TestCmdReloadControllerUnavailableUsesRicherMessage(t *testing.T) {
 	})
 
 	sendReloadControlRequestHook = func(string, reloadControlRequest) (reloadControlReply, error) {
-		return reloadControlReply{}, errors.New("dial failed")
+		return reloadControlReply{}, errors.New("connecting to controller: dial failed")
 	}
 	reloadUnavailableMessageHook = func(string) string {
 		return "city failed to start under supervisor: fetching packs: auth denied"
@@ -98,6 +98,33 @@ func TestCmdReloadControllerUnavailableUsesRicherMessage(t *testing.T) {
 		t.Fatalf("cmdReload = %d, want 1", code)
 	}
 	if got := strings.TrimSpace(stderr.String()); got != "gc reload: city failed to start under supervisor: fetching packs: auth denied" {
+		t.Fatalf("stderr = %q", got)
+	}
+}
+
+func TestCmdReloadPreservesProtocolErrors(t *testing.T) {
+	dir := shortSocketTempDir(t, "gc-reload-protocol-")
+	writeCityTOML(t, dir, "test", "mayor")
+
+	oldSend := sendReloadControlRequestHook
+	oldUnavailable := reloadUnavailableMessageHook
+	t.Cleanup(func() {
+		sendReloadControlRequestHook = oldSend
+		reloadUnavailableMessageHook = oldUnavailable
+	})
+
+	sendReloadControlRequestHook = func(string, reloadControlRequest) (reloadControlReply, error) {
+		return reloadControlReply{}, errors.New("parsing response: invalid character 'o' in literal null")
+	}
+	reloadUnavailableMessageHook = func(string) string {
+		return "city is still starting under supervisor"
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := cmdReload([]string{dir}, false, "5s", true, &stdout, &stderr); code != 1 {
+		t.Fatalf("cmdReload = %d, want 1", code)
+	}
+	if got := strings.TrimSpace(stderr.String()); got != "gc reload: parsing response: invalid character 'o' in literal null" {
 		t.Fatalf("stderr = %q", got)
 	}
 }

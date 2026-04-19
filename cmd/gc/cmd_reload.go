@@ -111,9 +111,11 @@ func cmdReload(args []string, async bool, timeoutValue string, timeoutChanged bo
 
 	reply, err := sendReloadControlRequestHook(cityPath, req)
 	if err != nil {
-		if msg := reloadUnavailableMessageHook(cityPath); msg != "" {
-			fmt.Fprintf(stderr, "gc reload: %s\n", msg) //nolint:errcheck // best-effort stderr
-			return 1
+		if isControllerUnavailableError(err) {
+			if msg := reloadUnavailableMessageHook(cityPath); msg != "" {
+				fmt.Fprintf(stderr, "gc reload: %s\n", msg) //nolint:errcheck // best-effort stderr
+				return 1
+			}
 		}
 		fmt.Fprintf(stderr, "gc reload: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
@@ -148,6 +150,13 @@ func cmdReload(args []string, async bool, timeoutValue string, timeoutChanged bo
 		fmt.Fprintf(stderr, "gc reload: unexpected controller outcome %q\n", reply.Outcome) //nolint:errcheck // best-effort stderr
 		return 1
 	}
+}
+
+func isControllerUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "connecting to controller:")
 }
 
 func sendReloadControlRequest(cityPath string, req reloadControlRequest) (reloadControlReply, error) {
