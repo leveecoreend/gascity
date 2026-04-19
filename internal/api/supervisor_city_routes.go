@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"reflect"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/gastownhall/gascity/internal/runtime"
@@ -238,7 +239,13 @@ func (sm *SupervisorMux) registerCityRoutes() {
 	cityGet(sm, "/packs", (*Server).humaHandlePackList)
 
 	// Sling.
-	cityPost(sm, "/sling", (*Server).humaHandleSling)
+	cityRegister(sm, huma.Operation{
+		OperationID: "post-v0-city-by-city-name-sling",
+		Method:      http.MethodPost,
+		Path:        "/sling",
+		Summary:     "Post v0 city by city name sling",
+		Responses:   slingOperationResponses(sm.humaAPI.OpenAPI().Components.Schemas),
+	}, (*Server).humaHandleSling)
 
 	// Services (workspace services).
 	cityGet(sm, "/services", (*Server).humaHandleServiceList)
@@ -298,7 +305,7 @@ func (sm *SupervisorMux) registerCityRoutes() {
 			"Streams turns (conversation format) or raw messages (JSONL format) " +
 			"based on the format query parameter. Emits activity and pending events " +
 			"for tool approval prompts.",
-		Responses:   sseResponseHeaders("GC-Session-State", "GC-Session-Status"),
+		Responses: sseResponseHeaders("GC-Session-State", "GC-Session-Status"),
 	}, sessionStreamEventMap(),
 		sseCityPrecheck(sm, (*Server).checkSessionStream),
 		sseCityStream(sm, (*Server).streamSession))
@@ -345,4 +352,25 @@ func (sm *SupervisorMux) registerCityRoutes() {
 		DefaultStatus: http.StatusCreated,
 	}, (*Server).humaHandleExtMsgAdapterRegister)
 	cityDelete(sm, "/extmsg/adapters", (*Server).humaHandleExtMsgAdapterUnregister)
+}
+
+func slingOperationResponses(registry huma.Registry) map[string]*huma.Response {
+	return map[string]*huma.Response{
+		"409": {
+			Description: http.StatusText(http.StatusConflict),
+			Content: map[string]*huma.MediaType{
+				"application/json": {
+					Schema: registry.Schema(reflect.TypeFor[SlingConflictResponse](), true, "SlingConflictResponse"),
+				},
+			},
+		},
+		"default": {
+			Description: "Error",
+			Content: map[string]*huma.MediaType{
+				"application/problem+json": {
+					Schema: registry.Schema(reflect.TypeFor[huma.ErrorModel](), true, "Error"),
+				},
+			},
+		},
+	}
 }

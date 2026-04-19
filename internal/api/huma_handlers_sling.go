@@ -17,6 +17,17 @@ type SlingOutput struct {
 	Body   slingResponse
 }
 
+func (e *SlingConflictResponse) Error() string {
+	if e == nil {
+		return "source workflow conflict"
+	}
+	return e.Message
+}
+
+func (e *SlingConflictResponse) GetStatus() int {
+	return http.StatusConflict
+}
+
 // humaHandleSling is the Huma-typed handler for POST /v0/sling.
 func (s *Server) humaHandleSling(ctx context.Context, input *SlingInput) (*SlingOutput, error) {
 	body := slingBody{
@@ -95,11 +106,18 @@ func (s *Server) humaHandleSling(ctx context.Context, input *SlingInput) (*Sling
 	resp, status, code, message, conflict := s.execSlingDirect(ctx, body, agentCfg)
 	if code != "" {
 		if conflict != nil {
-			return nil, huma.Error409Conflict(
-				fmt.Sprintf("%s; use --force to override, or %s to clean up",
-					message,
+			blockingIDs := append([]string(nil), conflict.WorkflowIDs...)
+			if blockingIDs == nil {
+				blockingIDs = []string{}
+			}
+			return nil, &SlingConflictResponse{
+				Code:                code,
+				Message:             message,
+				SourceBeadID:        conflict.SourceBeadID,
+				BlockingWorkflowIDs: blockingIDs,
+				Hint: fmt.Sprintf("use --force to override, or %s to clean up",
 					sourceWorkflowCleanupHint(conflict.SourceBeadID, s.slingStoreRef(body.Rig, agentCfg))),
-			)
+			}
 		}
 		if status == http.StatusNotFound {
 			return nil, huma.Error404NotFound(message)

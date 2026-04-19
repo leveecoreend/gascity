@@ -22,3 +22,13 @@ type SlingInput struct {
 		Force          bool              `json:"force,omitempty" doc:"Override source workflow conflict checks."`
 	}
 }
+
+// SlingConflictResponse is returned when a source bead already has a live
+// graph workflow and the caller did not request force replacement.
+type SlingConflictResponse struct {
+	Code                string   `json:"code" doc:"Machine-readable error code." example:"conflict"`
+	Message             string   `json:"message" doc:"Human-readable conflict description."`
+	SourceBeadID        string   `json:"source_bead_id" doc:"Source bead whose singleton workflow is already live."`
+	BlockingWorkflowIDs []string `json:"blocking_workflow_ids" nullable:"false" doc:"Live workflow root bead IDs blocking the launch."`
+	Hint                string   `json:"hint" doc:"Suggested override or cleanup action."`
+}

@@ -5719,6 +5719,45 @@
         ],
         "type": "object"
       },
+      "SlingConflictResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "blocking_workflow_ids": {
+            "description": "Live workflow root bead IDs blocking the launch.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "code": {
+            "description": "Machine-readable error code.",
+            "examples": [
+              "conflict"
+            ],
+            "type": "string"
+          },
+          "hint": {
+            "description": "Suggested override or cleanup action.",
+            "type": "string"
+          },
+          "message": {
+            "description": "Human-readable conflict description.",
+            "type": "string"
+          },
+          "source_bead_id": {
+            "description": "Source bead whose singleton workflow is already live.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "source_bead_id",
+          "blocking_workflow_ids",
+          "hint"
+        ],
+        "type": "object"
+      },
       "SlingInputBody": {
         "additionalProperties": false,
         "properties": {
@@ -5729,6 +5768,10 @@
           "bead": {
             "description": "Bead ID to sling.",
             "type": "string"
+          },
+          "force": {
+            "description": "Override source workflow conflict checks.",
+            "type": "boolean"
           },
           "formula": {
             "description": "Formula name for workflow launch.",
@@ -17361,6 +17404,21 @@
               }
             },
             "description": "OK",
+            "headers": {
+              "X-GC-Request-Id": {
+                "$ref": "#/components/headers/X-GC-Request-Id"
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SlingConflictResponse"
+                }
+              }
+            },
+            "description": "Conflict",
             "headers": {
               "X-GC-Request-Id": {
                 "$ref": "#/components/headers/X-GC-Request-Id"

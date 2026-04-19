@@ -633,6 +633,7 @@ func TestFormulaDetailIgnoresDynamicVarQueryParams(t *testing.T) {
 	t.Cleanup(func() { formula.SetFormulaV2Enabled(prev) })
 
 	state := newFakeState(t)
+	state.cfg.Daemon.FormulaV2 = true
 	formulaDir := t.TempDir()
 	state.cfg.FormulaLayers.City = []string{formulaDir}
 

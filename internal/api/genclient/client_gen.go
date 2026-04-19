@@ -2233,6 +2233,24 @@ type SessionTranscriptGetResponse struct {
 	Turns *[]OutputTurn `json:"turns,omitempty"`
 }
 
+// SlingConflictResponse defines model for SlingConflictResponse.
+type SlingConflictResponse struct {
+	// BlockingWorkflowIds Live workflow root bead IDs blocking the launch.
+	BlockingWorkflowIds []string `json:"blocking_workflow_ids"`
+
+	// Code Machine-readable error code.
+	Code string `json:"code"`
+
+	// Hint Suggested override or cleanup action.
+	Hint string `json:"hint"`
+
+	// Message Human-readable conflict description.
+	Message string `json:"message"`
+
+	// SourceBeadId Source bead whose singleton workflow is already live.
+	SourceBeadId string `json:"source_bead_id"`
+}
+
 // SlingInputBody defines model for SlingInputBody.
 type SlingInputBody struct {
 	// AttachedBeadId Bead ID to attach a formula to.
@@ -2240,6 +2258,9 @@ type SlingInputBody struct {
 
 	// Bead Bead ID to sling.
 	Bead *string `json:"bead,omitempty"`
+
+	// Force Override source workflow conflict checks.
+	Force *bool `json:"force,omitempty"`
 
 	// Formula Formula name for workflow launch.
 	Formula *string `json:"formula,omitempty"`
@@ -19176,6 +19197,7 @@ type PostV0CityByCityNameSlingResponse struct {
 	Body                          []byte
 	HTTPResponse                  *http.Response
 	JSON200                       *SlingResponse
+	JSON409                       *SlingConflictResponse
 	ApplicationproblemJSONDefault *ErrorModel
 }
 
@@ -25367,6 +25389,13 @@ func ParsePostV0CityByCityNameSlingResponse(rsp *http.Response) (*PostV0CityByCi
 			return nil, err
 		}
 		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest SlingConflictResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
 		var dest ErrorModel
