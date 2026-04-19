@@ -124,6 +124,13 @@ func LoadWithIncludesOptions(fs fsys.FS, path string, opts LoadOptions, extraInc
 		if err != nil {
 			return nil, nil, fmt.Errorf("city pack.toml: %w", err)
 		}
+		if len(pc.Defaults.Rig.Imports) > 0 {
+			root.DefaultRigImports = make(map[string]Import, len(pc.Defaults.Rig.Imports))
+			root.DefaultRigImportOrder = orderedDefaultRigImportNames(pc.Defaults.Rig.Imports, md)
+			for name, imp := range pc.Defaults.Rig.Imports {
+				root.DefaultRigImports[name] = imp
+			}
+		}
 		if len(defaultRigIncludes) > 0 {
 			root.Workspace.DefaultRigIncludes = append(defaultRigIncludes, root.Workspace.DefaultRigIncludes...)
 		}
@@ -1031,6 +1038,20 @@ func parseWithMeta(data []byte, source string) (*City, toml.MetaData, []string, 
 // city pack without expanding the full config. Edit paths use this to honor
 // pack v2 defaults while still writing only city.toml.
 func LoadRootPackDefaultRigIncludes(fs fsys.FS, cityRoot string) ([]string, error) {
+	imports, err := LoadRootPackDefaultRigImports(fs, cityRoot)
+	if err != nil {
+		return nil, err
+	}
+	includes := make([]string, 0, len(imports))
+	for _, bound := range imports {
+		includes = append(includes, bound.Import.Source)
+	}
+	return includes, nil
+}
+
+// LoadRootPackDefaultRigImports loads the canonical [defaults.rig.imports]
+// entries from the root city pack without expanding the full config.
+func LoadRootPackDefaultRigImports(fs fsys.FS, cityRoot string) ([]BoundImport, error) {
 	packPath := filepath.Join(cityRoot, packFile)
 	packData, err := fs.ReadFile(packPath)
 	if err != nil {
@@ -1047,22 +1068,33 @@ func LoadRootPackDefaultRigIncludes(fs fsys.FS, cityRoot string) ([]string, erro
 	if warnings := CheckUndecodedKeys(md, packPath); len(warnings) > 0 {
 		return nil, fmt.Errorf("parsing city pack.toml: %s", strings.Join(warnings, "; "))
 	}
-	return defaultRigIncludesFromPackDefaults(pc.Defaults, md)
+	return defaultRigImportsFromPackDefaults(pc.Defaults, md)
 }
 
-func defaultRigIncludesFromPackDefaults(defaults packDefaults, md toml.MetaData) ([]string, error) {
+func defaultRigImportsFromPackDefaults(defaults packDefaults, md toml.MetaData) ([]BoundImport, error) {
 	if len(defaults.Rig.Imports) == 0 {
 		return nil, nil
 	}
 	names := orderedDefaultRigImportNames(defaults.Rig.Imports, md)
-
-	includes := make([]string, 0, len(names))
+	imports := make([]BoundImport, 0, len(names))
 	for _, name := range names {
 		imp := defaults.Rig.Imports[name]
 		if strings.TrimSpace(imp.Source) == "" {
 			return nil, fmt.Errorf("defaults.rig.imports.%s.source is required", name)
 		}
-		includes = append(includes, imp.Source)
+		imports = append(imports, BoundImport{Binding: name, Import: imp})
+	}
+	return imports, nil
+}
+
+func defaultRigIncludesFromPackDefaults(defaults packDefaults, md toml.MetaData) ([]string, error) {
+	imports, err := defaultRigImportsFromPackDefaults(defaults, md)
+	if err != nil {
+		return nil, err
+	}
+	includes := make([]string, 0, len(imports))
+	for _, bound := range imports {
+		includes = append(includes, bound.Import.Source)
 	}
 	return includes, nil
 }

@@ -1705,7 +1705,7 @@ mode = "always"
 	}
 }
 
-func TestDoInitGastownWritesTransitionalPackShape(t *testing.T) {
+func TestDoInitGastownWritesCanonicalPackV2Shape(t *testing.T) {
 	f := fsys.NewFake()
 
 	var stdout, stderr bytes.Buffer
@@ -1721,13 +1721,19 @@ func TestDoInitGastownWritesTransitionalPackShape(t *testing.T) {
 	if strings.Contains(cityToml, "global_fragments") {
 		t.Fatalf("city.toml should not keep legacy global_fragments in fresh init:\n%s", cityToml)
 	}
-	if !strings.Contains(cityToml, `default_rig_includes = [".gc/system/packs/gastown"]`) {
-		t.Fatalf("city.toml missing transitional default_rig_includes compatibility:\n%s", cityToml)
+	if strings.Contains(cityToml, "default_rig_includes") {
+		t.Fatalf("city.toml should not keep legacy default_rig_includes in fresh init:\n%s", cityToml)
 	}
 
 	packToml := string(f.Files[filepath.Join("/bright-lights", "pack.toml")])
-	if !strings.Contains(packToml, `includes = [".gc/system/packs/gastown"]`) {
-		t.Fatalf("pack.toml missing gastown include:\n%s", packToml)
+	if strings.Contains(packToml, `includes = [".gc/system/packs/gastown"]`) {
+		t.Fatalf("pack.toml should use [imports] instead of includes for gastown:\n%s", packToml)
+	}
+	if !strings.Contains(packToml, "[imports.gastown]") || !strings.Contains(packToml, `source = ".gc/system/packs/gastown"`) {
+		t.Fatalf("pack.toml missing gastown import:\n%s", packToml)
+	}
+	if !strings.Contains(packToml, "[defaults.rig.imports.gastown]") {
+		t.Fatalf("pack.toml missing canonical default-rig import:\n%s", packToml)
 	}
 	if !strings.Contains(packToml, "[agent_defaults]") || !strings.Contains(packToml, "append_fragments") {
 		t.Fatalf("pack.toml missing migrated append_fragments bridge:\n%s", packToml)
@@ -1745,6 +1751,10 @@ func TestSplitInitConfigMovesPackOwnedFields(t *testing.T) {
 		Imports: map[string]config.Import{
 			"helper": {Source: "./packs/helper"},
 		},
+		DefaultRigImports: map[string]config.Import{
+			"gastown": {Source: "./packs/gastown"},
+		},
+		DefaultRigImportOrder: []string{"gastown"},
 		Providers: map[string]config.ProviderSpec{
 			"claude": {},
 		},
@@ -1829,6 +1839,9 @@ func TestSplitInitConfigMovesPackOwnedFields(t *testing.T) {
 	}
 	if len(packCfg.Pack.Includes) != 1 || packCfg.Pack.Includes[0] != "./packs/gastown" {
 		t.Fatalf("packCfg.Pack.Includes = %v, want [./packs/gastown]", packCfg.Pack.Includes)
+	}
+	if len(packCfg.Defaults.Rig.Imports) != 1 || packCfg.Defaults.Rig.Imports["gastown"].Source != "./packs/gastown" {
+		t.Fatalf("packCfg.Defaults.Rig.Imports = %+v, want gastown=./packs/gastown", packCfg.Defaults.Rig.Imports)
 	}
 	if len(packCfg.Providers) != 1 {
 		t.Fatalf("packCfg.Providers = %d, want 1", len(packCfg.Providers))
@@ -2544,16 +2557,19 @@ func TestDoInitWithGastownTemplate(t *testing.T) {
 	if len(cfg.Workspace.Includes) != 0 {
 		t.Errorf("Workspace.Includes = %v, want empty (moved to pack.toml)", cfg.Workspace.Includes)
 	}
-	if len(cfg.Workspace.DefaultRigIncludes) != 1 || cfg.Workspace.DefaultRigIncludes[0] != ".gc/system/packs/gastown" {
-		t.Errorf("Workspace.DefaultRigIncludes = %v, want [.gc/system/packs/gastown]", cfg.Workspace.DefaultRigIncludes)
+	if len(cfg.Workspace.DefaultRigIncludes) != 0 {
+		t.Errorf("Workspace.DefaultRigIncludes = %v, want empty", cfg.Workspace.DefaultRigIncludes)
 	}
 	// No inline agents.
 	if len(cfg.Agents) != 0 {
 		t.Errorf("len(Agents) = %d, want 0 (agents come from pack)", len(cfg.Agents))
 	}
 	packToml := string(f.Files[filepath.Join("/bright-lights", "pack.toml")])
-	if !strings.Contains(packToml, `includes = [".gc/system/packs/gastown"]`) {
-		t.Errorf("pack.toml missing gastown include:\n%s", packToml)
+	if !strings.Contains(packToml, "[imports.gastown]") || !strings.Contains(packToml, `source = ".gc/system/packs/gastown"`) {
+		t.Errorf("pack.toml missing gastown import:\n%s", packToml)
+	}
+	if !strings.Contains(packToml, "[defaults.rig.imports.gastown]") {
+		t.Errorf("pack.toml missing default-rig gastown import:\n%s", packToml)
 	}
 	// Daemon config.
 	if cfg.Daemon.PatrolInterval != "30s" {
@@ -2858,6 +2874,9 @@ version = "0.1.0"
 requires_gc = ">=0.16.0"
 includes = ["../shared"]
 
+[defaults.rig.imports.shared]
+source = "../shared"
+
 [[pack.requires]]
 scope = "city"
 agent = "mayor"
@@ -2907,6 +2926,8 @@ session_live = ["echo live"]
 		`version = "0.1.0"`,
 		`requires_gc = ">=0.16.0"`,
 		`includes = ["../shared"]`,
+		`[defaults.rig.imports.shared]`,
+		`source = "../shared"`,
 		`[[pack.requires]]`,
 		`agent = "mayor"`,
 		`[[doctor]]`,

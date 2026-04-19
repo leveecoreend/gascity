@@ -67,6 +67,28 @@ source = "packs/a-pack"
 	if err != nil {
 		t.Fatalf("LoadWithIncludes: %v", err)
 	}
+	defaults, err := LoadRootPackDefaultRigImports(fs, "/city")
+	if err != nil {
+		t.Fatalf("LoadRootPackDefaultRigImports: %v", err)
+	}
+	if got := []BoundImport{
+		{Binding: "z-pack", Import: Import{Source: "packs/z-pack"}},
+		{Binding: "a-pack", Import: Import{Source: "packs/a-pack"}},
+	}; !reflect.DeepEqual(defaults, got) {
+		t.Fatalf("LoadRootPackDefaultRigImports = %#v, want %#v", defaults, got)
+	}
+	if len(cfg.DefaultRigImports) != 2 {
+		t.Fatalf("len(DefaultRigImports) = %d, want 2", len(cfg.DefaultRigImports))
+	}
+	if got := cfg.DefaultRigImports["z-pack"].Source; got != "packs/z-pack" {
+		t.Fatalf("DefaultRigImports[z-pack] = %q, want packs/z-pack", got)
+	}
+	if got := cfg.DefaultRigImports["a-pack"].Source; got != "packs/a-pack" {
+		t.Fatalf("DefaultRigImports[a-pack] = %q, want packs/a-pack", got)
+	}
+	if !reflect.DeepEqual(cfg.DefaultRigImportOrder, []string{"z-pack", "a-pack"}) {
+		t.Fatalf("DefaultRigImportOrder = %v, want [z-pack a-pack]", cfg.DefaultRigImportOrder)
+	}
 	want := []string{"packs/z-pack", "packs/a-pack"}
 	if !reflect.DeepEqual(cfg.Workspace.DefaultRigIncludes, want) {
 		t.Fatalf("DefaultRigIncludes = %v, want %v", cfg.Workspace.DefaultRigIncludes, want)

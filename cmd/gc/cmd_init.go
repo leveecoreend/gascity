@@ -577,6 +577,12 @@ func splitInitConfig(cityName string, cfg *config.City) (initPackConfig, config.
 		)
 		cityCfg.Workspace.GlobalFragments = nil
 	}
+	if len(cfg.DefaultRigImports) > 0 {
+		packCfg.Defaults.Rig.Imports = make(map[string]config.Import, len(cfg.DefaultRigImports))
+		for name, imp := range cfg.DefaultRigImports {
+			packCfg.Defaults.Rig.Imports[name] = imp
+		}
+	}
 
 	return packCfg, cityCfg
 }
@@ -604,6 +610,7 @@ func applyInitPackTemplateExtras(dst *initPackConfig, src initPackConfig) {
 		src.Pack.Includes...,
 	)
 	dst.Pack.Requires = append([]config.PackRequirement(nil), src.Pack.Requires...)
+	dst.Defaults = src.Defaults
 	dst.Doctor = append([]config.PackDoctorEntry(nil), src.Doctor...)
 	dst.Commands = append([]config.PackCommandEntry(nil), src.Commands...)
 	dst.Global = src.Global
@@ -837,9 +844,9 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 		return code
 	}
 
-	// Write pack.toml + city.toml in the transitional v2 split: pack.toml
-	// owns portable definition, while city.toml keeps deployment/runtime
-	// state. We intentionally retain current compatibility fields such as
+	// Write pack.toml + city.toml in the V2 split: pack.toml owns portable
+	// definition, while city.toml keeps deployment/runtime state. We
+	// intentionally retain current compatibility fields such as
 	// workspace.provider in city.toml until the runtime cutover is complete.
 	rewriteInitPromptTemplates(&cfg)
 	packCfg, cityCfg := splitInitConfig(cityName, &cfg)

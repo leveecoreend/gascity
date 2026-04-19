@@ -285,6 +285,14 @@ type City struct {
 	// currently owns each MCP pack dir after precedence flattening.
 	// Runtime-only.
 	RigImportMCPBindings map[string]map[string]string `toml:"-" json:"-"`
+	// DefaultRigImports holds the canonical [defaults.rig.imports] entries
+	// declared by the city root pack. Runtime-only — edit/load paths can
+	// inspect it without rewriting the legacy workspace.default_rig_includes
+	// compatibility field.
+	DefaultRigImports map[string]Import `toml:"-" json:"-"`
+	// DefaultRigImportOrder preserves the declaration order of
+	// [defaults.rig.imports] from the city root pack. Runtime-only.
+	DefaultRigImportOrder []string `toml:"-" json:"-"`
 }
 
 // NamedSession defines a canonical persistent session backed by an agent
@@ -604,6 +612,13 @@ type Import struct {
 	// with the same name as one from this import. "warn" (default) emits
 	// a warning; "silent" suppresses it.
 	Shadow string `toml:"shadow,omitempty" jsonschema:"enum=warn,enum=silent"`
+}
+
+// BoundImport is a named [imports.<binding>] entry paired with its key.
+// Used by helper APIs that need to preserve binding identity and order.
+type BoundImport struct {
+	Binding string
+	Import  Import
 }
 
 // PackMeta holds metadata from a pack's [pack] header.
@@ -2593,15 +2608,13 @@ func WizardCity(name, provider, startCommand string) City {
 }
 
 // GastownCity returns a City configured for the gastown orchestration pack.
-// Agents come from the pack (packs/gastown); no inline agents are defined.
-// Sets workspace.includes, default_rig_includes, global_fragments, and daemon
-// config. If startCommand is set, it takes precedence over provider.
+// Agents come from the pack via PackV2 imports; no inline agents are defined.
+// Sets PackV2 root imports, canonical default-rig imports, global_fragments,
+// and daemon config. If startCommand is set, it takes precedence over provider.
 func GastownCity(name, provider, startCommand string) City {
 	ws := Workspace{
-		Name:               name,
-		Includes:           []string{".gc/system/packs/gastown"},
-		DefaultRigIncludes: []string{".gc/system/packs/gastown"},
-		GlobalFragments:    []string{"command-glossary", "operational-awareness"},
+		Name:            name,
+		GlobalFragments: []string{"command-glossary", "operational-awareness"},
 	}
 	if startCommand != "" {
 		ws.StartCommand = startCommand
@@ -2612,6 +2625,13 @@ func GastownCity(name, provider, startCommand string) City {
 	maxRestarts := 5
 	return City{
 		Workspace: ws,
+		Imports: map[string]Import{
+			"gastown": {Source: ".gc/system/packs/gastown"},
+		},
+		DefaultRigImports: map[string]Import{
+			"gastown": {Source: ".gc/system/packs/gastown"},
+		},
+		DefaultRigImportOrder: []string{"gastown"},
 		Daemon: DaemonConfig{
 			PatrolInterval:  "30s",
 			MaxRestarts:     &maxRestarts,

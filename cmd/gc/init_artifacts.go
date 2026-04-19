@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"path/filepath"
 	"strings"
 
 	"github.com/gastownhall/gascity/internal/config"
@@ -25,9 +26,32 @@ func ensureInitArtifacts(cityPath string, cfg *config.City, stderr io.Writer, co
 
 func usesGastownPack(cfg *config.City) bool {
 	for _, include := range append(cfg.Workspace.Includes, cfg.Workspace.DefaultRigIncludes...) {
-		if strings.TrimSpace(include) == "packs/gastown" {
+		if isGastownPackSource(include) {
+			return true
+		}
+	}
+	for _, imp := range cfg.Imports {
+		if isGastownPackSource(imp.Source) {
+			return true
+		}
+	}
+	for _, imp := range cfg.DefaultRigImports {
+		if isGastownPackSource(imp.Source) {
 			return true
 		}
 	}
 	return false
+}
+
+func isGastownPackSource(source string) bool {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return false
+	}
+	clean := filepath.Clean(source)
+	if clean == filepath.Clean("packs/gastown") || clean == filepath.Clean(".gc/system/packs/gastown") {
+		return true
+	}
+	suffix := filepath.Join("packs", "gastown")
+	return strings.HasSuffix(clean, suffix)
 }
