@@ -754,6 +754,32 @@ func TestComputeWorkSet_ExplicitRigWorkQueryUsesRigPassword(t *testing.T) {
 	}
 }
 
+func TestComputeWorkSet_ExpandsTemplatedRigScopedWorkQuery(t *testing.T) {
+	cityDir := t.TempDir()
+	rigDir := filepath.Join(cityDir, "demo")
+	if err := os.MkdirAll(rigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Rigs: []config.Rig{{
+			Name: "demo",
+			Path: rigDir,
+		}},
+		Agents: []config.Agent{{
+			Name:      "worker",
+			Dir:       "demo",
+			WorkQuery: `sh -c 'test "$1" = "demo/worker" && printf "[{\"id\":\"DM-1\"}]" || printf "[]"' -- "{{.Rig}}/worker"`,
+		}},
+	}
+
+	work := computeWorkSet(cfg, shellScaleCheck, "test-city", cityDir, nil, nil)
+	if !work["demo/worker"] {
+		t.Fatal("expected templated rig work query to expand demo/worker before execution")
+	}
+}
+
 func TestComputeWorkSet_NilRunner(t *testing.T) {
 	cfg := &config.City{
 		Agents: []config.Agent{{Name: "worker"}},

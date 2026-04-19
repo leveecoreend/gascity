@@ -51,6 +51,10 @@ type poolEvalWork struct {
 
 func evaluatePendingPools(
 	cfg *config.City,
+	cityName string,
+	cityPath string,
+	store beads.Store,
+	sessionBeads *sessionBeadSnapshot,
 	pendingPools []poolEvalWork,
 	stderr io.Writer,
 	trace *sessionReconcilerTraceCycle,
@@ -70,7 +74,10 @@ func evaluatePendingPools(
 		wg.Add(1)
 		sp := pw.sp
 		probeEnv := pw.env
-		sp.Check = prefixShellEnv(controllerQueryPrefixEnv(probeEnv), sp.Check)
+		sp.Check = prefixShellEnv(
+			controllerQueryPrefixEnv(probeEnv),
+			expandControllerProbeCommand(sp.Check, cfg, cityPath, cityName, store, sessionBeads, &cfg.Agents[pw.agentIdx]),
+		)
 		template := cfg.Agents[pw.agentIdx].QualifiedName()
 		agentName := cfg.Agents[pw.agentIdx].Name
 		agentIndex := pw.agentIdx
@@ -116,11 +123,15 @@ func evaluatePendingPools(
 // results into ComputePoolDesiredStates.
 func evaluatePendingPoolsMap(
 	cfg *config.City,
+	cityName string,
+	cityPath string,
+	store beads.Store,
+	sessionBeads *sessionBeadSnapshot,
 	pendingPools []poolEvalWork,
 	stderr io.Writer,
 	trace *sessionReconcilerTraceCycle,
 ) map[string]int {
-	counts := evaluatePendingPools(cfg, pendingPools, stderr, trace)
+	counts := evaluatePendingPools(cfg, cityName, cityPath, store, sessionBeads, pendingPools, stderr, trace)
 	m := make(map[string]int, len(counts))
 	for j, pw := range pendingPools {
 		m[cfg.Agents[pw.agentIdx].QualifiedName()] = counts[j]
@@ -227,7 +238,7 @@ func buildDesiredStateWithSessionBeads(
 
 	// scale_check runs in parallel for all pool agents — the authoritative
 	// demand signal for new sessions. Computed once, returned in result.
-	scaleCheckCounts := evaluatePendingPoolsMap(cfg, pendingPools, stderr, trace)
+	scaleCheckCounts := evaluatePendingPoolsMap(cfg, cityName, cityPath, store, sessionBeads, pendingPools, stderr, trace)
 
 	// Collect work beads with assignees — used for both pool demand and
 	// named session on_demand wake. Hoisted out of the store block so
@@ -344,7 +355,14 @@ func buildDesiredStateWithSessionBeads(
 		}
 		dir := agentCommandDir(cityPath, spec.Agent, cfg.Rigs)
 		probeEnv := controllerQueryRuntimeEnv(cityPath, cfg, spec.Agent)
-		out, err := shellScaleCheck(prefixShellEnv(controllerQueryPrefixEnv(probeEnv), wq), dir, probeEnv)
+		out, err := shellScaleCheck(
+			prefixShellEnv(
+				controllerQueryPrefixEnv(probeEnv),
+				expandControllerProbeCommand(wq, cfg, cityPath, cityName, store, bp.sessionBeads, spec.Agent),
+			),
+			dir,
+			probeEnv,
+		)
 		if err != nil {
 			continue
 		}

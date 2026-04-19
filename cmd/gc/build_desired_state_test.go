@@ -815,6 +815,47 @@ func TestBuildDesiredState_OnDemandNamedSession_WorkQueryUsesExplicitRigPassword
 	}
 }
 
+func TestBuildDesiredState_OnDemandNamedSession_WorkQueryExpandsRigTemplate(t *testing.T) {
+	cityPath := t.TempDir()
+	rigPath := filepath.Join(cityPath, "demo")
+	if err := os.MkdirAll(rigPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	store := beads.NewMemStore()
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Rigs: []config.Rig{{
+			Name: "demo",
+			Path: rigPath,
+		}},
+		Agents: []config.Agent{{
+			Name:              "worker",
+			Dir:               "demo",
+			StartCommand:      "true",
+			MaxActiveSessions: intPtr(1),
+			WorkQuery:         `sh -c 'test "$1" = "demo/worker" && printf "[{\"id\":\"DM-1\"}]" || printf "[]"' -- "{{.Rig}}/worker"`,
+		}},
+		NamedSessions: []config.NamedSession{{
+			Template: "worker",
+			Dir:      "demo",
+			Mode:     "on_demand",
+		}},
+	}
+
+	dsResult := buildDesiredState("test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(), store, io.Discard)
+	found := false
+	for _, tp := range dsResult.State {
+		if tp.TemplateName == "demo/worker" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("on-demand rig named session should materialize when work_query sees expanded demo/worker argument")
+	}
+}
+
 func TestBuildDesiredState_SingletonTemplateDoesNotRealizeDependencyPoolFloorWithoutSession(t *testing.T) {
 	cityPath := t.TempDir()
 	cfg := &config.City{

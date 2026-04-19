@@ -116,7 +116,7 @@ func prefixedWorkQueryForProbeWithEnv(
 	if agentCfg == nil {
 		return ""
 	}
-	command := strings.TrimSpace(agentCfg.EffectiveWorkQuery())
+	command := expandControllerProbeCommand(agentCfg.EffectiveWorkQuery(), cfg, cityPath, cityName, store, sessionBeads, agentCfg)
 	if command == "" || isMultiSessionCfgAgent(agentCfg) {
 		return prefixShellEnv(queryEnv, command)
 	}
@@ -132,6 +132,29 @@ func prefixedWorkQueryForProbeWithEnv(
 	env["GC_SESSION_NAME"] = sessionName
 	env["GC_TEMPLATE"] = agentCfg.QualifiedName()
 	return prefixShellEnv(env, command)
+}
+
+func expandControllerProbeCommand(
+	command string,
+	cfg *config.City,
+	cityPath string,
+	cityName string,
+	store beads.Store,
+	sessionBeads *sessionBeadSnapshot,
+	agentCfg *config.Agent,
+) string {
+	command = strings.TrimSpace(command)
+	if command == "" || agentCfg == nil || cfg == nil || !strings.Contains(command, "{{") {
+		return command
+	}
+	ctx := sessionSetupContextForAgent(cityPath, cityName, agentCfg.QualifiedName(), agentCfg, cfg.Rigs)
+	ctx.Session = probeSessionNameForTemplate(cfg, cityName, store, sessionBeads, agentCfg.QualifiedName())
+	ctx.WorkDir = agentCommandDir(cityPath, agentCfg, cfg.Rigs)
+	expanded := expandSessionSetup([]string{command}, ctx)
+	if len(expanded) == 0 {
+		return command
+	}
+	return strings.TrimSpace(expanded[0])
 }
 
 func probeSessionNameForTemplate(
