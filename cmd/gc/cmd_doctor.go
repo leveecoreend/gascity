@@ -153,6 +153,7 @@ func doDoctor(fix, verbose bool, stdout, stderr io.Writer) int {
 
 	// Data checks.
 	if cfgErr == nil {
+		d.Register(doctor.NewBDSplitStoreCheck(cityPath))
 		d.Register(doctor.NewBeadsStoreCheck(cityPath, storeFactory))
 		d.Register(&sessionModelDoctorCheck{cfg: cfg, cityPath: cityPath, newStore: storeFactory})
 	}
@@ -176,6 +177,7 @@ func doDoctor(fix, verbose bool, stdout, stderr io.Writer) int {
 			}
 			d.Register(doctor.NewRigPathCheck(rig))
 			d.Register(doctor.NewRigGitCheck(rig))
+			d.Register(doctor.NewRigBDSplitStoreCheck(rig))
 			d.Register(doctor.NewRigBeadsCheck(cityPath, rig, storeFactory))
 			d.Register(doctor.NewRigDoltServerCheck(cityPath, rig, skipDolt))
 			// Custom types check — rig store.
