@@ -15139,12 +15139,12 @@
             }
           },
           {
-            "description": "Pagination cursor from a previous response's next_cursor field.",
+            "description": "Pagination cursor from a previous response's next_cursor field. Omit to receive up to limit items with total=len(items); supply (possibly empty) to paginate from offset 0 with total=pre-pagination count.",
             "explode": false,
             "in": "query",
             "name": "cursor",
             "schema": {
-              "description": "Pagination cursor from a previous response's next_cursor field.",
+              "description": "Pagination cursor from a previous response's next_cursor field. Omit to receive up to limit items with total=len(items); supply (possibly empty) to paginate from offset 0 with total=pre-pagination count.",
               "type": "string"
             }
           },

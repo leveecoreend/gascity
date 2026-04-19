@@ -55,9 +55,9 @@ func (s *Server) humaHandleSessionList(_ context.Context, input *SessionListInpu
 	}
 
 	pp := pageParams{
-		Offset:   decodeCursor(input.Cursor),
+		Offset:   decodeCursor(input.Cursor.Value),
 		Limit:    limit,
-		IsPaging: input.cursorPresent,
+		IsPaging: input.Cursor.IsSet,
 	}
 
 	if !pp.IsPaging {

@@ -2974,7 +2974,7 @@ type GetV0CityByCityNameSessionByIdTranscriptParams struct {
 
 // GetV0CityByCityNameSessionsParams defines parameters for GetV0CityByCityNameSessions.
 type GetV0CityByCityNameSessionsParams struct {
-	// Cursor Pagination cursor from a previous response's next_cursor field.
+	// Cursor Pagination cursor from a previous response's next_cursor field. Omit to receive up to limit items with total=len(items); supply (possibly empty) to paginate from offset 0 with total=pre-pagination count.
 	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 
 	// Limit Maximum number of results to return. 0 = server default.
