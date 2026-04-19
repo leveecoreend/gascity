@@ -37,9 +37,9 @@ func runStage1SkillMaterialization(cityPath string, cfg *config.City, stderr io.
 		return nil
 	}
 	catalogs := make(map[string]materialize.CityCatalog)
-	loadCatalog := func(rigName string) (materialize.CityCatalog, bool) {
+	loadCatalog := func(rigName string) materialize.CityCatalog {
 		if cat, ok := catalogs[rigName]; ok {
-			return cat, true
+			return cat
 		}
 		cat, err := loadSharedSkillCatalog(cfg, rigName)
 		if err != nil {
@@ -53,10 +53,10 @@ func runStage1SkillMaterialization(cityPath string, cfg *config.City, stderr io.
 			cat.Entries = nil
 			cat.Shadowed = nil
 			catalogs[rigName] = cat
-			return catalogs[rigName], true
+			return catalogs[rigName]
 		}
 		catalogs[rigName] = cat
-		return cat, true
+		return cat
 	}
 
 	for i := range cfg.Agents {
@@ -80,7 +80,7 @@ func runStage1SkillMaterialization(cityPath string, cfg *config.City, stderr io.
 		}
 
 		rigName := agentRigScopeName(agent, cfg.Rigs)
-		cityCat, _ := loadCatalog(rigName)
+		cityCat := loadCatalog(rigName)
 		desired := materialize.EffectiveSet(cityCat, agentCat)
 
 		// Resolve the agent's scope root to an absolute path. Use the
