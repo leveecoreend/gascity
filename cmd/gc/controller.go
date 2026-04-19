@@ -249,24 +249,24 @@ func handleReloadSocketCmd(conn net.Conn, payload string, ch chan reloadRequest)
 		}
 	}
 
-	if timeout := remaining(); timeout <= 0 {
+	acceptTimeout := remaining()
+	if acceptTimeout <= 0 {
 		writeJSONLine(conn, reloadControlReply{
 			Outcome: reloadOutcomeBusy,
 			Message: "Reload request could not be accepted because the controller is busy.",
 		})
 		return
-	} else {
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
-		select {
-		case ch <- req:
-		case <-timer.C:
-			writeJSONLine(conn, reloadControlReply{
-				Outcome: reloadOutcomeBusy,
-				Message: "Reload request could not be accepted because the controller is busy.",
-			})
-			return
-		}
+	}
+	timer := time.NewTimer(acceptTimeout)
+	defer timer.Stop()
+	select {
+	case ch <- req:
+	case <-timer.C:
+		writeJSONLine(conn, reloadControlReply{
+			Outcome: reloadOutcomeBusy,
+			Message: "Reload request could not be accepted because the controller is busy.",
+		})
+		return
 	}
 
 	reply, ok := waitFor(req.acceptedCh, remaining())

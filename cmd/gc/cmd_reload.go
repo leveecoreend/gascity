@@ -131,11 +131,12 @@ func cmdReload(args []string, async bool, timeoutValue string, timeoutChanged bo
 		}
 		return 0
 	case reloadOutcomeFailed:
-		if strings.TrimSpace(reply.Error) != "" {
+		switch {
+		case strings.TrimSpace(reply.Error) != "":
 			fmt.Fprintln(stderr, strings.TrimSpace(reply.Error)) //nolint:errcheck // best-effort stderr
-		} else if strings.TrimSpace(reply.Message) != "" {
+		case strings.TrimSpace(reply.Message) != "":
 			fmt.Fprintln(stderr, strings.TrimSpace(reply.Message)) //nolint:errcheck // best-effort stderr
-		} else {
+		default:
 			fmt.Fprintln(stderr, "gc reload: reload failed") //nolint:errcheck // best-effort stderr
 		}
 		return 1
