@@ -2640,11 +2640,11 @@ gate = "cooldown"
 		t.Fatalf("reading city.toml: %v", err)
 	}
 	got := string(data)
-	if strings.Contains(got, `gate = "cooldown"`) {
-		t.Fatalf("city.toml still contains legacy gate alias:\n%s", got)
-	}
 	if !strings.Contains(got, `trigger = "cooldown"`) {
 		t.Fatalf("city.toml missing normalized trigger alias:\n%s", got)
+	}
+	if !strings.Contains(got, `gate = "cooldown"`) {
+		t.Fatalf("city.toml missing rollback-safe legacy gate alias:\n%s", got)
 	}
 }
 
@@ -2682,6 +2682,18 @@ gate = "cooldown"
 	sourceToml := filepath.Join(srcDir, "city.toml")
 	if !strings.Contains(stderr.String(), sourceToml+`: field "orders.overrides.gate" is deprecated`) {
 		t.Fatalf("stderr = %q, want deprecation warning for %s", stderr.String(), sourceToml)
+	}
+
+	data, err := os.ReadFile(filepath.Join(cityPath, "city.toml"))
+	if err != nil {
+		t.Fatalf("reading city.toml: %v", err)
+	}
+	got := string(data)
+	if !strings.Contains(got, `trigger = "cooldown"`) {
+		t.Fatalf("city.toml missing normalized trigger alias:\n%s", got)
+	}
+	if !strings.Contains(got, `gate = "cooldown"`) {
+		t.Fatalf("city.toml missing rollback-safe legacy gate alias:\n%s", got)
 	}
 }
 

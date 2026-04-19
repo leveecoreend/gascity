@@ -144,6 +144,14 @@ gate = "cooldown"
 	if got := report.Warnings[0]; !strings.Contains(got, filepath.Join(cityDir, "city.toml")+`: field "orders.overrides.gate" is deprecated`) {
 		t.Fatalf("warning = %q, want path-qualified legacy gate warning", got)
 	}
+
+	data := readFile(t, filepath.Join(cityDir, "city.toml"))
+	if !strings.Contains(data, `trigger = "cooldown"`) {
+		t.Fatalf("city.toml missing normalized trigger alias:\n%s", data)
+	}
+	if !strings.Contains(data, `gate = "cooldown"`) {
+		t.Fatalf("city.toml missing rollback-safe legacy gate alias:\n%s", data)
+	}
 }
 
 func TestMigrateDryRunDoesNotWrite(t *testing.T) {

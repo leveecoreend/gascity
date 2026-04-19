@@ -1094,6 +1094,34 @@ gate = "cooldown"
 	}
 }
 
+func TestSuspendAgentPreservesRollbackSafeOrderOverrideGateAlias(t *testing.T) {
+	dir := t.TempDir()
+	path := writeTOML(t, dir, minimalCity()+`
+[orders]
+
+[[orders.overrides]]
+name = "health-check"
+trigger = "cooldown"
+`)
+	ed := configedit.NewEditor(fsys.OSFS{}, path)
+
+	if err := ed.SuspendAgent("mayor"); err != nil {
+		t.Fatalf("SuspendAgent: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	got := string(raw)
+	if !strings.Contains(got, `trigger = "cooldown"`) {
+		t.Fatalf("city.toml did not preserve normalized trigger:\n%s", got)
+	}
+	if !strings.Contains(got, `gate = "cooldown"`) {
+		t.Fatalf("city.toml did not preserve rollback-safe gate alias:\n%s", got)
+	}
+}
+
 func TestSetOrderOverrideReplacesExistingOverride(t *testing.T) {
 	dir := t.TempDir()
 	path := writeTOML(t, dir, minimalCity()+`

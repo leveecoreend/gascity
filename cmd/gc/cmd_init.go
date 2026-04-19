@@ -500,7 +500,7 @@ func cmdInitFromTOMLFileWithOptions(fs fsys.FS, tomlSrc, cityPath, nameOverride 
 	rewriteInitPromptTemplates(cfg)
 
 	// Re-marshal so the name and rewritten prompt paths are updated.
-	content, err := cfg.Marshal()
+	content, err := cfg.MarshalForWrite()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
@@ -616,7 +616,7 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 	// --provider path gets the same city shape non-interactively;
 	// custom path gets one mayor + no provider (user configures manually).
 	rewriteInitPromptTemplates(&cfg)
-	content, err := cfg.Marshal()
+	content, err := cfg.MarshalForWrite()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
@@ -849,7 +849,7 @@ func doInitFromDirWithOptions(srcDir, cityPath, nameOverride string, stdout, std
 	}
 	cityName := resolveCityName(nameOverride, cityPath)
 	cfg.Workspace.Name = cityName
-	content, err := cfg.Marshal()
+	content, err := cfg.MarshalForWrite()
 	if err != nil {
 		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1

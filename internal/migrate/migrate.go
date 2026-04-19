@@ -183,7 +183,7 @@ func Apply(cityPath string, opts Options) (*Report, error) {
 		packChanged = true
 	}
 
-	cityContent, err := cityCfg.Marshal()
+	cityContent, err := cityCfg.MarshalForWrite()
 	if err != nil {
 		return nil, fmt.Errorf("marshal city.toml: %w", err)
 	}

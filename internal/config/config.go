@@ -2598,6 +2598,16 @@ func (c *City) MarshalForWrite() ([]byte, error) {
 		return nil, fmt.Errorf("marshaling config: nil city")
 	}
 	clone := *c
+	if len(c.Orders.Overrides) > 0 {
+		clone.Orders.Overrides = append([]OrderOverride(nil), c.Orders.Overrides...)
+		for i := range clone.Orders.Overrides {
+			if clone.Orders.Overrides[i].Trigger == nil {
+				continue
+			}
+			trigger := *clone.Orders.Overrides[i].Trigger
+			clone.Orders.Overrides[i].Gate = &trigger
+		}
+	}
 	if len(c.Rigs) > 0 {
 		clone.Rigs = append([]Rig(nil), c.Rigs...)
 		for i := range clone.Rigs {
