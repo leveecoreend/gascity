@@ -18,8 +18,10 @@ import (
 	"github.com/gastownhall/gascity/test/tmuxtest"
 )
 
-const phase2RealTransportBound = 5 * time.Second
-const phase2RealTransportMarkerBound = 500 * time.Millisecond
+const (
+	phase2RealTransportBound       = 5 * time.Second
+	phase2RealTransportMarkerBound = 500 * time.Millisecond
+)
 
 func TestPhase2WorkerCoreRealTransportProof(t *testing.T) {
 	tmuxtest.RequireTmux(t)
