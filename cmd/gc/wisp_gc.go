@@ -72,10 +72,97 @@ func purgeExpiredBeads(store beads.Store, entries []beads.Bead, cutoff time.Time
 		if entry.CreatedAt.IsZero() || !entry.CreatedAt.Before(cutoff) {
 			continue
 		}
-		if err := store.Delete(entry.ID); err != nil {
+		if err := deleteExpiredBeadClosure(store, entry.ID); err != nil {
 			continue
 		}
 		purged++
 	}
 	return purged
+}
+
+func deleteExpiredBeadClosure(store beads.Store, rootID string) error {
+	ids, err := collectExpiredBeadClosure(store, rootID)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if err := deleteWorkflowBead(store, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func collectExpiredBeadClosure(store beads.Store, rootID string) ([]string, error) {
+	if store == nil {
+		return nil, fmt.Errorf("bead store unavailable")
+	}
+	rootOwned := make([]string, 0, 4)
+	related, err := store.List(beads.ListQuery{
+		Metadata:      map[string]string{"gc.root_bead_id": rootID},
+		IncludeClosed: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list workflow-owned beads for %s: %w", rootID, err)
+	}
+	for _, bead := range related {
+		if bead.ID != "" && bead.ID != rootID {
+			rootOwned = append(rootOwned, bead.ID)
+		}
+	}
+
+	seen := make(map[string]struct{}, len(rootOwned)+1)
+	ids := make([]string, 0, len(rootOwned)+1)
+	var visit func(string) error
+	visit = func(id string) error {
+		if id == "" {
+			return nil
+		}
+		if _, ok := seen[id]; ok {
+			return nil
+		}
+		seen[id] = struct{}{}
+
+		if id == rootID {
+			for _, relatedID := range rootOwned {
+				if err := visit(relatedID); err != nil {
+					return err
+				}
+			}
+		}
+
+		// Treat structural parentage as workflow ownership. Some molecule step
+		// beads are linked only by ParentID / parent-child deps and do not carry
+		// gc.root_bead_id metadata, so GC must follow those ownership edges while
+		// still ignoring non-ownership deps such as blocks or waits-for.
+		children, err := store.Children(id, beads.IncludeClosed)
+		if err != nil {
+			return fmt.Errorf("list children for %s: %w", id, err)
+		}
+		for _, child := range children {
+			if err := visit(child.ID); err != nil {
+				return err
+			}
+		}
+
+		upDeps, err := store.DepList(id, "up")
+		if err != nil {
+			return fmt.Errorf("list dependents for %s: %w", id, err)
+		}
+		for _, dep := range upDeps {
+			if dep.Type != "parent-child" || dep.IssueID == "" {
+				continue
+			}
+			if err := visit(dep.IssueID); err != nil {
+				return err
+			}
+		}
+
+		ids = append(ids, id)
+		return nil
+	}
+	if err := visit(rootID); err != nil {
+		return nil, err
+	}
+	return ids, nil
 }

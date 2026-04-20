@@ -423,6 +423,33 @@ func TestMemStoreReadyRespectsBlockingDeps(t *testing.T) {
 	}
 }
 
+func TestMemStoreReadyIgnoresParentChildDeps(t *testing.T) {
+	s := beads.NewMemStore()
+
+	parent, err := s.Create(beads.Bead{Title: "parent", Type: "molecule"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := s.Create(beads.Bead{Title: "child", Type: "task", ParentID: parent.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DepAdd(child.ID, parent.ID, "parent-child"); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Ready()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Ready() returned %d beads, want 1", len(got))
+	}
+	if got[0].ID != child.ID {
+		t.Fatalf("Ready()[0].ID = %s, want %s", got[0].ID, child.ID)
+	}
+}
+
 func TestMemStoreDepListDefaultDirection(t *testing.T) {
 	s := beads.NewMemStore()
 	_ = s.DepAdd("a", "b", "blocks")
