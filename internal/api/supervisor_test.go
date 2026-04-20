@@ -42,6 +42,19 @@ func (f *fakeCityResolver) CityState(name string) State {
 	return nil
 }
 
+type healthCityResolver struct {
+	cities []CityInfo
+	states map[string]*fakeState
+}
+
+func (h *healthCityResolver) ListCities() []CityInfo {
+	return h.cities
+}
+
+func (h *healthCityResolver) CityState(name string) State {
+	return h.states[name]
+}
+
 func newTestSupervisorMux(t *testing.T, cities map[string]*fakeState) *SupervisorMux {
 	t.Helper()
 	resolver := &fakeCityResolver{cities: cities}
@@ -331,6 +344,48 @@ func TestSupervisorHealth(t *testing.T) {
 	}
 	if resp["cities_running"] != float64(1) {
 		t.Errorf("cities_running = %v, want 1", resp["cities_running"])
+	}
+}
+
+func TestSupervisorHealthPrefersRunningCityForStartupPhase(t *testing.T) {
+	stopped := newFakeState(t)
+	stopped.cityName = "alpha"
+	running := newFakeState(t)
+	running.cityName = "beta"
+
+	resolver := &healthCityResolver{
+		cities: []CityInfo{
+			{Name: "alpha", Path: stopped.CityPath(), Running: false, Status: "starting_bead_store"},
+			{Name: "beta", Path: running.CityPath(), Running: true},
+		},
+		states: map[string]*fakeState{
+			"alpha": stopped,
+			"beta":  running,
+		},
+	}
+
+	sm := NewSupervisorMux(resolver, false, "test", time.Now())
+	req := httptest.NewRequest("GET", "/health", nil)
+	rec := httptest.NewRecorder()
+	sm.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	startup, ok := resp["startup"].(map[string]any)
+	if !ok {
+		t.Fatalf("startup = %#v, want object", resp["startup"])
+	}
+	if got := startup["phase"]; got != "running" {
+		t.Fatalf("startup.phase = %v, want running", got)
+	}
+	if got := startup["ready"]; got != true {
+		t.Fatalf("startup.ready = %v, want true", got)
 	}
 }
 
