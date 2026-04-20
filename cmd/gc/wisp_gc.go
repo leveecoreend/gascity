@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -86,69 +85,78 @@ func deleteExpiredBeadClosure(store beads.Store, rootID string) error {
 	if err != nil {
 		return err
 	}
-	_, errs := deleteWorkflowBeads(store, ids)
-	if len(errs) == 0 {
-		return nil
-	}
-	joined := make([]error, 0, len(errs))
-	for _, err := range errs {
-		if err != nil {
-			joined = append(joined, err)
+	for _, id := range ids {
+		if err := deleteWorkflowBead(store, id); err != nil {
+			return err
 		}
 	}
-	if len(joined) == 0 {
-		return nil
-	}
-	return errors.Join(joined...)
+	return nil
 }
 
 func collectExpiredBeadClosure(store beads.Store, rootID string) ([]string, error) {
 	if store == nil {
 		return nil, fmt.Errorf("bead store unavailable")
 	}
-	queue := []string{rootID}
+	rootOwned := make([]string, 0, 4)
 	if related, err := store.List(beads.ListQuery{
 		Metadata:      map[string]string{"gc.root_bead_id": rootID},
 		IncludeClosed: true,
 	}); err == nil {
 		for _, bead := range related {
-			queue = append(queue, bead.ID)
+			if bead.ID != "" && bead.ID != rootID {
+				rootOwned = append(rootOwned, bead.ID)
+			}
 		}
 	}
 
-	seen := make(map[string]struct{}, len(queue))
-	ids := make([]string, 0, len(queue))
-	for len(queue) > 0 {
-		id := queue[0]
-		queue = queue[1:]
+	seen := make(map[string]struct{}, len(rootOwned)+1)
+	ids := make([]string, 0, len(rootOwned)+1)
+	var visit func(string) error
+	visit = func(id string) error {
 		if id == "" {
-			continue
+			return nil
 		}
 		if _, ok := seen[id]; ok {
-			continue
+			return nil
 		}
 		seen[id] = struct{}{}
-		ids = append(ids, id)
 
-		upDeps, err := store.DepList(id, "up")
-		if err != nil {
-			return nil, fmt.Errorf("list dependents for %s: %w", id, err)
-		}
-		for _, dep := range upDeps {
-			if dep.IssueID != "" {
-				queue = append(queue, dep.IssueID)
+		if id == rootID {
+			for _, relatedID := range rootOwned {
+				if err := visit(relatedID); err != nil {
+					return err
+				}
 			}
 		}
 
 		children, err := store.Children(id, beads.IncludeClosed)
 		if err != nil {
-			return nil, fmt.Errorf("list children for %s: %w", id, err)
+			return fmt.Errorf("list children for %s: %w", id, err)
 		}
 		for _, child := range children {
-			if child.ID != "" {
-				queue = append(queue, child.ID)
+			if err := visit(child.ID); err != nil {
+				return err
 			}
 		}
+
+		upDeps, err := store.DepList(id, "up")
+		if err != nil {
+			return fmt.Errorf("list dependents for %s: %w", id, err)
+		}
+		for _, dep := range upDeps {
+			if dep.Type != "parent-child" || dep.IssueID == "" {
+				continue
+			}
+			if err := visit(dep.IssueID); err != nil {
+				return err
+			}
+		}
+
+		ids = append(ids, id)
+		return nil
+	}
+	if err := visit(rootID); err != nil {
+		return nil, err
 	}
 	return ids, nil
 }

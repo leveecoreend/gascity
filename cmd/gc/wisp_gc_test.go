@@ -156,6 +156,76 @@ func TestWispGC_PurgesExpiredMoleculeChildrenWithRoot(t *testing.T) {
 	}
 }
 
+func TestWispGC_DoesNotDeleteExternalDependents(t *testing.T) {
+	now := time.Now()
+	store := newGCStore([]beads.Bead{
+		makeGCBead("mol-1", now.Add(-2*time.Hour), "closed", "molecule"),
+		{
+			ID:        "mol-1.1",
+			Status:    "open",
+			Type:      "task",
+			CreatedAt: now.Add(-2 * time.Hour),
+			ParentID:  "mol-1",
+		},
+		makeGCBead("external-1", now.Add(-2*time.Hour), "open", "task"),
+	})
+	if err := store.DepAdd("mol-1.1", "mol-1", "parent-child"); err != nil {
+		t.Fatalf("DepAdd(mol-1.1->mol-1): %v", err)
+	}
+	if err := store.DepAdd("external-1", "mol-1.1", "blocks"); err != nil {
+		t.Fatalf("DepAdd(external-1->mol-1.1): %v", err)
+	}
+
+	wg := newWispGC(5*time.Minute, time.Hour)
+	purged, err := wg.runGC(store, now)
+	if err != nil {
+		t.Fatalf("runGC: %v", err)
+	}
+	if purged != 1 {
+		t.Fatalf("purged = %d, want 1", purged)
+	}
+	assertDeletedIDs(t, store.deletedIDs, "mol-1", "mol-1.1")
+	if _, err := store.Get("external-1"); err != nil {
+		t.Fatalf("external dependent was deleted: %v", err)
+	}
+}
+
+func TestWispGC_LeavesRootWhenChildDeleteFails(t *testing.T) {
+	now := time.Now()
+	store := newGCStore([]beads.Bead{
+		makeGCBead("mol-1", now.Add(-2*time.Hour), "closed", "molecule"),
+		{
+			ID:        "mol-1.1",
+			Status:    "open",
+			Type:      "task",
+			CreatedAt: now.Add(-2 * time.Hour),
+			ParentID:  "mol-1",
+		},
+	})
+	if err := store.DepAdd("mol-1.1", "mol-1", "parent-child"); err != nil {
+		t.Fatalf("DepAdd(mol-1.1->mol-1): %v", err)
+	}
+	store.deleteErrors["mol-1.1"] = fmt.Errorf("delete failed")
+
+	wg := newWispGC(5*time.Minute, time.Hour)
+	purged, err := wg.runGC(store, now)
+	if err != nil {
+		t.Fatalf("runGC: %v", err)
+	}
+	if purged != 0 {
+		t.Fatalf("purged = %d, want 0 when child delete fails", purged)
+	}
+	if len(store.deletedIDs) != 0 {
+		t.Fatalf("deleted = %v, want none", store.deletedIDs)
+	}
+	if _, err := store.Get("mol-1"); err != nil {
+		t.Fatalf("root deleted after child failure: %v", err)
+	}
+	if _, err := store.Get("mol-1.1"); err != nil {
+		t.Fatalf("child unexpectedly deleted after failure: %v", err)
+	}
+}
+
 func TestWispGC_PurgesExpiredTrackingBeads(t *testing.T) {
 	now := time.Now()
 	store := newGCStore([]beads.Bead{
