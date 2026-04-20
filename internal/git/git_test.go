@@ -263,11 +263,25 @@ func TestHasUnpushedCommits_NoRemote(t *testing.T) {
 	}
 }
 
+func TestHasUnpushedCommits_ErrorDefaultsToSafe(t *testing.T) {
+	g := New(filepath.Join(t.TempDir(), "missing-repo"))
+	if !g.HasUnpushedCommits() {
+		t.Error("HasUnpushedCommits() = false when git command errors, want true")
+	}
+}
+
 func TestHasStashes_NoneWhenClean(t *testing.T) {
 	repo := initTestRepo(t)
 	g := New(repo)
 	if g.HasStashes() {
 		t.Error("HasStashes() = true for clean repo, want false")
+	}
+}
+
+func TestHasStashes_ErrorDefaultsToSafe(t *testing.T) {
+	g := New(filepath.Join(t.TempDir(), "missing-repo"))
+	if !g.HasStashes() {
+		t.Error("HasStashes() = false when git command errors, want true")
 	}
 }
 

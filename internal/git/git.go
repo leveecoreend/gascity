@@ -103,19 +103,21 @@ func (g *Git) HasUncommittedWork() bool {
 // HasUnpushedCommits reports whether HEAD has commits not reachable from
 // any remote tracking branch. Used as a safety check before removing a
 // worktree — unpushed commits represent completed work that would be lost.
+// On command failure, it returns true so cleanup code takes the safe path.
 func (g *Git) HasUnpushedCommits() bool {
 	out, err := g.run("log", "HEAD", "--oneline", "--not", "--remotes")
 	if err != nil {
-		return false // can't determine; assume clean
+		return true // can't determine; assume dirty for safety
 	}
 	return strings.TrimSpace(out) != ""
 }
 
 // HasStashes reports whether the repository has stashed work.
+// On command failure, it returns true so cleanup code takes the safe path.
 func (g *Git) HasStashes() bool {
 	out, err := g.run("stash", "list")
 	if err != nil {
-		return false // can't determine; assume clean
+		return true // can't determine; assume dirty for safety
 	}
 	return strings.TrimSpace(out) != ""
 }
