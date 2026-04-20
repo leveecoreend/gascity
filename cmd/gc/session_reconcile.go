@@ -419,6 +419,7 @@ func computeWorkSet(cfg *config.City, runner ScaleCheckRunner, cityName, cityDir
 
 	sem := make(chan struct{}, cfg.Daemon.ProbeConcurrencyOrDefault())
 	results := make([]bool, len(probes))
+	errorLogs := make([]string, len(probes))
 	var wg sync.WaitGroup
 	for i := range probes {
 		wg.Add(1)
@@ -428,9 +429,7 @@ func computeWorkSet(cfg *config.City, runner ScaleCheckRunner, cityName, cityDir
 			defer func() { <-sem }()
 			out, err := runner(probes[idx].wq, probes[idx].dir, probes[idx].env)
 			if err != nil {
-				if stderr != nil {
-					fmt.Fprintf(stderr, "session reconcile: work_query %s: %v\n", probes[idx].qn, err) //nolint:errcheck // best-effort stderr
-				}
+				errorLogs[idx] = fmt.Sprintf("session reconcile: work_query %s: %v\n", probes[idx].qn, err)
 				return // command failed — treat as no work
 			}
 			if workQueryHasReadyWork(strings.TrimSpace(out)) {
@@ -441,6 +440,9 @@ func computeWorkSet(cfg *config.City, runner ScaleCheckRunner, cityName, cityDir
 	wg.Wait()
 
 	for i, p := range probes {
+		if stderr != nil && errorLogs[i] != "" {
+			fmt.Fprint(stderr, errorLogs[i]) //nolint:errcheck // best-effort stderr
+		}
 		if results[i] {
 			work[p.qn] = true
 		}
