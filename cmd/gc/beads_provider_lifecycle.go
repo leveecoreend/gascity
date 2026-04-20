@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -42,6 +43,8 @@ var resolveProviderLifecycleGCBinary = func() string {
 	}
 	return ""
 }
+
+var providerLifecycleLogf = log.Printf
 
 // ── Consolidated lifecycle operations ────────────────────────────────────
 //
@@ -364,6 +367,7 @@ func ensureBeadsProvider(cityPath string) error {
 			// succeeds, prefer the actual server state over the start error.
 			if managedBDProvider {
 				if healthErr := runProviderOpWithEnv(script, providerLifecycleProcessEnv(cityPath, provider), "health"); healthErr == nil {
+					providerLifecycleLogf("beads provider start failed but health check succeeded: %v\n", err)
 					if err := publishManagedDoltRuntimeStateIfOwned(cityPath); err != nil {
 						return err
 					}

@@ -247,7 +247,11 @@ func (s *Server) humaHandleBeadDeps(_ context.Context, input *BeadDepsInput) (*I
 		if err != nil {
 			return nil, huma.Error500InternalServerError(err.Error())
 		}
-		children = appendMetadataAttachedChildren(store, parent, children)
+		var attachErr error
+		children, attachErr = appendMetadataAttachedChildren(store, parent, children)
+		if attachErr != nil {
+			return nil, huma.Error500InternalServerError(attachErr.Error())
+		}
 		if children == nil {
 			children = []beads.Bead{}
 		}

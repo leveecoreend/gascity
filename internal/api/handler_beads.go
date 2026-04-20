@@ -14,9 +14,9 @@ import (
 	"github.com/gastownhall/gascity/internal/session"
 )
 
-func appendMetadataAttachedChildren(store beads.Store, parent beads.Bead, children []beads.Bead) []beads.Bead {
+func appendMetadataAttachedChildren(store beads.Store, parent beads.Bead, children []beads.Bead) ([]beads.Bead, error) {
 	if store == nil {
-		return children
+		return children, nil
 	}
 	seen := make(map[string]struct{}, len(children))
 	for _, child := range children {
@@ -32,12 +32,12 @@ func appendMetadataAttachedChildren(store beads.Store, parent beads.Bead, childr
 		}
 		attached, err := store.Get(attachedID)
 		if err != nil {
-			continue
+			return children, fmt.Errorf("looking up attached bead %q for %q: %w", attachedID, parent.ID, err)
 		}
 		seen[attached.ID] = struct{}{}
 		children = append(children, attached)
 	}
-	return children
+	return children, nil
 }
 
 func (s *Server) beadListAssigneeTerms(ctx context.Context, assignee string) []string {

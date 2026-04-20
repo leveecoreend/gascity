@@ -59,6 +59,62 @@ func TestEnsureBeadsProvider_exec(t *testing.T) {
 	}
 }
 
+func TestEnsureBeadsProviderLogsStartFailureWhenHealthSucceeds(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := MaterializeBuiltinPacks(cityPath); err != nil {
+		t.Fatalf("MaterializeBuiltinPacks: %v", err)
+	}
+	script := gcBeadsBdScriptPath(cityPath)
+	ln := listenOnRandomPort(t)
+	defer func() { _ = ln.Close() }()
+	port := ln.Addr().(*net.TCPAddr).Port
+	startState := filepath.Join(cityPath, ".gc", "runtime", "packs", "dolt", "dolt-provider-state.json")
+	scriptBody := fmt.Sprintf(`#!/bin/sh
+set -eu
+case "$1" in
+  start)
+    mkdir -p "$(dirname "$GC_DOLT_STATE_FILE")"
+    cat > "$GC_DOLT_STATE_FILE" <<'JSON'
+{"running":true,"pid":%d,"port":%d,"data_dir":%q,"started_at":"2026-04-20T00:00:00Z"}
+JSON
+    echo "start failed" >&2
+    exit 1
+    ;;
+  health)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`, os.Getpid(), port, filepath.Join(cityPath, ".beads", "dolt"))
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatalf("WriteFile(script): %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(startState), 0o755); err != nil {
+		t.Fatalf("MkdirAll(startState): %v", err)
+	}
+
+	var logged bytes.Buffer
+	oldLogf := providerLifecycleLogf
+	providerLifecycleLogf = func(format string, args ...any) {
+		_, _ = fmt.Fprintf(&logged, format, args...)
+	}
+	t.Cleanup(func() { providerLifecycleLogf = oldLogf })
+
+	t.Setenv("GC_BEADS", "exec:"+script)
+
+	if err := ensureBeadsProvider(cityPath); err != nil {
+		t.Fatalf("ensureBeadsProvider: %v", err)
+	}
+	if got := logged.String(); !strings.Contains(got, "start failed") {
+		t.Fatalf("logged output = %q, want start failure", got)
+	}
+	if got := logged.String(); !strings.Contains(got, "health check succeeded") {
+		t.Fatalf("logged output = %q, want health-success note", got)
+	}
+}
+
 func TestProviderLifecycleProcessEnvProjectsCanonicalDoltPaths(t *testing.T) {
 	cityPath := t.TempDir()
 	t.Setenv("GC_PACK_STATE_DIR", "/tmp/wrong-pack")

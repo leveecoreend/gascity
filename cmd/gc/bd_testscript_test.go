@@ -88,7 +88,10 @@ func doBdCreate(store beads.Store, rec events.Recorder, args []string) int {
 		Message: b.Title,
 	})
 	if format == "json" {
-		writeBeadJSON(b, os.Stdout)
+		if err := writeBeadJSON(b, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "bd create: %v\n", err) //nolint:errcheck // best-effort stderr
+			return 1
+		}
 		return 0
 	}
 	fmt.Fprintf(os.Stdout, "Created bead: %s  (status: %s)\n", b.ID, b.Status) //nolint:errcheck // best-effort stdout
@@ -116,7 +119,10 @@ func doBdClose(store beads.Store, rec events.Recorder, args []string) int {
 			fmt.Fprintf(os.Stderr, "bd close: %v\n", err)
 			return 1
 		}
-		writeBeadJSON(b, os.Stdout)
+		if err := writeBeadJSON(b, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "bd close: %v\n", err) //nolint:errcheck // best-effort stderr
+			return 1
+		}
 		return 0
 	}
 	fmt.Fprintf(os.Stdout, "Closed bead: %s\n", args[0]) //nolint:errcheck // best-effort stdout
@@ -165,7 +171,10 @@ func doBdList(store beads.Store, args []string) int {
 	all = filterBeads(all, filters)
 	switch format {
 	case "json":
-		writeBeadsJSON(all, os.Stdout)
+		if err := writeBeadsJSON(all, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "bd list: %v\n", err) //nolint:errcheck // best-effort stderr
+			return 1
+		}
 	default:
 		writeBeadTable(all, os.Stdout, true)
 	}
@@ -185,7 +194,10 @@ func doBdShow(store beads.Store, args []string) int {
 	}
 	switch format {
 	case "json":
-		writeBeadJSON(b, os.Stdout)
+		if err := writeBeadJSON(b, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "bd show: %v\n", err) //nolint:errcheck // best-effort stderr
+			return 1
+		}
 	default:
 		writeBeadDetail(b, os.Stdout)
 	}
@@ -203,7 +215,10 @@ func doBdReady(store beads.Store, args []string) int {
 	ready = filterBeads(ready, filters)
 	switch format {
 	case "json":
-		writeBeadsJSON(ready, os.Stdout)
+		if err := writeBeadsJSON(ready, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "bd ready: %v\n", err) //nolint:errcheck // best-effort stderr
+			return 1
+		}
 	default:
 		writeBeadTable(ready, os.Stdout, false)
 	}

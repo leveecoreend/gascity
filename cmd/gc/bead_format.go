@@ -10,6 +10,8 @@ import (
 	"github.com/gastownhall/gascity/internal/beads"
 )
 
+var marshalIndentJSON = json.MarshalIndent
+
 // parseBeadFormat extracts --format/--json flags from raw args (needed because
 // DisableFlagParsing is true). Returns the format ("text", "json", or "toon")
 // and the remaining positional args with the flag removed.
@@ -94,15 +96,23 @@ func filterBeads(bs []beads.Bead, f beadFilters) []beads.Bead {
 }
 
 // writeBeadJSON writes a single bead as indented JSON.
-func writeBeadJSON(b beads.Bead, stdout io.Writer) {
-	data, _ := json.MarshalIndent(b, "", "  ")
-	fmt.Fprintln(stdout, string(data)) //nolint:errcheck // best-effort stdout
+func writeBeadJSON(b beads.Bead, stdout io.Writer) error {
+	data, err := marshalIndentJSON(b, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal bead JSON: %w", err)
+	}
+	_, err = fmt.Fprintln(stdout, string(data))
+	return err
 }
 
 // writeBeadsJSON writes a slice of beads as a JSON array.
-func writeBeadsJSON(bs []beads.Bead, stdout io.Writer) {
-	data, _ := json.MarshalIndent(bs, "", "  ")
-	fmt.Fprintln(stdout, string(data)) //nolint:errcheck // best-effort stdout
+func writeBeadsJSON(bs []beads.Bead, stdout io.Writer) error {
+	data, err := marshalIndentJSON(bs, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal beads JSON: %w", err)
+	}
+	_, err = fmt.Fprintln(stdout, string(data))
+	return err
 }
 
 // writeBeadDetail writes a single bead in human-readable detail format.

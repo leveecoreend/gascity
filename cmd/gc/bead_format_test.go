@@ -1,7 +1,12 @@
 package main
 
 import (
+	"errors"
+	"io"
+	"strings"
 	"testing"
+
+	"github.com/gastownhall/gascity/internal/beads"
 )
 
 func TestParseBeadFormat(t *testing.T) {
@@ -56,5 +61,29 @@ func TestToonVal(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("toonVal(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestWriteBeadJSONReportsMarshalError(t *testing.T) {
+	oldMarshal := marshalIndentJSON
+	marshalIndentJSON = func(any, string, string) ([]byte, error) {
+		return nil, errors.New("boom")
+	}
+	t.Cleanup(func() { marshalIndentJSON = oldMarshal })
+
+	if err := writeBeadJSON(beads.Bead{Title: "test"}, io.Discard); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("writeBeadJSON error = %v, want boom", err)
+	}
+}
+
+func TestWriteBeadsJSONReportsMarshalError(t *testing.T) {
+	oldMarshal := marshalIndentJSON
+	marshalIndentJSON = func(any, string, string) ([]byte, error) {
+		return nil, errors.New("boom")
+	}
+	t.Cleanup(func() { marshalIndentJSON = oldMarshal })
+
+	if err := writeBeadsJSON([]beads.Bead{{Title: "test"}}, io.Discard); err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("writeBeadsJSON error = %v, want boom", err)
 	}
 }
