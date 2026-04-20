@@ -542,6 +542,11 @@ func registeredRigBindingsByPath(dir string, failOnLoadError bool) ([]registered
 	return keepDeepestRigBindings(matches), nil
 }
 
+// registeredRigBindingsStderr is where registeredRigBindings emits one-line
+// warnings when it skips stale registry entries whose city.toml no longer
+// exists on disk. Tests override this to capture warnings.
+var registeredRigBindingsStderr io.Writer = os.Stderr
+
 func registeredRigBindings(failOnLoadError bool, match func(registeredRigBinding) bool) ([]registeredRigBinding, error) {
 	reg := supervisor.NewRegistry(supervisor.RegistryPath())
 	cities, err := reg.List()
@@ -551,6 +556,17 @@ func registeredRigBindings(failOnLoadError bool, match func(registeredRigBinding
 	var matched []registeredRigBinding
 	var loadErrors []string
 	for _, c := range cities {
+		// Tolerate stale registry entries whose directory or city.toml has
+		// been deleted out from under the registry: emit a single warning
+		// and skip, rather than failing the whole command. Other callers
+		// (gc stop, gc start, gc rig add, etc.) should not abort because a
+		// sibling city's directory is gone.
+		if _, statErr := os.Stat(filepath.Join(c.Path, "city.toml")); errors.Is(statErr, os.ErrNotExist) {
+			fmt.Fprintf(registeredRigBindingsStderr, //nolint:errcheck // best-effort stderr
+				"warning: skipping stale registered city %q: city.toml missing at %s\n",
+				registeredCityLabel(c), c.Path)
+			continue
+		}
 		cfg, err := loadCityConfigSuppressDeprecatedOrderWarnings(c.Path, io.Discard)
 		if err != nil {
 			loadErrors = append(loadErrors, fmt.Sprintf("%s: %v", registeredCityLabel(c), err))

@@ -1309,6 +1309,60 @@ func TestRigAnywhere_ResolveRigToContext(t *testing.T) {
 		}
 	})
 
+	// Regression: gc stop (and other commands that scan registered rig
+	// bindings) must not abort when a sibling city's directory has been
+	// deleted out from under the registry. The stale entry is warned about
+	// and skipped; the healthy target city still resolves successfully.
+	t.Run("stale_sibling_directory_is_skipped_with_warning", func(t *testing.T) {
+		gcHome := t.TempDir()
+		t.Setenv("GC_HOME", gcHome)
+
+		goodCity := setupCity(t, "stale-sibling-good")
+		rigDir := filepath.Join(t.TempDir(), "stale-sibling-rig")
+		if err := os.MkdirAll(rigDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		registerRigBindingForResolution(t, gcHome, goodCity, "stale-sibling-good", "stale-sibling-rig", rigDir)
+
+		// Register a second city, then delete its directory to simulate
+		// "gc stop ~/my-city" after the sibling city was rm -rf'd.
+		staleDir := filepath.Join(t.TempDir(), "vanished-city")
+		if err := os.MkdirAll(filepath.Join(staleDir, ".gc"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(staleDir, "city.toml"),
+			[]byte("[workspace]\nname = \"stale-sibling-bad\"\n\n[[agent]]\nname = \"mayor\"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		registerCityForRigResolution(t, gcHome, staleDir, "stale-sibling-bad")
+		if err := os.RemoveAll(staleDir); err != nil {
+			t.Fatal(err)
+		}
+
+		// Capture the warning that registeredRigBindings emits when it
+		// skips the stale entry.
+		var warnings bytes.Buffer
+		origStderr := registeredRigBindingsStderr
+		registeredRigBindingsStderr = &warnings
+		t.Cleanup(func() { registeredRigBindingsStderr = origStderr })
+
+		ctx, err := resolveContextFromPath(rigDir)
+		if err != nil {
+			t.Fatalf("resolveContextFromPath error: %v (want success with stale sibling skipped)", err)
+		}
+		assertSameTestPath(t, ctx.CityPath, goodCity)
+		if ctx.RigName != "stale-sibling-rig" {
+			t.Errorf("RigName = %q, want %q", ctx.RigName, "stale-sibling-rig")
+		}
+		warn := warnings.String()
+		if !strings.Contains(warn, "stale-sibling-bad") {
+			t.Errorf("warning = %q, want it to mention the stale city name", warn)
+		}
+		if !strings.Contains(warn, "city.toml missing") {
+			t.Errorf("warning = %q, want it to explain city.toml is missing", warn)
+		}
+	})
+
 	t.Run("rig_ambiguous_no_default_helpful_error", func(t *testing.T) {
 		gcHome := t.TempDir()
 		t.Setenv("GC_HOME", gcHome)
