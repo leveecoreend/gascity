@@ -3,7 +3,9 @@ package beads
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestCachingStoreRunReconciliationDetectsLabelContentChanges(t *testing.T) {
@@ -65,6 +67,17 @@ func TestCachingStoreUpdateInvalidatesStaleCacheWhenRefreshFails(t *testing.T) {
 	if got.Title != "after" {
 		t.Fatalf("Title = %q, want after", got.Title)
 	}
+
+	stats := cache.Stats()
+	if stats.ProblemCount != 1 {
+		t.Fatalf("ProblemCount = %d, want 1", stats.ProblemCount)
+	}
+	if !strings.Contains(stats.LastProblem, "refresh bead after update") {
+		t.Fatalf("LastProblem = %q, want refresh context", stats.LastProblem)
+	}
+	if stats.LastProblemAt.IsZero() {
+		t.Fatal("LastProblemAt should be set")
+	}
 }
 
 func TestCachingStoreDepListUpFallsThroughToBackingTruth(t *testing.T) {
@@ -110,6 +123,85 @@ func TestCachingStoreDepListUpFallsThroughToBackingTruth(t *testing.T) {
 	}
 }
 
+func TestCachingStoreApplyEventRecordsProblemOnMalformedPayload(t *testing.T) {
+	t.Parallel()
+
+	cache := NewCachingStoreForTest(NewMemStore(), nil)
+	if err := cache.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	cache.ApplyEvent("bead.updated", []byte(`{`))
+
+	stats := cache.Stats()
+	if stats.ProblemCount != 1 {
+		t.Fatalf("ProblemCount = %d, want 1", stats.ProblemCount)
+	}
+	if !strings.Contains(stats.LastProblem, "apply bead.updated event") {
+		t.Fatalf("LastProblem = %q, want apply-event context", stats.LastProblem)
+	}
+	if stats.LastProblemAt.IsZero() {
+		t.Fatal("LastProblemAt should be set")
+	}
+}
+
+func TestCachingStoreRunReconciliationRecordsProblemAndDegrades(t *testing.T) {
+	t.Parallel()
+
+	backing := &listFailingStore{Store: NewMemStore()}
+	if _, err := backing.Create(Bead{Title: "Task"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	cache := NewCachingStoreForTest(backing, nil)
+	if err := cache.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	backing.failList = true
+	for i := 0; i < maxCacheSyncFailures; i++ {
+		cache.runReconciliation()
+	}
+
+	if cache.state != cacheDegraded {
+		t.Fatalf("state = %v, want degraded", cache.state)
+	}
+
+	stats := cache.Stats()
+	if stats.SyncFailures != maxCacheSyncFailures {
+		t.Fatalf("SyncFailures = %d, want %d", stats.SyncFailures, maxCacheSyncFailures)
+	}
+	if stats.ProblemCount != int64(maxCacheSyncFailures) {
+		t.Fatalf("ProblemCount = %d, want %d", stats.ProblemCount, maxCacheSyncFailures)
+	}
+	if !strings.Contains(stats.LastProblem, "reconcile cache") {
+		t.Fatalf("LastProblem = %q, want reconcile context", stats.LastProblem)
+	}
+}
+
+func TestCachingStoreNextReconcileDelayUsesFreshnessWatchdog(t *testing.T) {
+	t.Parallel()
+
+	cache := NewCachingStoreForTest(NewMemStore(), nil)
+	cache.state = cacheLive
+	cache.lastFreshAt = time.Unix(100, 0)
+
+	if got := cache.nextReconcileDelay(time.Unix(110, 0)); got != 20*time.Second {
+		t.Fatalf("nextReconcileDelay(fresh) = %s, want 20s", got)
+	}
+
+	cache.lastFreshAt = time.Unix(70, 0)
+	if got := cache.nextReconcileDelay(time.Unix(110, 0)); got != 0 {
+		t.Fatalf("nextReconcileDelay(stale) = %s, want immediate reconcile", got)
+	}
+
+	cache.state = cacheDegraded
+	cache.lastFreshAt = time.Unix(109, 0)
+	if got := cache.nextReconcileDelay(time.Unix(110, 0)); got != 0 {
+		t.Fatalf("nextReconcileDelay(degraded) = %s, want immediate reconcile", got)
+	}
+}
+
 type refreshFailingStore struct {
 	Store
 	failNextGet bool
@@ -121,4 +213,16 @@ func (s *refreshFailingStore) Get(id string) (Bead, error) {
 		return Bead{}, errors.New("transient get failure")
 	}
 	return s.Store.Get(id)
+}
+
+type listFailingStore struct {
+	Store
+	failList bool
+}
+
+func (s *listFailingStore) List(query ListQuery) ([]Bead, error) {
+	if s.failList {
+		return nil, errors.New("transient list failure")
+	}
+	return s.Store.List(query)
 }

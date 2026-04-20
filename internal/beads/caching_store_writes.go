@@ -1,0 +1,204 @@
+package beads
+
+import (
+	"fmt"
+	"time"
+)
+
+// Create passes through to the backing store and updates the cache.
+func (c *CachingStore) Create(b Bead) (Bead, error) {
+	created, err := c.backing.Create(b)
+	if err != nil {
+		return created, err
+	}
+
+	c.mu.Lock()
+	c.beads[created.ID] = cloneBead(created)
+	c.markFreshLocked(time.Now())
+	c.updateStatsLocked()
+	c.mu.Unlock()
+
+	c.notifyChange("bead.created", created)
+	return created, nil
+}
+
+// Update passes through to the backing store and refreshes the cache.
+func (c *CachingStore) Update(id string, opts UpdateOpts) error {
+	if err := c.backing.Update(id, opts); err != nil {
+		return err
+	}
+
+	// Re-fetch from backing to get the authoritative state.
+	fresh, err := c.backing.Get(id)
+	if err != nil {
+		c.mu.Lock()
+		delete(c.beads, id)
+		delete(c.deps, id)
+		c.updateStatsLocked()
+		c.mu.Unlock()
+		c.recordProblem("refresh bead after update", fmt.Errorf("%s: %w", id, err))
+		return nil
+	}
+
+	c.mu.Lock()
+	c.beads[id] = cloneBead(fresh)
+	c.markFreshLocked(time.Now())
+	c.updateStatsLocked()
+	c.mu.Unlock()
+
+	c.notifyChange("bead.updated", fresh)
+	return nil
+}
+
+// Close marks a bead as closed in the backing store and cache.
+func (c *CachingStore) Close(id string) error {
+	if err := c.backing.Close(id); err != nil {
+		return err
+	}
+
+	var closed Bead
+	var found bool
+	c.mu.Lock()
+	if b, ok := c.beads[id]; ok {
+		b.Status = "closed"
+		c.beads[id] = b
+		closed = cloneBead(b)
+		found = true
+		c.markFreshLocked(time.Now())
+		c.updateStatsLocked()
+	}
+	c.mu.Unlock()
+
+	if found {
+		c.notifyChange("bead.closed", closed)
+	}
+	return nil
+}
+
+// CloseAll closes multiple beads and sets metadata on each.
+func (c *CachingStore) CloseAll(ids []string, metadata map[string]string) (int, error) {
+	n, err := c.backing.CloseAll(ids, metadata)
+	if err != nil {
+		return n, err
+	}
+
+	c.mu.Lock()
+	for _, id := range ids {
+		if b, ok := c.beads[id]; ok {
+			b.Status = "closed"
+			if b.Metadata == nil {
+				b.Metadata = make(map[string]string, len(metadata))
+			}
+			for k, v := range metadata {
+				b.Metadata[k] = v
+			}
+			c.beads[id] = b
+		}
+	}
+	c.markFreshLocked(time.Now())
+	c.updateStatsLocked()
+	c.mu.Unlock()
+	return n, nil
+}
+
+// SetMetadata sets a single metadata key-value on a bead.
+func (c *CachingStore) SetMetadata(id, key, value string) error {
+	if err := c.backing.SetMetadata(id, key, value); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	if b, ok := c.beads[id]; ok {
+		if b.Metadata == nil {
+			b.Metadata = make(map[string]string)
+		}
+		b.Metadata[key] = value
+		c.beads[id] = b
+	}
+	c.markFreshLocked(time.Now())
+	c.updateStatsLocked()
+	c.mu.Unlock()
+	return nil
+}
+
+// SetMetadataBatch sets multiple metadata key-values on a bead.
+func (c *CachingStore) SetMetadataBatch(id string, kvs map[string]string) error {
+	if err := c.backing.SetMetadataBatch(id, kvs); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	if b, ok := c.beads[id]; ok {
+		if b.Metadata == nil {
+			b.Metadata = make(map[string]string, len(kvs))
+		}
+		for k, v := range kvs {
+			b.Metadata[k] = v
+		}
+		c.beads[id] = b
+	}
+	c.markFreshLocked(time.Now())
+	c.updateStatsLocked()
+	c.mu.Unlock()
+	return nil
+}
+
+// DepAdd adds a dependency and updates the cache.
+func (c *CachingStore) DepAdd(issueID, dependsOnID, depType string) error {
+	if err := c.backing.DepAdd(issueID, dependsOnID, depType); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	deps := c.deps[issueID]
+	for i, d := range deps {
+		if d.DependsOnID == dependsOnID {
+			deps[i].Type = depType
+			c.deps[issueID] = deps
+			c.markFreshLocked(time.Now())
+			c.updateStatsLocked()
+			c.mu.Unlock()
+			return nil
+		}
+	}
+	c.deps[issueID] = append(deps, Dep{IssueID: issueID, DependsOnID: dependsOnID, Type: depType})
+	c.markFreshLocked(time.Now())
+	c.updateStatsLocked()
+	c.mu.Unlock()
+	return nil
+}
+
+// DepRemove removes a dependency and updates the cache.
+func (c *CachingStore) DepRemove(issueID, dependsOnID string) error {
+	if err := c.backing.DepRemove(issueID, dependsOnID); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	deps := c.deps[issueID]
+	for i, d := range deps {
+		if d.DependsOnID == dependsOnID {
+			c.deps[issueID] = append(deps[:i], deps[i+1:]...)
+			break
+		}
+	}
+	c.markFreshLocked(time.Now())
+	c.updateStatsLocked()
+	c.mu.Unlock()
+	return nil
+}
+
+// Delete passes through to the backing store and removes from cache.
+func (c *CachingStore) Delete(id string) error {
+	if err := c.backing.Delete(id); err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	delete(c.beads, id)
+	delete(c.deps, id)
+	c.markFreshLocked(time.Now())
+	c.updateStatsLocked()
+	c.mu.Unlock()
+	return nil
+}
