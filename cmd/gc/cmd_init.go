@@ -414,15 +414,26 @@ func initPromptTemplatePath(templatePath string) (string, bool) {
 	return filepath.Join("agents", base, "prompt.template.md"), true
 }
 
+func rewriteInitAgentPromptTemplates(agents []config.Agent) {
+	for i := range agents {
+		if next, ok := initPromptTemplatePath(agents[i].PromptTemplate); ok {
+			agents[i].PromptTemplate = next
+		}
+	}
+}
+
 func rewriteInitPromptTemplates(cfg *config.City) {
 	if cfg == nil {
 		return
 	}
-	for i := range cfg.Agents {
-		if next, ok := initPromptTemplatePath(cfg.Agents[i].PromptTemplate); ok {
-			cfg.Agents[i].PromptTemplate = next
-		}
+	rewriteInitAgentPromptTemplates(cfg.Agents)
+}
+
+func rewriteInitPackPromptTemplates(cfg *initPackConfig) {
+	if cfg == nil {
+		return
 	}
+	rewriteInitAgentPromptTemplates(cfg.Agents)
 }
 
 func ensureInitConventionDirs(fs fsys.FS, cityPath string) error {
@@ -550,6 +561,14 @@ func splitInitConfig(cityName string, cfg *config.City) (initPackConfig, config.
 		packCfg.Defaults = defaults
 		cityCfg.Workspace.DefaultRigIncludes = nil
 	}
+	if len(cfg.Agents) > 0 {
+		packCfg.Agents = append([]config.Agent(nil), cfg.Agents...)
+		cityCfg.Agents = nil
+	}
+	if len(cfg.NamedSessions) > 0 {
+		packCfg.NamedSessions = append([]config.NamedSession(nil), cfg.NamedSessions...)
+		cityCfg.NamedSessions = nil
+	}
 	return packCfg, cityCfg
 }
 
@@ -674,6 +693,7 @@ func cmdInitFromTOMLFileWithOptions(fs fsys.FS, tomlSrc, cityPath, nameOverride 
 		return code
 	}
 	packCfg, cityCfg := splitInitConfig(cityName, cfg)
+	rewriteInitPackPromptTemplates(&packCfg)
 	applyInitPackTemplateExtras(&packCfg, templatePack)
 	if err := writeInitPackToml(fs, cityPath, packCfg); err != nil {
 		fmt.Fprintf(stderr, "gc init: %v\n", err) //nolint:errcheck // best-effort stderr
@@ -813,6 +833,7 @@ func doInit(fs fsys.FS, cityPath string, wiz wizardConfig, nameOverride string, 
 	// --provider path gets the same city shape non-interactively;
 	// custom path gets one mayor + no provider (user configures manually).
 	packCfg, cityCfg := splitInitConfig(cityName, &cfg)
+	rewriteInitPackPromptTemplates(&packCfg)
 	rewriteInitPromptTemplates(&cityCfg)
 	content, err := cityCfg.Marshal()
 	if err != nil {

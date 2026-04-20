@@ -1455,23 +1455,30 @@ func TestDoInitSuccess(t *testing.T) {
 		t.Errorf("pack.toml missing schema 2:\n%s", packToml)
 	}
 
-	// Verify written config parses correctly.
+	// Verify city-local config is cleanly split from the pack content.
 	data := f.Files[filepath.Join("/bright-lights", "city.toml")]
 	cfg, err := config.Parse(data)
 	if err != nil {
-		t.Fatalf("parsing written config: %v", err)
+		t.Fatalf("parsing written city config: %v", err)
 	}
 	if cfg.Workspace.Name != "bright-lights" {
 		t.Errorf("Workspace.Name = %q, want %q", cfg.Workspace.Name, "bright-lights")
 	}
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("len(Agents) = %d, want 1", len(cfg.Agents))
+	if len(cfg.Agents) != 0 {
+		t.Fatalf("len(city Agents) = %d, want 0", len(cfg.Agents))
 	}
-	if cfg.Agents[0].Name != "mayor" {
-		t.Errorf("Agents[0].Name = %q, want %q", cfg.Agents[0].Name, "mayor")
+	packCfg, err := decodeInitPackTemplate(f.Files[filepath.Join("/bright-lights", "pack.toml")], "bright-lights")
+	if err != nil {
+		t.Fatalf("decoding pack config: %v", err)
 	}
-	if cfg.Agents[0].PromptTemplate != "agents/mayor/prompt.template.md" {
-		t.Errorf("Agents[0].PromptTemplate = %q, want %q", cfg.Agents[0].PromptTemplate, "agents/mayor/prompt.template.md")
+	if len(packCfg.Agents) != 1 {
+		t.Fatalf("len(pack Agents) = %d, want 1", len(packCfg.Agents))
+	}
+	if packCfg.Agents[0].Name != "mayor" {
+		t.Errorf("pack Agents[0].Name = %q, want %q", packCfg.Agents[0].Name, "mayor")
+	}
+	if packCfg.Agents[0].PromptTemplate != "agents/mayor/prompt.template.md" {
+		t.Errorf("pack Agents[0].PromptTemplate = %q, want %q", packCfg.Agents[0].PromptTemplate, "agents/mayor/prompt.template.md")
 	}
 }
 
@@ -1487,14 +1494,6 @@ func TestDoInitWritesExpectedTOML(t *testing.T) {
 	got := string(f.Files[filepath.Join("/bright-lights", "city.toml")])
 	want := `[workspace]
 name = "bright-lights"
-
-[[agent]]
-name = "mayor"
-prompt_template = "agents/mayor/prompt.template.md"
-
-[[named_session]]
-template = "mayor"
-mode = "always"
 `
 	if got != want {
 		t.Errorf("city.toml content:\ngot:\n%s\nwant:\n%s", got, want)
@@ -1504,6 +1503,14 @@ mode = "always"
 	packWant := `[pack]
 name = "bright-lights"
 schema = 2
+
+[[agent]]
+name = "mayor"
+prompt_template = "agents/mayor/prompt.template.md"
+
+[[named_session]]
+template = "mayor"
+mode = "always"
 `
 	if packGot != packWant {
 		t.Errorf("pack.toml content:\ngot:\n%s\nwant:\n%s", packGot, packWant)
@@ -2007,19 +2014,26 @@ func TestDoInitWithWizardConfig(t *testing.T) {
 	data := f.Files[filepath.Join("/bright-lights", "city.toml")]
 	cfg, err := config.Parse(data)
 	if err != nil {
-		t.Fatalf("parsing written config: %v", err)
+		t.Fatalf("parsing written city config: %v", err)
 	}
 	if cfg.Workspace.Provider != "claude" {
 		t.Errorf("Workspace.Provider = %q, want %q", cfg.Workspace.Provider, "claude")
 	}
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("len(Agents) = %d, want 1", len(cfg.Agents))
+	if len(cfg.Agents) != 0 {
+		t.Fatalf("len(city Agents) = %d, want 0", len(cfg.Agents))
 	}
-	if cfg.Agents[0].Name != "mayor" {
-		t.Errorf("Agents[0].Name = %q, want %q", cfg.Agents[0].Name, "mayor")
+	packCfg, err := decodeInitPackTemplate(f.Files[filepath.Join("/bright-lights", "pack.toml")], "bright-lights")
+	if err != nil {
+		t.Fatalf("decoding pack config: %v", err)
 	}
-	if cfg.Agents[0].PromptTemplate != "agents/mayor/prompt.template.md" {
-		t.Errorf("Agents[0].PromptTemplate = %q, want %q", cfg.Agents[0].PromptTemplate, "agents/mayor/prompt.template.md")
+	if len(packCfg.Agents) != 1 {
+		t.Fatalf("len(pack Agents) = %d, want 1", len(packCfg.Agents))
+	}
+	if packCfg.Agents[0].Name != "mayor" {
+		t.Errorf("pack Agents[0].Name = %q, want %q", packCfg.Agents[0].Name, "mayor")
+	}
+	if packCfg.Agents[0].PromptTemplate != "agents/mayor/prompt.template.md" {
+		t.Errorf("pack Agents[0].PromptTemplate = %q, want %q", packCfg.Agents[0].PromptTemplate, "agents/mayor/prompt.template.md")
 	}
 	// Verify provider appears in TOML.
 	if !strings.Contains(string(data), `provider = "claude"`) {
@@ -2042,10 +2056,9 @@ func TestDoInitWithCustomCommand(t *testing.T) {
 	}
 
 	// Verify written config has start_command and no provider.
-	data := f.Files[filepath.Join("/bright-lights", "city.toml")]
-	cfg, err := config.Parse(data)
+	cfg, err := config.Parse(f.Files[filepath.Join("/bright-lights", "city.toml")])
 	if err != nil {
-		t.Fatalf("parsing written config: %v", err)
+		t.Fatalf("parsing written city config: %v", err)
 	}
 	if cfg.Workspace.StartCommand != "my-agent --auto" {
 		t.Errorf("Workspace.StartCommand = %q, want %q", cfg.Workspace.StartCommand, "my-agent --auto")
@@ -2053,8 +2066,15 @@ func TestDoInitWithCustomCommand(t *testing.T) {
 	if cfg.Workspace.Provider != "" {
 		t.Errorf("Workspace.Provider = %q, want empty", cfg.Workspace.Provider)
 	}
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("len(Agents) = %d, want 1", len(cfg.Agents))
+	if len(cfg.Agents) != 0 {
+		t.Fatalf("len(city Agents) = %d, want 0", len(cfg.Agents))
+	}
+	packCfg, err := decodeInitPackTemplate(f.Files[filepath.Join("/bright-lights", "pack.toml")], "bright-lights")
+	if err != nil {
+		t.Fatalf("decoding pack config: %v", err)
+	}
+	if len(packCfg.Agents) != 1 {
+		t.Fatalf("len(pack Agents) = %d, want 1", len(packCfg.Agents))
 	}
 }
 
@@ -2121,16 +2141,22 @@ func TestDoInitWithCustomTemplate(t *testing.T) {
 	}
 
 	// Custom template → DefaultCity (one mayor, no provider).
-	data := f.Files[filepath.Join("/my-city", "city.toml")]
-	cfg, err := config.Parse(data)
+	cfg, err := config.Parse(f.Files[filepath.Join("/my-city", "city.toml")])
 	if err != nil {
-		t.Fatalf("parsing written config: %v", err)
+		t.Fatalf("parsing written city config: %v", err)
 	}
-	if len(cfg.Agents) != 1 {
-		t.Fatalf("len(Agents) = %d, want 1", len(cfg.Agents))
+	if len(cfg.Agents) != 0 {
+		t.Fatalf("len(city Agents) = %d, want 0", len(cfg.Agents))
 	}
-	if cfg.Agents[0].Name != "mayor" {
-		t.Errorf("Agents[0].Name = %q, want %q", cfg.Agents[0].Name, "mayor")
+	packCfg, err := decodeInitPackTemplate(f.Files[filepath.Join("/my-city", "pack.toml")], "my-city")
+	if err != nil {
+		t.Fatalf("decoding pack config: %v", err)
+	}
+	if len(packCfg.Agents) != 1 {
+		t.Fatalf("len(pack Agents) = %d, want 1", len(packCfg.Agents))
+	}
+	if packCfg.Agents[0].Name != "mayor" {
+		t.Errorf("pack Agents[0].Name = %q, want %q", packCfg.Agents[0].Name, "mayor")
 	}
 	if cfg.Workspace.Provider != "" {
 		t.Errorf("Workspace.Provider = %q, want empty", cfg.Workspace.Provider)
@@ -2305,13 +2331,9 @@ scale_check = "echo 3"
 	}
 
 	// Verify city.toml was written with updated name.
-	data, err := os.ReadFile(filepath.Join(cityPath, "city.toml"))
+	cfg, err := config.Parse(mustReadFile(t, filepath.Join(cityPath, "city.toml")))
 	if err != nil {
-		t.Fatalf("reading city.toml: %v", err)
-	}
-	cfg, err := config.Parse(data)
-	if err != nil {
-		t.Fatalf("parsing written config: %v", err)
+		t.Fatalf("parsing written city config: %v", err)
 	}
 	if cfg.Workspace.Name != "bright-lights" {
 		t.Errorf("Workspace.Name = %q, want %q (should be overridden)", cfg.Workspace.Name, "bright-lights")
@@ -2319,20 +2341,27 @@ scale_check = "echo 3"
 	if cfg.Workspace.Provider != "claude" {
 		t.Errorf("Workspace.Provider = %q, want %q", cfg.Workspace.Provider, "claude")
 	}
-	if len(cfg.Agents) != 2 {
-		t.Fatalf("len(Agents) = %d, want 2", len(cfg.Agents))
+	if len(cfg.Agents) != 0 {
+		t.Fatalf("len(city Agents) = %d, want 0", len(cfg.Agents))
 	}
-	if cfg.Agents[1].Name != "worker" {
-		t.Errorf("Agents[1].Name = %q, want %q", cfg.Agents[1].Name, "worker")
+	packCfg, err := decodeInitPackTemplate(mustReadFile(t, filepath.Join(cityPath, "pack.toml")), "bright-lights")
+	if err != nil {
+		t.Fatalf("decoding pack config: %v", err)
 	}
-	if cfg.Agents[1].MaxActiveSessions == nil {
-		t.Fatal("Agents[1].MaxActiveSessions is nil, want non-nil")
+	if len(packCfg.Agents) != 2 {
+		t.Fatalf("len(pack Agents) = %d, want 2", len(packCfg.Agents))
 	}
-	if *cfg.Agents[1].MaxActiveSessions != 5 {
-		t.Errorf("Agents[1].MaxActiveSessions = %d, want 5", *cfg.Agents[1].MaxActiveSessions)
+	if packCfg.Agents[1].Name != "worker" {
+		t.Errorf("pack Agents[1].Name = %q, want %q", packCfg.Agents[1].Name, "worker")
 	}
-	if cfg.Agents[0].PromptTemplate != "agents/mayor/prompt.template.md" {
-		t.Errorf("Agents[0].PromptTemplate = %q, want %q", cfg.Agents[0].PromptTemplate, "agents/mayor/prompt.template.md")
+	if packCfg.Agents[1].MaxActiveSessions == nil {
+		t.Fatal("pack Agents[1].MaxActiveSessions is nil, want non-nil")
+	}
+	if *packCfg.Agents[1].MaxActiveSessions != 5 {
+		t.Errorf("pack Agents[1].MaxActiveSessions = %d, want 5", *packCfg.Agents[1].MaxActiveSessions)
+	}
+	if packCfg.Agents[0].PromptTemplate != "agents/mayor/prompt.template.md" {
+		t.Errorf("pack Agents[0].PromptTemplate = %q, want %q", packCfg.Agents[0].PromptTemplate, "agents/mayor/prompt.template.md")
 	}
 
 	packData, err := os.ReadFile(filepath.Join(cityPath, "pack.toml"))
