@@ -26,7 +26,9 @@ type DesiredStateResult struct {
 	State             map[string]TemplateParams
 	BaseState         map[string]TemplateParams
 	ScaleCheckCounts  map[string]int // nil when store is nil or scale_check not run
-	AssignedWorkBeads []beads.Bead   // actionable assigned work: in_progress or ready+assigned
+	PoolDesiredCounts map[string]int // runtime-owned demand snapshot; reused on stable patrol ticks when still fresh
+	WorkSet           map[string]bool
+	AssignedWorkBeads []beads.Bead // actionable assigned work: in_progress or ready+assigned
 	// NamedSessionDemand records which named-session identities have active
 	// demand — either direct assignee demand (Assignee == identity) or
 	// work_query-detected ready work. The reconciler merges this into

@@ -256,6 +256,7 @@ func (cs *controllerState) applyBeadEventToStores(evt events.Event) {
 			cached.ApplyEvent(evt.Type, evt.Payload)
 		}
 	}
+	cs.Poke()
 }
 
 // update replaces the config, session provider, and reopens stores.

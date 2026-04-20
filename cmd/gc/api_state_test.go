@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -696,6 +697,44 @@ func TestControllerStateMutationErrorDoesNotPokeController(t *testing.T) {
 	select {
 	case <-cs.pokeCh:
 		t.Fatal("failed mutation should not poke reconciler")
+	default:
+	}
+}
+
+func TestControllerStateApplyBeadEventPokesController(t *testing.T) {
+	cs := &controllerState{
+		pokeCh: make(chan struct{}, 1),
+	}
+
+	cs.applyBeadEventToStores(events.Event{
+		Type:    events.BeadUpdated,
+		Actor:   "agent-runtime",
+		Subject: "bd-123",
+		Payload: json.RawMessage(`{"id":"bd-123"}`),
+	})
+
+	select {
+	case <-cs.pokeCh:
+	default:
+		t.Fatal("expected bead event to poke controller")
+	}
+}
+
+func TestControllerStateApplyCacheReconcileEventDoesNotPokeController(t *testing.T) {
+	cs := &controllerState{
+		pokeCh: make(chan struct{}, 1),
+	}
+
+	cs.applyBeadEventToStores(events.Event{
+		Type:    events.BeadUpdated,
+		Actor:   "cache-reconcile",
+		Subject: "bd-123",
+		Payload: json.RawMessage(`{"id":"bd-123"}`),
+	})
+
+	select {
+	case <-cs.pokeCh:
+		t.Fatal("cache-reconcile event should not poke controller")
 	default:
 	}
 }

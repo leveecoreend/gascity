@@ -95,6 +95,69 @@ func TestCityRuntimeRequestDeferredDrainFollowUpTick_PokesOnce(t *testing.T) {
 	}
 }
 
+func TestCityRuntimeDemandSnapshotReusesStablePatrolDemand(t *testing.T) {
+	buildCalls := 0
+	cr := &CityRuntime{
+		cityName: "test-city",
+		cityPath: t.TempDir(),
+		cfg: &config.City{
+			Workspace: config.Workspace{Name: "test-city"},
+		},
+		cs: &controllerState{
+			eventProv: events.NewFake(),
+		},
+		stderr: io.Discard,
+	}
+	cr.buildFnWithSessionBeads = func(*config.City, runtime.Provider, beads.Store, map[string]beads.Store, *sessionBeadSnapshot, *sessionReconcilerTraceCycle) DesiredStateResult {
+		buildCalls++
+		return DesiredStateResult{
+			State: map[string]TemplateParams{
+				"worker-bd-1": {SessionName: "worker-bd-1"},
+			},
+		}
+	}
+
+	sessionBeads := newSessionBeadSnapshot([]beads.Bead{{
+		ID:     "bead-1",
+		Status: "open",
+		Metadata: map[string]string{
+			"session_name": "worker-bd-1",
+			"template":     "worker",
+			"state":        "active",
+		},
+	}})
+
+	first := cr.loadDemandSnapshot(sessionBeads, nil, "patrol", false)
+	second := cr.loadDemandSnapshot(sessionBeads, nil, "patrol", false)
+
+	if buildCalls != 1 {
+		t.Fatalf("buildDesiredState call count = %d, want 1 for stable patrol reuse", buildCalls)
+	}
+	if len(first.result.State) != 1 || len(second.result.State) != 1 {
+		t.Fatalf("cached demand snapshot lost desired state: first=%d second=%d", len(first.result.State), len(second.result.State))
+	}
+
+	changedSessionBeads := newSessionBeadSnapshot([]beads.Bead{{
+		ID:     "bead-1",
+		Status: "open",
+		Metadata: map[string]string{
+			"session_name":         "worker-bd-1",
+			"template":             "worker",
+			"state":                "active",
+			"pending_create_claim": "true",
+		},
+	}})
+	_ = cr.loadDemandSnapshot(changedSessionBeads, nil, "patrol", false)
+	if buildCalls != 2 {
+		t.Fatalf("buildDesiredState call count after session change = %d, want 2", buildCalls)
+	}
+
+	_ = cr.loadDemandSnapshot(changedSessionBeads, nil, "poke", false)
+	if buildCalls != 3 {
+		t.Fatalf("buildDesiredState call count after poke = %d, want 3", buildCalls)
+	}
+}
+
 // Pool session beads in the "creating" window (tmux not yet up, work not yet
 // assigned) must not be swept. Otherwise the sweep runs on the same tick the
 // pool creates the bead, observes zero assigned work, and closes it — the

@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,7 +66,8 @@ type CityRuntime struct {
 	standaloneRigStores map[string]beads.Store
 
 	// Bead-driven reconciler state (Phase 2f).
-	sessionDrains *drainTracker // in-memory drain tracker; nil when bead reconciler disabled
+	sessionDrains  *drainTracker // in-memory drain tracker; nil when bead reconciler disabled
+	demandSnapshot *runtimeDemandSnapshot
 
 	convHandler         *convergence.Handler     // nil until bead store available
 	convStoreAdapter    *convergenceStoreAdapter // typed reference; avoids type assertions in tick/reconcile
@@ -79,6 +82,14 @@ type CityRuntime struct {
 	shutdownOnce   sync.Once
 	logPrefix      string // "gc start" or "gc supervisor"
 	stdout, stderr io.Writer
+}
+
+const runtimeDemandSnapshotMaxAge = 30 * time.Second
+
+type runtimeDemandSnapshot struct {
+	createdAt          time.Time
+	sessionFingerprint string
+	result             DesiredStateResult
 }
 
 // CityRuntimeParams holds the caller-provided parameters for creating a
@@ -617,7 +628,8 @@ func (cr *CityRuntime) tick(
 		cr.sendReloadReply(manualReload.doneCh, reply)
 		cr.activeReload = nil
 	}()
-	if dirty.Swap(false) {
+	configChanged := dirty.Swap(false)
+	if configChanged {
 		dirtyCleared = true
 		source := reloadSourceWatch
 		if cr.activeReload != nil {
@@ -634,7 +646,8 @@ func (cr *CityRuntime) tick(
 	// Post-reconcile sync was intentionally removed: the daemon's next tick
 	// corrects bead state, and the pre-reconcile sync is sufficient for
 	// the reconciler to read/write hashes during reconciliation.
-	result := cr.buildDesiredState(sessionBeads, trace)
+	demand := cr.loadDemandSnapshot(sessionBeads, trace, trigger, configChanged)
+	result := demand.result
 	sessionBeads = cr.loadSessionBeadSnapshot()
 	result = refreshDesiredStateWithSessionBeads(
 		result,
@@ -1101,8 +1114,11 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 	// same scale_check counts that buildDesiredState already computed (no
 	// duplicate shell-outs). Resume tier from cross-referenced assigned
 	// work beads + new tier from scale_check + min fill.
-	poolDesired := PoolDesiredCounts(ComputePoolDesiredStatesTraced(
-		cr.cfg, assignedWorkBeads, sessionBeads.Open(), result.ScaleCheckCounts, trace))
+	poolDesired := result.PoolDesiredCounts
+	if poolDesired == nil {
+		poolDesired = PoolDesiredCounts(ComputePoolDesiredStatesTraced(
+			cr.cfg, assignedWorkBeads, sessionBeads.Open(), result.ScaleCheckCounts, trace))
+	}
 	// Merge named-session assignee demand so on-demand named sessions with
 	// direct work (Assignee match, no gc.routed_to) stay config-eligible.
 	if poolDesired == nil {
@@ -1146,7 +1162,10 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 	// workSet: defense-in-depth wake signal from work_query. When work_query
 	// detects pending work but scale_check hasn't caught up yet, workSet
 	// ensures at least one session wakes without waiting for the next tick.
-	workSet := computeWorkSet(cr.cfg, shellScaleCheck, cityName, cr.cityPath, store, sessionBeads, cr.stderr)
+	workSet := result.WorkSet
+	if workSet == nil {
+		workSet = computeWorkSet(cr.cfg, shellScaleCheck, cityName, cr.cityPath, store, sessionBeads, cr.stderr)
+	}
 	if trace != nil {
 		templateNames := make(map[string]struct{})
 		openCounts := make(map[string]int)
@@ -1537,6 +1556,93 @@ func (cr *CityRuntime) buildDesiredState(sessionBeads *sessionBeadSnapshot, trac
 		return cr.buildFnWithSessionBeads(cr.cfg, cr.sp, store, rigStores, sessionBeads, trace)
 	}
 	return cr.buildFn(cr.cfg, cr.sp, store)
+}
+
+func (cr *CityRuntime) loadDemandSnapshot(
+	sessionBeads *sessionBeadSnapshot,
+	trace *sessionReconcilerTraceCycle,
+	trigger string,
+	configChanged bool,
+) runtimeDemandSnapshot {
+	sessionFingerprint := sessionBeadSnapshotFingerprint(sessionBeads)
+	if cr.shouldRefreshDemandSnapshot(trigger, configChanged, sessionFingerprint) {
+		result := cr.buildDesiredState(sessionBeads, trace)
+		var openSessionBeads []beads.Bead
+		if sessionBeads != nil {
+			openSessionBeads = sessionBeads.Open()
+		}
+		result.PoolDesiredCounts = PoolDesiredCounts(ComputePoolDesiredStatesTraced(
+			cr.cfg, result.AssignedWorkBeads, openSessionBeads, result.ScaleCheckCounts, trace))
+		if result.PoolDesiredCounts == nil {
+			result.PoolDesiredCounts = make(map[string]int)
+		}
+		mergeNamedSessionDemand(result.PoolDesiredCounts, result.NamedSessionDemand, cr.cfg)
+		result.WorkSet = computeWorkSet(cr.cfg, shellScaleCheck, cr.cityName, cr.cityPath, cr.cityBeadStore(), sessionBeads, cr.stderr)
+		cr.demandSnapshot = &runtimeDemandSnapshot{
+			createdAt:          time.Now(),
+			sessionFingerprint: sessionFingerprint,
+			result:             result,
+		}
+	}
+	if cr.demandSnapshot == nil {
+		return runtimeDemandSnapshot{}
+	}
+	return *cr.demandSnapshot
+}
+
+func (cr *CityRuntime) shouldRefreshDemandSnapshot(
+	trigger string,
+	configChanged bool,
+	sessionFingerprint string,
+) bool {
+	if !cr.demandSnapshotsEnabled() {
+		return true
+	}
+	if configChanged || trigger != "patrol" {
+		return true
+	}
+	if cr.demandSnapshot == nil {
+		return true
+	}
+	if cr.demandSnapshot.sessionFingerprint != sessionFingerprint {
+		return true
+	}
+	return time.Since(cr.demandSnapshot.createdAt) >= runtimeDemandSnapshotMaxAge
+}
+
+func (cr *CityRuntime) demandSnapshotsEnabled() bool {
+	return cr.cs != nil && cr.cs.EventProvider() != nil
+}
+
+func sessionBeadSnapshotFingerprint(snapshot *sessionBeadSnapshot) string {
+	if snapshot == nil {
+		return ""
+	}
+	open := snapshot.Open()
+	sort.Slice(open, func(i, j int) bool {
+		return open[i].ID < open[j].ID
+	})
+	h := fnv.New64a()
+	for _, bead := range open {
+		_, _ = io.WriteString(h, bead.ID)
+		_, _ = io.WriteString(h, "\x00")
+		_, _ = io.WriteString(h, bead.Status)
+		_, _ = io.WriteString(h, "\x00")
+		_, _ = io.WriteString(h, bead.Assignee)
+		_, _ = io.WriteString(h, "\x00")
+		keys := make([]string, 0, len(bead.Metadata))
+		for key := range bead.Metadata {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			_, _ = io.WriteString(h, key)
+			_, _ = io.WriteString(h, "\x00")
+			_, _ = io.WriteString(h, bead.Metadata[key])
+			_, _ = io.WriteString(h, "\x00")
+		}
+	}
+	return fmt.Sprintf("%x", h.Sum64())
 }
 
 func buildStandaloneRigStores(cfg *config.City, cityPath string, stderr io.Writer) map[string]beads.Store {
