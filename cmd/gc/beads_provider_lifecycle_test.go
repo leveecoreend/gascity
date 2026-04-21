@@ -5069,6 +5069,13 @@ EOF
     state_file="$pack_dir/dolt-provider-state.json"
     pid_file="$pack_dir/dolt.pid"
     printf 'gc dolt-state start-managed\n' >> "$invocation_file"
+    if [ -n "${GC_FAKE_FD9_STATUS_FILE:-}" ]; then
+      if (: >&9) 2>/dev/null; then
+        printf 'open\n' > "$GC_FAKE_FD9_STATUS_FILE"
+      else
+        printf 'closed\n' > "$GC_FAKE_FD9_STATUS_FILE"
+      fi
+    fi
     mkdir -p "$pack_dir" "$data_dir"
     cat > "$config_file" <<EOF
 # rendered by fake gc
@@ -6124,6 +6131,51 @@ func TestGcBeadsBdStartUsesGCBinManagedConfigWriter(t *testing.T) {
 	}
 	if !strings.Contains(string(configData), fmt.Sprintf("port: %d", state.Port)) {
 		t.Fatalf("dolt-config.yaml missing helper-selected port %d:\n%s", state.Port, string(configData))
+	}
+}
+
+func TestGcBeadsBdStartManagedHelperDoesNotInheritStartLockFD(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityPath, ".gc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MaterializeBuiltinPacks(cityPath); err != nil {
+		t.Fatalf("MaterializeBuiltinPacks: %v", err)
+	}
+	script := gcBeadsBdScriptPath(cityPath)
+
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	invocationFile := filepath.Join(t.TempDir(), "gc-invocation")
+	fd9StatusFile := filepath.Join(t.TempDir(), "fd9-status")
+	fakeGC := writeFakeManagedConfigWriterGC(t, binDir, invocationFile)
+	writeFakeManagedConfigWriterDolt(t, binDir)
+
+	env := sanitizedBaseEnv(
+		"GC_CITY_PATH="+cityPath,
+		"GC_BIN="+fakeGC,
+		"GC_FAKE_FD9_STATUS_FILE="+fd9StatusFile,
+		"PATH="+strings.Join([]string{binDir, os.Getenv("PATH")}, string(os.PathListSeparator)),
+	)
+	cmd := exec.Command(script, "start")
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("gc-beads-bd start failed: %v\n%s", err, out)
+	}
+	t.Cleanup(func() {
+		stop := exec.Command(script, "stop")
+		stop.Env = env
+		_ = stop.Run()
+	})
+
+	status := strings.TrimSpace(string(mustReadFile(t, fd9StatusFile)))
+	if status != "closed" {
+		t.Fatalf("dolt-state start-managed inherited fd 9 = %q, want closed", status)
 	}
 }
 
