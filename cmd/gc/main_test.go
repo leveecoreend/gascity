@@ -1477,6 +1477,9 @@ func TestDoInitSuccess(t *testing.T) {
 	if !strings.HasSuffix(explicit[0].PromptTemplate, filepath.Join("agents", "mayor", "prompt.template.md")) {
 		t.Errorf("explicitAgents[0].PromptTemplate = %q, want suffix %q", explicit[0].PromptTemplate, filepath.Join("agents", "mayor", "prompt.template.md"))
 	}
+	if _, ok := f.Files[filepath.Join("/bright-lights", "formulas", "mol-scoped-work.toml")]; ok {
+		t.Fatal("doInit should not seed builtin formulas into city-local formulas/")
+	}
 }
 
 func TestDoInitWritesExpectedTOML(t *testing.T) {

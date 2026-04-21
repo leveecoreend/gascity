@@ -1080,16 +1080,6 @@ func reconcileCities(
 			})
 		}
 
-		// Quick-parse city.toml for pre-load tasks (same as doStart).
-		quickCfg, qErr := config.Load(fsys.OSFS{}, tomlPath)
-
-		// Materialize gastown packs before full config load if needed.
-		if qErr == nil && usesGastownPack(quickCfg) {
-			if err := MaterializeGastownPacks(path); err != nil {
-				fmt.Fprintf(stderr, "gc supervisor: city '%s': materializing gastown packs: %v\n", name, err) //nolint:errcheck
-			}
-		}
-
 		if err := ensureLegacyNamedPacksCached(path); err != nil {
 			recordInitFailure(name, fmt.Sprintf("fetching packs: %v", err))
 			continue
@@ -1603,7 +1593,7 @@ func prepareCityForSupervisor(cityPath, cityName string, cfg *config.City, stder
 	}
 
 	// Built-in prompts and formulas now arrive via the core bootstrap pack.
-	ensureInitArtifacts(cityPath, cfg, stderr, "gc supervisor")
+	ensureInitArtifacts(cityPath, stderr, "gc supervisor")
 
 	// Resolve rig paths and start bead store lifecycle.
 	resolveRigPaths(cityPath, cfg.Rigs)

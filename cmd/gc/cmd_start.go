@@ -369,18 +369,6 @@ func doStartStandalone(args []string, controllerMode bool, stdout, stderr io.Wri
 		fmt.Fprintf(stderr, "gc start: runtime scaffold: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
 	}
-	// Quick-parse city.toml (without includes) for pre-load tasks.
-	quickCfg, qErr := config.Load(fsys.OSFS{}, filepath.Join(cityPath, "city.toml"))
-
-	// Materialize gastown packs before full config load if the city
-	// references them. Covers the case where gc init wrote city.toml
-	// but failed before MaterializeGastownPacks ran.
-	if qErr == nil && usesGastownPack(quickCfg) {
-		if err := MaterializeGastownPacks(cityPath); err != nil {
-			fmt.Fprintf(stderr, "gc start: materializing gastown packs: %v\n", err) //nolint:errcheck // best-effort stderr
-		}
-	}
-
 	if err := ensureLegacyNamedPacksCached(cityPath); err != nil {
 		fmt.Fprintf(stderr, "gc start: fetching packs: %v\n", err) //nolint:errcheck // best-effort stderr
 		return 1
@@ -434,8 +422,7 @@ func doStartStandalone(args []string, controllerMode bool, stdout, stderr io.Wri
 		fmt.Fprintf(stderr, "gc start: materializing builtin packs: %v\n", err) //nolint:errcheck // best-effort stderr
 		// Non-fatal: only needed if provider = "bd".
 	}
-	// Built-in prompts and formulas now arrive via the core bootstrap pack.
-	ensureInitArtifacts(cityPath, cfg, stderr, "gc start")
+	ensureInitArtifacts(cityPath, stderr, "gc start")
 
 	// Resolve rig paths and run the full bead store lifecycle:
 	// probe → init+hooks(city) → init+hooks(rigs) → routes.
