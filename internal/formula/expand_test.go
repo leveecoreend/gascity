@@ -1148,6 +1148,115 @@ func TestApplyExpansionsRejectsImplicitGraphContract(t *testing.T) {
 	}
 }
 
+func TestApplyInlineExpansionsResolvesExtendedExpansionTemplate(t *testing.T) {
+	enableV2ForTest(t)
+
+	tmpDir := t.TempDir()
+
+	parent := `{
+		"formula": "inline-exp-parent",
+		"type": "expansion",
+		"version": 2,
+		"contract": "graph.v2"
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "inline-exp-parent.formula.json"), []byte(parent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	child := `{
+		"formula": "inline-exp-child",
+		"type": "expansion",
+		"version": 2,
+		"extends": ["inline-exp-parent"],
+		"template": [
+			{
+				"id": "{target}.attempt",
+				"title": "Attempt",
+				"retry": {"max_attempts": 2}
+			}
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "inline-exp-child.formula.json"), []byte(child), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	parser := NewParser(tmpDir)
+	steps := []*Step{
+		{ID: "work", Title: "Work", Expand: "inline-exp-child"},
+	}
+
+	result, err := ApplyInlineExpansions(steps, parser)
+	if err != nil {
+		t.Fatalf("ApplyInlineExpansions failed: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if got := result[0].ID; got != "work.attempt" {
+		t.Fatalf("result[0].ID = %q, want work.attempt", got)
+	}
+	if result[0].Retry == nil {
+		t.Fatal("result[0].Retry = nil, want retry spec preserved")
+	}
+}
+
+func TestApplyExpansionsResolvesExtendedExpansionTemplate(t *testing.T) {
+	enableV2ForTest(t)
+
+	tmpDir := t.TempDir()
+
+	parent := `{
+		"formula": "compose-exp-parent",
+		"type": "expansion",
+		"version": 2,
+		"contract": "graph.v2"
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "compose-exp-parent.formula.json"), []byte(parent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	child := `{
+		"formula": "compose-exp-child",
+		"type": "expansion",
+		"version": 2,
+		"extends": ["compose-exp-parent"],
+		"template": [
+			{
+				"id": "{target}.attempt",
+				"title": "Attempt",
+				"retry": {"max_attempts": 2}
+			}
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(tmpDir, "compose-exp-child.formula.json"), []byte(child), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	parser := NewParser(tmpDir)
+	steps := []*Step{
+		{ID: "work", Title: "Work"},
+	}
+	compose := &ComposeRules{
+		Expand: []*ExpandRule{
+			{Target: "work", With: "compose-exp-child"},
+		},
+	}
+
+	result, err := ApplyExpansions(steps, compose, parser)
+	if err != nil {
+		t.Fatalf("ApplyExpansions failed: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	if got := result[0].ID; got != "work.attempt" {
+		t.Fatalf("result[0].ID = %q, want work.attempt", got)
+	}
+	if result[0].Retry == nil {
+		t.Fatal("result[0].Retry = nil, want retry spec preserved")
+	}
+}
+
 func TestFindDuplicateStepIDs(t *testing.T) {
 	tests := []struct {
 		name     string

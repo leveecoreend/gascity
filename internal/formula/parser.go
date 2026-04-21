@@ -197,6 +197,7 @@ func (p *Parser) Resolve(formula *Formula) (*Formula, error) {
 		Source:      formula.Source,
 		Vars:        make(map[string]*VarDef),
 		Steps:       nil,
+		Template:    nil,
 		Compose:     nil,
 	}
 
@@ -227,6 +228,9 @@ func (p *Parser) Resolve(formula *Formula) (*Formula, error) {
 		// Merge parent steps (append, child steps come after)
 		merged.Steps = append(merged.Steps, parent.Steps...)
 
+		// Expansion formulas inherit template steps through extends.
+		merged.Template = mergeSteps(merged.Template, parent.Template)
+
 		// Merge parent compose rules
 		merged.Compose = mergeComposeRules(merged.Compose, parent.Compose)
 	}
@@ -239,6 +243,7 @@ func (p *Parser) Resolve(formula *Formula) (*Formula, error) {
 	// Merge child steps: override parent steps by ID (preserving position),
 	// append new child steps at the end.
 	merged.Steps = mergeSteps(merged.Steps, formula.Steps)
+	merged.Template = mergeSteps(merged.Template, formula.Template)
 
 	merged.Compose = mergeComposeRules(merged.Compose, formula.Compose)
 
