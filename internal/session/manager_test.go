@@ -1265,6 +1265,13 @@ func TestCreateWithSessionID(t *testing.T) {
 	if info.ResumeStyle != "flag" {
 		t.Errorf("ResumeStyle = %q, want %q", info.ResumeStyle, "flag")
 	}
+	b, err := store.Get(info.ID)
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if got := b.Metadata["session_id_flag"]; got != "--session-id" {
+		t.Fatalf("session_id_flag = %q, want --session-id", got)
+	}
 
 	// The start command should include --session-id <uuid>.
 	started := sp.LastStartConfig(info.SessionName)

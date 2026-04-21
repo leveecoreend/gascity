@@ -49,6 +49,9 @@ func (m *Manager) clearStaleResumeMetadata(id string, b *beads.Bead) error {
 	if err := m.store.SetMetadata(id, "started_config_hash", ""); err != nil {
 		return fmt.Errorf("clearing stale resume metadata started_config_hash: %w", err)
 	}
+	if err := m.store.SetMetadata(id, "started_provider_family_hash", ""); err != nil {
+		return fmt.Errorf("clearing stale resume metadata started_provider_family_hash: %w", err)
+	}
 	if err := m.store.SetMetadata(id, "continuation_reset_pending", "true"); err != nil {
 		return fmt.Errorf("clearing stale resume metadata continuation_reset_pending: %w", err)
 	}
@@ -57,6 +60,7 @@ func (m *Manager) clearStaleResumeMetadata(id string, b *beads.Bead) error {
 	}
 	b.Metadata["session_key"] = ""
 	b.Metadata["started_config_hash"] = ""
+	b.Metadata["started_provider_family_hash"] = ""
 	b.Metadata["continuation_reset_pending"] = "true"
 	return nil
 }

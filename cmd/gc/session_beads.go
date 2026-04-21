@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -23,6 +24,22 @@ const sessionBeadLabel = "gc:session"
 
 // sessionBeadType is the bead type for session beads.
 const sessionBeadType = "session"
+
+var (
+	resolvedProviderFamilyMetadataKeys = []string{
+		"provider",
+		"provider_kind",
+		"builtin_ancestor",
+	}
+	resolvedProviderResumeMetadataKeys = []string{
+		"resume_flag",
+		"resume_style",
+		"resume_command",
+		"session_id_flag",
+	}
+)
+
+const startedProviderFamilyHashKey = "started_provider_family_hash"
 
 // loadSessionBeads returns all open session beads from the store.
 func loadSessionBeads(store beads.Store) ([]beads.Bead, error) {
@@ -86,7 +103,25 @@ func stampResolvedProviderSessionMetadata(meta map[string]string, resolved *conf
 	}
 }
 
-func queueResolvedProviderSessionMetadata(existing map[string]string, queue func(string, string), resolved *config.ResolvedProvider) {
+func resolvedProviderSessionMetadataHash(resolved *config.ResolvedProvider, keys []string) string {
+	desired := resolvedProviderSessionMetadata(resolved)
+	if desired == nil {
+		return ""
+	}
+	h := sha256.New()
+	selected := make(map[string]string, len(keys))
+	for _, key := range keys {
+		selected[key] = desired[key]
+	}
+	hashSortedStringMap(h, selected)
+	sum := fmt.Sprintf("%x", h.Sum(nil))
+	if len(sum) > 16 {
+		return sum[:16]
+	}
+	return sum
+}
+
+func queueResolvedProviderSessionMetadataKeys(existing map[string]string, queue func(string, string), resolved *config.ResolvedProvider, keys []string) {
 	if queue == nil {
 		return
 	}
@@ -94,15 +129,16 @@ func queueResolvedProviderSessionMetadata(existing map[string]string, queue func
 	if desired == nil {
 		return
 	}
-	for key, value := range desired {
+	for _, key := range keys {
+		value := desired[key]
 		if strings.TrimSpace(existing[key]) != value {
 			queue(key, value)
 		}
 	}
 }
 
-func hasStoredResolvedProviderSessionMetadata(meta map[string]string) bool {
-	for key := range resolvedProviderSessionMetadata(&config.ResolvedProvider{}) {
+func hasStoredResolvedProviderSessionMetadataKeys(meta map[string]string, keys []string) bool {
+	for _, key := range keys {
 		if strings.TrimSpace(meta[key]) != "" {
 			return true
 		}
@@ -110,18 +146,23 @@ func hasStoredResolvedProviderSessionMetadata(meta map[string]string) bool {
 	return false
 }
 
-func shouldSyncResolvedProviderSessionMetadata(b beads.Bead, tp TemplateParams, alive bool) bool {
-	if !alive || strings.TrimSpace(b.Metadata["state"]) != "active" {
+func shouldSyncResolvedProviderFamilyMetadata(b beads.Bead, tp TemplateParams, alive bool) bool {
+	state := strings.TrimSpace(b.Metadata["state"])
+	if !alive || (state != "active" && state != "awake") {
 		return true
 	}
-	if !hasStoredResolvedProviderSessionMetadata(b.Metadata) {
+	if !hasStoredResolvedProviderSessionMetadataKeys(b.Metadata, resolvedProviderFamilyMetadataKeys) {
 		return true
 	}
-	startedHash := strings.TrimSpace(b.Metadata["started_config_hash"])
+	startedHash := strings.TrimSpace(b.Metadata[startedProviderFamilyHashKey])
 	if startedHash == "" {
 		return false
 	}
-	return startedHash == runtime.CoreFingerprint(templateParamsToConfig(tp))
+	desiredHash := resolvedProviderSessionMetadataHash(tp.ResolvedProvider, resolvedProviderFamilyMetadataKeys)
+	if desiredHash == "" {
+		return false
+	}
+	return startedHash == desiredHash
 }
 
 func canRebindConfiguredNamedSession(b beads.Bead, identity, sessionName, backingTemplate string) bool {
@@ -736,6 +777,9 @@ func syncSessionBeadsWithSnapshot(
 			}
 			if tp.ResolvedProvider != nil {
 				stampResolvedProviderSessionMetadata(meta, tp.ResolvedProvider)
+				if state == "active" {
+					meta[startedProviderFamilyHashKey] = resolvedProviderSessionMetadataHash(tp.ResolvedProvider, resolvedProviderFamilyMetadataKeys)
+				}
 			}
 			createBead := func() (beads.Bead, error) {
 				return store.Create(beads.Bead{
@@ -921,8 +965,9 @@ func syncSessionBeadsWithSnapshot(
 		if tp.Command != "" && b.Metadata["command"] != tp.Command {
 			queueMeta("command", tp.Command)
 		}
-		if shouldSyncResolvedProviderSessionMetadata(b, tp, alive) {
-			queueResolvedProviderSessionMetadata(b.Metadata, queueMeta, tp.ResolvedProvider)
+		queueResolvedProviderSessionMetadataKeys(b.Metadata, queueMeta, tp.ResolvedProvider, resolvedProviderResumeMetadataKeys)
+		if shouldSyncResolvedProviderFamilyMetadata(b, tp, alive) {
+			queueResolvedProviderSessionMetadataKeys(b.Metadata, queueMeta, tp.ResolvedProvider, resolvedProviderFamilyMetadataKeys)
 		}
 
 		// Update existing bead metadata.

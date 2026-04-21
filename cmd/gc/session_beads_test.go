@@ -1871,7 +1871,7 @@ func TestSyncSessionBeads_RefreshesStoredConfigDerivedMetadataOnConfigChange(t *
 		Metadata: map[string]string{
 			"session_name":       "worker",
 			"template":           "worker",
-			"state":              "awake",
+			"state":              "asleep",
 			"wake_mode":          "resume",
 			"command":            "claude --old",
 			"provider":           "claude-wrapper",
@@ -1971,7 +1971,7 @@ func TestSyncSessionBeads_ClearsConfigDerivedMetadataForNamelessResolvedProvider
 		Metadata: map[string]string{
 			"session_name":       "worker",
 			"template":           "worker",
-			"state":              "awake",
+			"state":              "asleep",
 			"wake_mode":          "resume",
 			"command":            "gemini --model pro",
 			"provider":           "gemini-wrapper",
@@ -2064,7 +2064,7 @@ func TestSyncSessionBeads_PreservesConfigDerivedMetadataForNilResolvedProvider(t
 		Metadata: map[string]string{
 			"session_name":       "worker",
 			"template":           "worker",
-			"state":              "awake",
+			"state":              "asleep",
 			"wake_mode":          "resume",
 			"command":            "gemini --model pro",
 			"provider":           "gemini-wrapper",
@@ -2142,14 +2142,14 @@ func TestSyncSessionBeads_PreservesConfigDerivedMetadataForNilResolvedProvider(t
 	}
 }
 
-func TestSyncSessionBeads_PreservesLiveProviderMetadataUntilRestartCommitsCurrentHash(t *testing.T) {
+func TestSyncSessionBeads_PreservesLiveProviderFamilyMetadataUntilRestartCommitsCurrentHash(t *testing.T) {
 	store := newCountingMetadataStore()
 	clk := &clock.Fake{Time: time.Date(2026, 4, 22, 12, 7, 0, 0, time.UTC)}
 	sp := runtime.NewFake()
 
 	oldTP := TemplateParams{
 		TemplateName: "worker",
-		Command:      "claude --old",
+		Command:      "/usr/bin/custom --fast",
 		WakeMode:     "resume",
 		ResolvedProvider: &config.ResolvedProvider{
 			Name:            "claude-wrapper",
@@ -2166,8 +2166,8 @@ func TestSyncSessionBeads_PreservesLiveProviderMetadataUntilRestartCommitsCurren
 		WakeMode:         "resume",
 		ResolvedProvider: &config.ResolvedProvider{},
 	}
-	oldStartedHash := runtime.CoreFingerprint(templateParamsToConfig(oldTP))
-	newStartedHash := runtime.CoreFingerprint(templateParamsToConfig(newTP))
+	oldStartedHash := resolvedProviderSessionMetadataHash(oldTP.ResolvedProvider, resolvedProviderFamilyMetadataKeys)
+	newStartedHash := resolvedProviderSessionMetadataHash(newTP.ResolvedProvider, resolvedProviderFamilyMetadataKeys)
 
 	if err := sp.Start(context.Background(), "worker", runtime.Config{Command: oldTP.Command}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -2178,22 +2178,22 @@ func TestSyncSessionBeads_PreservesLiveProviderMetadataUntilRestartCommitsCurren
 		Type:   sessionBeadType,
 		Labels: []string{sessionBeadLabel},
 		Metadata: map[string]string{
-			"session_name":        "worker",
-			"template":            "worker",
-			"state":               "active",
-			"wake_mode":           "resume",
-			"command":             oldTP.Command,
-			"provider":            "claude-wrapper",
-			"provider_kind":       "claude",
-			"builtin_ancestor":    "claude",
-			"resume_flag":         "--resume",
-			"resume_style":        "flag",
-			"resume_command":      "claude --resume {{.SessionKey}}",
-			"session_id_flag":     "--session-id",
-			"session_key":         "session-123",
-			"generation":          "1",
-			"continuation_epoch":  "7",
-			"started_config_hash": oldStartedHash,
+			"session_name":               "worker",
+			"template":                   "worker",
+			"state":                      "awake",
+			"wake_mode":                  "resume",
+			"command":                    oldTP.Command,
+			"provider":                   "claude-wrapper",
+			"provider_kind":              "claude",
+			"builtin_ancestor":           "claude",
+			"resume_flag":                "--resume",
+			"resume_style":               "flag",
+			"resume_command":             "claude --resume {{.SessionKey}}",
+			"session_id_flag":            "--session-id",
+			"session_key":                "session-123",
+			"generation":                 "1",
+			"continuation_epoch":         "7",
+			startedProviderFamilyHashKey: oldStartedHash,
 		},
 	})
 	if err != nil {
@@ -2224,21 +2224,21 @@ func TestSyncSessionBeads_PreservesLiveProviderMetadataUntilRestartCommitsCurren
 	if got["builtin_ancestor"] != "claude" {
 		t.Fatalf("builtin_ancestor = %q, want claude before restart", got["builtin_ancestor"])
 	}
-	if got["resume_flag"] != "--resume" {
-		t.Fatalf("resume_flag = %q, want --resume before restart", got["resume_flag"])
+	if got["resume_flag"] != "" {
+		t.Fatalf("resume_flag = %q, want empty before restart", got["resume_flag"])
 	}
-	if got["resume_style"] != "flag" {
-		t.Fatalf("resume_style = %q, want flag before restart", got["resume_style"])
+	if got["resume_style"] != "" {
+		t.Fatalf("resume_style = %q, want empty before restart", got["resume_style"])
 	}
-	if got["resume_command"] != "claude --resume {{.SessionKey}}" {
-		t.Fatalf("resume_command = %q, want claude --resume {{.SessionKey}} before restart", got["resume_command"])
+	if got["resume_command"] != "" {
+		t.Fatalf("resume_command = %q, want empty before restart", got["resume_command"])
 	}
-	if got["session_id_flag"] != "--session-id" {
-		t.Fatalf("session_id_flag = %q, want --session-id before restart", got["session_id_flag"])
+	if got["session_id_flag"] != "" {
+		t.Fatalf("session_id_flag = %q, want empty before restart", got["session_id_flag"])
 	}
 
-	if err := store.SetMetadata(all[0].ID, "started_config_hash", newStartedHash); err != nil {
-		t.Fatalf("SetMetadata(started_config_hash): %v", err)
+	if err := store.SetMetadata(all[0].ID, startedProviderFamilyHashKey, newStartedHash); err != nil {
+		t.Fatalf("SetMetadata(started_provider_family_hash): %v", err)
 	}
 	clk.Advance(time.Minute)
 	syncSessionBeads("", store, ds, sp, allConfiguredDS(ds), nil, clk, &stderr, false)
