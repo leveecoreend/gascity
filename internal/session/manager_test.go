@@ -1272,6 +1272,9 @@ func TestCreateWithSessionID(t *testing.T) {
 	if info.ResumeStyle != "flag" {
 		t.Errorf("ResumeStyle = %q, want %q", info.ResumeStyle, "flag")
 	}
+	if info.SessionIDFlag != "--session-id" {
+		t.Errorf("SessionIDFlag = %q, want %q", info.SessionIDFlag, "--session-id")
+	}
 	b, err := store.Get(info.ID)
 	if err != nil {
 		t.Fatalf("store.Get: %v", err)

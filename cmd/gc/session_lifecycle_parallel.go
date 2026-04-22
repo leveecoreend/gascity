@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"runtime/debug"
 	"strconv"
 	"strings"
@@ -239,6 +240,24 @@ func pendingStartFingerprintFromMetadata(meta map[string]string) (pendingStartFi
 		coreBreakdown:  strings.TrimSpace(meta[pendingCoreHashBreakdownMetadataKey]),
 		providerFamily: strings.TrimSpace(meta[pendingProviderFamilyMetadataKey]),
 	}, true
+}
+
+func pendingCreateRecoveryMatchesDesired(meta map[string]string, tp TemplateParams) bool {
+	if strings.TrimSpace(meta["command"]) != strings.TrimSpace(tp.Command) {
+		return false
+	}
+	storedProviderMeta, storedProviderKnown := providerSessionFingerprintMetadata(nil, meta)
+	desiredProviderMeta, desiredProviderKnown := providerSessionFingerprintMetadata(tp.ResolvedProvider, nil)
+	if !storedProviderKnown {
+		return true
+	}
+	if !desiredProviderKnown {
+		return false
+	}
+	if maps.Equal(storedProviderMeta, desiredProviderMeta) {
+		return true
+	}
+	return legacyProviderSessionMetadataCompatible(storedProviderMeta, desiredProviderMeta)
 }
 
 func liveSessionProviderFamily(sp runtime.Provider, sessionName string) string {
@@ -903,6 +922,38 @@ func recoverRunningPendingCreate(
 	}
 	fingerprint, staged := pendingStartFingerprintFromMetadata(session.Metadata)
 	if !staged {
+		desiredProviderName := ""
+		if tp.ResolvedProvider != nil {
+			desiredProviderName = strings.TrimSpace(tp.ResolvedProvider.Name)
+		}
+		if !pendingCreateRecoveryMatchesDesired(session.Metadata, tp) {
+			batch := map[string]string{
+				"restart_requested": "true",
+			}
+			clearPendingStartFingerprintMetadata(batch)
+			if err := store.SetMetadataBatch(session.ID, batch); err != nil {
+				if trace != nil {
+					trace.recordDecision("reconciler.session.pending_create", tp.TemplateName, tp.SessionName, "pending_create_unstaged_drift_write_failed", "failed", traceRecordPayload{
+						"error":            err.Error(),
+						"stored_command":   strings.TrimSpace(session.Metadata["command"]),
+						"desired_command":  strings.TrimSpace(tp.Command),
+						"stored_provider":  strings.TrimSpace(session.Metadata["provider"]),
+						"desired_provider": desiredProviderName,
+					}, nil, "")
+				}
+				return false
+			}
+			applySessionMetadataBatch(session, batch)
+			if trace != nil {
+				trace.recordDecision("reconciler.session.pending_create", tp.TemplateName, tp.SessionName, "pending_create_unstaged_drift", "restart_requested", traceRecordPayload{
+					"stored_command":   strings.TrimSpace(session.Metadata["command"]),
+					"desired_command":  strings.TrimSpace(tp.Command),
+					"stored_provider":  strings.TrimSpace(session.Metadata["provider"]),
+					"desired_provider": desiredProviderName,
+				}, nil, "")
+			}
+			return true
+		}
 		prepared, err := buildPreparedStart(startCandidate{session: session, tp: tp}, cfg, store)
 		if err != nil {
 			if trace != nil {

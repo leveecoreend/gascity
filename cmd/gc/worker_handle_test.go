@@ -560,6 +560,7 @@ func TestWorkerSessionRuntimeResolverWithConfigFallsBackToPersistedRuntimeOnInco
 		ResumeFlag:    "--resume-persisted",
 		ResumeStyle:   "subcommand",
 		ResumeCommand: "persisted resume {{.SessionKey}}",
+		SessionIDFlag: "--session-id-persisted",
 	}
 
 	runtimeCfg, err := resolver(info, "")
@@ -586,6 +587,9 @@ func TestWorkerSessionRuntimeResolverWithConfigFallsBackToPersistedRuntimeOnInco
 	}
 	if got, want := runtimeCfg.Resume.ResumeCommand, info.ResumeCommand; got != want {
 		t.Fatalf("Resume.ResumeCommand = %q, want %q", got, want)
+	}
+	if got, want := runtimeCfg.Resume.SessionIDFlag, info.SessionIDFlag; got != want {
+		t.Fatalf("Resume.SessionIDFlag = %q, want %q", got, want)
 	}
 	if got, want := runtimeCfg.Hints.WorkDir, info.WorkDir; got != want {
 		t.Fatalf("Hints.WorkDir = %q, want %q", got, want)

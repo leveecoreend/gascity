@@ -72,6 +72,7 @@ type Info struct {
 	ResumeFlag    string // stored provider resume flag (e.g., "--resume")
 	ResumeStyle   string // "flag" or "subcommand"
 	ResumeCommand string // explicit resume command template ({{.SessionKey}})
+	SessionIDFlag string // stored provider create-with-ID flag (e.g., "--session-id")
 	CreatedAt     time.Time
 	LastActive    time.Time
 	Attached      bool
@@ -1169,6 +1170,7 @@ func (m *Manager) infoFromBead(b beads.Bead) Info {
 		ResumeFlag:    b.Metadata["resume_flag"],
 		ResumeStyle:   b.Metadata["resume_style"],
 		ResumeCommand: b.Metadata["resume_command"],
+		SessionIDFlag: b.Metadata["session_id_flag"],
 		CreatedAt:     b.CreatedAt,
 	}
 

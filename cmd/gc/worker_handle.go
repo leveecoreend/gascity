@@ -352,7 +352,7 @@ func resolvedWorkerRuntimeWithConfig(cityPath string, cfg *config.City, info ses
 			ResumeFlag:    firstNonEmptyGCString(resolved.ResumeFlag, info.ResumeFlag),
 			ResumeStyle:   firstNonEmptyGCString(resolved.ResumeStyle, info.ResumeStyle),
 			ResumeCommand: firstNonEmptyGCString(resolved.ResumeCommand, info.ResumeCommand),
-			SessionIDFlag: resolved.SessionIDFlag,
+			SessionIDFlag: firstNonEmptyGCString(resolved.SessionIDFlag, info.SessionIDFlag),
 		},
 	}
 }
