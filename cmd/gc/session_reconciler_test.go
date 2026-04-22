@@ -1864,6 +1864,38 @@ func TestStartedConfigMatchesCurrentFingerprint_NilProviderMatchesExplicitEmptyP
 	}
 }
 
+func TestStartedConfigMatchesCurrentFingerprint_LegacyProviderMetadataWithoutSessionIDFlagMatches(t *testing.T) {
+	currentTP := TemplateParams{
+		Command:      "/usr/bin/custom --fast",
+		TemplateName: "worker",
+		ResolvedProvider: &config.ResolvedProvider{
+			Name:            "claude-wrapper",
+			BuiltinAncestor: "claude",
+			ResumeFlag:      "--resume",
+			ResumeStyle:     "flag",
+			ResumeCommand:   "claude --resume {{.SessionKey}}",
+			SessionIDFlag:   "--session-id",
+		},
+	}
+	meta := map[string]string{
+		"started_config_hash": runtime.CoreFingerprint(templateParamsToConfig(currentTP)),
+		"provider":            "claude-wrapper",
+		"provider_kind":       "claude",
+		"builtin_ancestor":    "claude",
+		"resume_flag":         "--resume",
+		"resume_style":        "flag",
+		"resume_command":      "claude --resume {{.SessionKey}}",
+	}
+
+	match := startedConfigMatchesCurrentFingerprint(meta, currentTP)
+	if !match.matches {
+		t.Fatalf("expected legacy provider metadata without session_id_flag to match, got %+v", match)
+	}
+	if match.providerMetadataSync {
+		t.Fatalf("providerMetadataSync = true, want false until session_id_flag is committed by a fresh start")
+	}
+}
+
 // Regression test for #127: a freshly created session can be drained for
 // config-drift shortly after wake because the reconciler's drift check runs
 // before started_config_hash is written. The fix skips drift detection until

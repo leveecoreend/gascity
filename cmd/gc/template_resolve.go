@@ -663,6 +663,24 @@ func coreFingerprintBreakdown(cfg runtime.Config, resolved *config.ResolvedProvi
 	return runtime.CoreFingerprintBreakdown(withProviderSessionFingerprint(cfg, resolved, fallback))
 }
 
+func legacyProviderSessionMetadataCompatible(stored, desired map[string]string) bool {
+	if len(stored) == 0 || len(desired) == 0 {
+		return false
+	}
+	if strings.TrimSpace(stored["session_id_flag"]) != "" || strings.TrimSpace(desired["session_id_flag"]) == "" {
+		return false
+	}
+	for _, key := range resolvedProviderConfigMetadataKeys {
+		if key == "session_id_flag" {
+			continue
+		}
+		if stored[key] != desired[key] {
+			return false
+		}
+	}
+	return true
+}
+
 func startedConfigMatchesFingerprint(
 	meta map[string]string,
 	cfg runtime.Config,
@@ -699,7 +717,13 @@ func startedConfigMatchesFingerprint(
 		}
 	}
 	if !maps.Equal(storedProviderMeta, desiredProviderMeta) {
-		return startedConfigFingerprintMatch{currentHash: currentHash}
+		if !legacyProviderSessionMetadataCompatible(storedProviderMeta, desiredProviderMeta) {
+			return startedConfigFingerprintMatch{currentHash: currentHash}
+		}
+		return startedConfigFingerprintMatch{
+			currentHash: currentHash,
+			matches:     true,
+		}
 	}
 	return startedConfigFingerprintMatch{
 		currentHash:          currentHash,

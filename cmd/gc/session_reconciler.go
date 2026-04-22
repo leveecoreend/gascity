@@ -64,6 +64,7 @@ func freshRestartSessionKey(tp TemplateParams, meta map[string]string) (string, 
 			strings.TrimSpace(tp.ResolvedProvider.ResumeStyle) != "" {
 			return "", true
 		}
+		return "", true
 	}
 	if strings.TrimSpace(meta["session_id_flag"]) != "" {
 		newKey, err := sessionpkg.GenerateSessionKey()

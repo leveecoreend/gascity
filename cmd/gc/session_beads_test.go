@@ -2232,6 +2232,64 @@ func TestSyncSessionBeads_PinsCommandForNilResolvedProviderWhenStoredResumeUsesC
 	}
 }
 
+func TestSyncSessionBeads_PinsCommandBeforeSessionKeyArrivesWhenStoredResumeUsesCommand(t *testing.T) {
+	store := newCountingMetadataStore()
+	clk := &clock.Fake{Time: time.Date(2026, 4, 22, 12, 6, 45, 0, time.UTC)}
+	sp := runtime.NewFake()
+	if err := sp.Start(context.Background(), "worker", runtime.Config{Command: "gemini --model pro"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	_, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name":       "worker",
+			"template":           "worker",
+			"state":              "asleep",
+			"wake_mode":          "resume",
+			"command":            "gemini --model pro",
+			"provider":           "gemini-wrapper",
+			"provider_kind":      "gemini",
+			"builtin_ancestor":   "gemini",
+			"resume_flag":        "resume",
+			"resume_style":       "subcommand",
+			"resume_command":     "",
+			"session_id_flag":    "--session-id",
+			"generation":         "1",
+			"continuation_epoch": "7",
+		},
+	})
+	if err != nil {
+		t.Fatalf("creating seed bead: %v", err)
+	}
+
+	ds := map[string]TemplateParams{
+		"worker": {
+			TemplateName:     "worker",
+			Command:          "/usr/bin/custom --fallback",
+			WakeMode:         "resume",
+			ResolvedProvider: nil,
+		},
+	}
+
+	var stderr bytes.Buffer
+	syncSessionBeads("", store, ds, sp, allConfiguredDS(ds), nil, clk, &stderr, false)
+
+	if stderr.Len() > 0 {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+	all := allSessionBeads(t, store)
+	if len(all) != 1 {
+		t.Fatalf("expected 1 bead, got %d", len(all))
+	}
+	got := all[0].Metadata
+	if got["command"] != "gemini --model pro" {
+		t.Fatalf("command = %q, want pinned stored command before session_key arrives", got["command"])
+	}
+}
+
 func TestSyncSessionBeads_PreservesLiveProviderMetadataUntilRestartCommitsCurrentHash(t *testing.T) {
 	store := newCountingMetadataStore()
 	clk := &clock.Fake{Time: time.Date(2026, 4, 22, 12, 7, 0, 0, time.UTC)}

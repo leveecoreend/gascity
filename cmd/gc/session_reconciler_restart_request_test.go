@@ -184,6 +184,48 @@ func TestReconcileSessionBeads_RestartRequestClearsKeyForResumeOnlyProviders(t *
 	}
 }
 
+func TestReconcileSessionBeads_RestartRequestClearsKeyForExplicitProviderClear(t *testing.T) {
+	env := newRestartRequestTestEnv()
+	env.cfg = &config.City{
+		Workspace:     config.Workspace{Name: "test-city"},
+		Agents:        []config.Agent{{Name: "worker", StartCommand: "true", MaxActiveSessions: restartRequestTestIntPtr(1)}},
+		NamedSessions: []config.NamedSession{{Template: "worker", Mode: "on_demand"}},
+	}
+	sessionName := config.NamedSessionRuntimeName(env.cfg.Workspace.Name, env.cfg.Workspace, "worker")
+	env.desiredState[sessionName] = TemplateParams{
+		Command:          "true",
+		SessionName:      sessionName,
+		TemplateName:     "worker",
+		ResolvedProvider: &config.ResolvedProvider{},
+	}
+
+	session := env.createSessionBead(sessionName, "worker")
+	env.setSessionMetadata(&session, map[string]string{
+		namedSessionMetadataKey:      "true",
+		namedSessionIdentityMetadata: "worker",
+		namedSessionModeMetadata:     "on_demand",
+		"restart_requested":          "true",
+		"session_key":                "original-key",
+		"session_id_flag":            "--session-id",
+		"resume_flag":                "--resume",
+		"resume_style":               "flag",
+		"started_config_hash":        "hash-before-restart",
+	})
+
+	env.reconcile([]beads.Bead{session})
+
+	got, _ := env.store.Get(session.ID)
+	if got.Metadata["session_key"] != "" {
+		t.Fatalf("session_key = %q, want empty for explicit provider clear", got.Metadata["session_key"])
+	}
+	if got.Metadata["started_config_hash"] != "" {
+		t.Fatalf("started_config_hash = %q, want empty", got.Metadata["started_config_hash"])
+	}
+	if got.Metadata["continuation_reset_pending"] != "true" {
+		t.Fatalf("continuation_reset_pending = %q, want true", got.Metadata["continuation_reset_pending"])
+	}
+}
+
 func TestReconcileSessionBeads_RestartRequestPreservesLiveHashesDuringHandoff(t *testing.T) {
 	env := newRestartRequestTestEnv()
 	env.cfg = &config.City{

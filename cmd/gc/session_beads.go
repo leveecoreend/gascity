@@ -147,9 +147,6 @@ func shouldSyncCommandMetadata(b beads.Bead, tp TemplateParams, alive bool) bool
 }
 
 func storedResumeContractDependsOnCommand(meta map[string]string) bool {
-	if strings.TrimSpace(meta["session_key"]) == "" {
-		return false
-	}
 	if strings.TrimSpace(meta["resume_command"]) != "" {
 		return false
 	}
