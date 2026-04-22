@@ -106,7 +106,7 @@ func queueResolvedProviderSessionMetadataKeys(existing map[string]string, queue 
 	if queue == nil {
 		return
 	}
-	desired := resolvedProviderSessionMetadata(resolved)
+	desired := resolvedProviderSessionMetadata(resolvedProviderWithStoredResumeFallback(resolved, existing))
 	if desired == nil {
 		return
 	}
@@ -119,7 +119,7 @@ func queueResolvedProviderSessionMetadataKeys(existing map[string]string, queue 
 }
 
 func resolvedProviderSessionMetadataDiffers(existing map[string]string, resolved *config.ResolvedProvider, keys []string) bool {
-	desired := resolvedProviderSessionMetadata(resolved)
+	desired := resolvedProviderSessionMetadata(resolvedProviderWithStoredResumeFallback(resolved, existing))
 	for _, key := range keys {
 		if strings.TrimSpace(existing[key]) != desired[key] {
 			return true

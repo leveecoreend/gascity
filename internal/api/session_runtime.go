@@ -168,17 +168,42 @@ func (s *Server) resolveWorkerSessionRuntime(info session.Info, _ string) (*work
 		Provider:   firstNonEmptyString(info.Provider, resolved.Name),
 		SessionEnv: resolved.Env,
 		Hints:      sessionResumeHints(resolved, firstNonEmptyString(workDir, info.WorkDir)),
-		Resume: session.ProviderResume{
-			ResumeFlag:    firstNonEmptyString(resolved.ResumeFlag, info.ResumeFlag),
-			ResumeStyle:   firstNonEmptyString(resolved.ResumeStyle, info.ResumeStyle),
-			ResumeCommand: firstNonEmptyString(resolved.ResumeCommand, info.ResumeCommand),
-			SessionIDFlag: resolved.SessionIDFlag,
-		},
+		Resume:     resolvedSessionRuntimeResume(resolved, info),
 	})
 	if err != nil {
 		return nil, err
 	}
 	return &runtimeCfg, nil
+}
+
+func resolvedSessionRuntimeResume(resolved *config.ResolvedProvider, info session.Info) session.ProviderResume {
+	resume := session.ProviderResume{
+		ResumeFlag:    firstNonEmptyString(resolved.ResumeFlag, info.ResumeFlag),
+		ResumeStyle:   firstNonEmptyString(resolved.ResumeStyle, info.ResumeStyle),
+		ResumeCommand: firstNonEmptyString(resolved.ResumeCommand, info.ResumeCommand),
+		SessionIDFlag: firstNonEmptyString(resolved.SessionIDFlag, info.SessionIDFlag),
+	}
+	if resolvedSessionRuntimeExplicitClear(resolved) {
+		resume = session.ProviderResume{
+			ResumeFlag:    strings.TrimSpace(resolved.ResumeFlag),
+			ResumeStyle:   strings.TrimSpace(resolved.ResumeStyle),
+			ResumeCommand: strings.TrimSpace(resolved.ResumeCommand),
+			SessionIDFlag: strings.TrimSpace(resolved.SessionIDFlag),
+		}
+	}
+	return resume
+}
+
+func resolvedSessionRuntimeExplicitClear(resolved *config.ResolvedProvider) bool {
+	if resolved == nil {
+		return false
+	}
+	return strings.TrimSpace(resolved.Name) == "" &&
+		strings.TrimSpace(resolved.BuiltinAncestor) == "" &&
+		strings.TrimSpace(resolved.ResumeFlag) == "" &&
+		strings.TrimSpace(resolved.ResumeStyle) == "" &&
+		strings.TrimSpace(resolved.ResumeCommand) == "" &&
+		strings.TrimSpace(resolved.SessionIDFlag) == ""
 }
 
 func (s *Server) resolveSessionRuntime(info session.Info) (*config.ResolvedProvider, string) {

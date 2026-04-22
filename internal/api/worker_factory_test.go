@@ -135,6 +135,46 @@ func TestResolveWorkerSessionRuntimeUsesResolvedCommandWhenPersistedCommandIsSta
 	}
 }
 
+func TestResolveWorkerSessionRuntimeFallsBackToPersistedSessionIDFlagWhenResolvedProviderIncomplete(t *testing.T) {
+	fs := newSessionFakeState(t)
+	fs.cfg.Agents[0].Provider = "resolved-worker"
+	fs.cfg.Providers["resolved-worker"] = config.ProviderSpec{
+		DisplayName:       "Resolved Worker",
+		Command:           "/bin/echo",
+		ReadyPromptPrefix: "resolved-ready>",
+		ReadyDelayMs:      321,
+		ResumeFlag:        "--resume-resolved",
+		ResumeStyle:       "flag",
+	}
+
+	srv := New(fs)
+	info := session.Info{
+		ID:            "sess-1",
+		Template:      "myrig/worker",
+		Command:       "/bin/echo --composed",
+		Provider:      "persisted-provider",
+		WorkDir:       t.TempDir(),
+		ResumeFlag:    "--resume-persisted",
+		ResumeStyle:   "subcommand",
+		ResumeCommand: "persisted resume {{.SessionKey}}",
+		SessionIDFlag: "--session-id-persisted",
+	}
+
+	runtimeCfg, err := srv.resolveWorkerSessionRuntime(info, "")
+	if err != nil {
+		t.Fatalf("resolveWorkerSessionRuntime: %v", err)
+	}
+	if runtimeCfg == nil {
+		t.Fatal("resolveWorkerSessionRuntime() = nil")
+	}
+	if got, want := runtimeCfg.Resume.ResumeFlag, "--resume-resolved"; got != want {
+		t.Fatalf("Resume.ResumeFlag = %q, want %q", got, want)
+	}
+	if got, want := runtimeCfg.Resume.SessionIDFlag, info.SessionIDFlag; got != want {
+		t.Fatalf("Resume.SessionIDFlag = %q, want %q", got, want)
+	}
+}
+
 func TestWorkerFactorySessionByIDUsesResolvedTemplateRuntime(t *testing.T) {
 	fs := newSessionFakeState(t)
 	fs.cfg.Agents[0].Provider = "resolved-worker"
