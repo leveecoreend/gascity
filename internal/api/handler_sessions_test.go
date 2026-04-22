@@ -1134,6 +1134,16 @@ func TestHandleSessionCreate(t *testing.T) {
 	if resp.Title != "myrig/worker" {
 		t.Errorf("Title = %q, want default %q", resp.Title, "myrig/worker")
 	}
+	bead, err := fs.cityBeadStore.Get(resp.ID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", resp.ID, err)
+	}
+	if got := bead.Metadata[session.MCPIdentityMetadataKey]; got != "" {
+		t.Fatalf("mcp_identity = %q, want empty for non-ACP agent session", got)
+	}
+	if got := bead.Metadata[session.MCPServersSnapshotMetadataKey]; got != "" {
+		t.Fatalf("mcp_servers_snapshot = %q, want empty for non-ACP agent session", got)
+	}
 	// Agent sessions are always created async — not running until the
 	// reconciler starts the process.
 	if resp.Running {

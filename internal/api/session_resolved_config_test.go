@@ -106,3 +106,33 @@ func TestResolvedSessionConfigForProviderRejectsNilProvider(t *testing.T) {
 		t.Fatal("resolvedSessionConfigForProvider() error = nil, want error")
 	}
 }
+
+func TestResolvedSessionConfigForProviderSkipsStoredMCPMetadataForTmuxTransport(t *testing.T) {
+	cfg, err := resolvedSessionConfigForProvider(
+		"worker",
+		"",
+		"myrig/worker",
+		"Worker",
+		"",
+		map[string]string{
+			"session_origin": "manual",
+			"agent_name":     "myrig/worker-adhoc-123",
+		},
+		&config.ResolvedProvider{
+			Name:    "stub",
+			Command: "/bin/echo",
+		},
+		"",
+		"/tmp/workdir",
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("resolvedSessionConfigForProvider: %v", err)
+	}
+	if got := cfg.Metadata[session.MCPIdentityMetadataKey]; got != "" {
+		t.Fatalf("Metadata[mcp_identity] = %q, want empty for tmux transport", got)
+	}
+	if got := cfg.Metadata[session.MCPServersSnapshotMetadataKey]; got != "" {
+		t.Fatalf("Metadata[mcp_servers_snapshot] = %q, want empty for tmux transport", got)
+	}
+}

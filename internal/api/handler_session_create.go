@@ -166,11 +166,13 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	extraMeta["agent_name"] = createCtx.Identity
 	extraMeta["session_origin"] = "ephemeral"
-	extraMeta, err = session.WithStoredMCPMetadata(extraMeta, createCtx.Identity, mcpServers)
-	if err != nil {
-		s.idem.unreserve(idemKey)
-		writeError(w, http.StatusInternalServerError, "internal", err.Error())
-		return
+	if transport == "acp" {
+		extraMeta, err = session.WithStoredMCPMetadata(extraMeta, createCtx.Identity, mcpServers)
+		if err != nil {
+			s.idem.unreserve(idemKey)
+			writeError(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
 	}
 
 	// Agent sessions always use async (bead-only) creation. The reconciler
@@ -350,13 +352,16 @@ func (s *Server) createProviderSession(w http.ResponseWriter, r *http.Request, s
 		writeError(w, http.StatusInternalServerError, "internal", err.Error())
 		return
 	}
-	extraMeta, err := session.WithStoredMCPMetadata(map[string]string{
+	extraMeta := map[string]string{
 		"session_origin": "manual",
-	}, mcpIdentity, mcpServers)
-	if err != nil {
-		s.idem.unreserve(idemKey)
-		writeError(w, http.StatusInternalServerError, "internal", err.Error())
-		return
+	}
+	if transport == "acp" {
+		extraMeta, err = session.WithStoredMCPMetadata(extraMeta, mcpIdentity, mcpServers)
+		if err != nil {
+			s.idem.unreserve(idemKey)
+			writeError(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
 	}
 
 	resolvedCfg, err := resolvedSessionConfigForProvider(alias, "", template, title, transport, extraMeta, resolved, command, workDir, mcpServers)

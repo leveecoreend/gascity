@@ -316,9 +316,11 @@ func (s *Server) materializeNamedSessionWithContext(ctx context.Context, store b
 	if err != nil {
 		return "", err
 	}
-	extraMeta, err = session.WithStoredMCPMetadata(extraMeta, spec.Identity, mcpServers)
-	if err != nil {
-		return "", err
+	if transport == "acp" {
+		extraMeta, err = session.WithStoredMCPMetadata(extraMeta, spec.Identity, mcpServers)
+		if err != nil {
+			return "", err
+		}
 	}
 	hints := sessionCreateHints(resolved, mcpServers)
 	var info session.Info

@@ -130,10 +130,12 @@ func (s *Server) humaHandleSessionCreate(ctx context.Context, input *SessionCrea
 		}
 		extraMeta["agent_name"] = workDirQualifiedName
 		extraMeta["session_origin"] = "manual"
-		var mcpMetaErr error
-		extraMeta, mcpMetaErr = session.WithStoredMCPMetadata(extraMeta, workDirQualifiedName, mcpServers)
-		if mcpMetaErr != nil {
-			return mcpMetaErr
+		if transport == "acp" {
+			var mcpMetaErr error
+			extraMeta, mcpMetaErr = session.WithStoredMCPMetadata(extraMeta, workDirQualifiedName, mcpServers)
+			if mcpMetaErr != nil {
+				return mcpMetaErr
+			}
 		}
 		resolvedCfg, cfgErr := resolvedSessionConfigForProvider(
 			alias,
@@ -262,11 +264,14 @@ func (s *Server) humaCreateProviderSession(ctx context.Context, store beads.Stor
 	if err != nil {
 		return nil, huma.Error500InternalServerError(err.Error())
 	}
-	extraMeta, err := session.WithStoredMCPMetadata(map[string]string{
+	extraMeta := map[string]string{
 		"session_origin": "manual",
-	}, mcpIdentity, mcpServers)
-	if err != nil {
-		return nil, huma.Error500InternalServerError(err.Error())
+	}
+	if transport == "acp" {
+		extraMeta, err = session.WithStoredMCPMetadata(extraMeta, mcpIdentity, mcpServers)
+		if err != nil {
+			return nil, huma.Error500InternalServerError(err.Error())
+		}
 	}
 
 	mgr := s.sessionManager(store)

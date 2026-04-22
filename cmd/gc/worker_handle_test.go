@@ -923,6 +923,36 @@ func TestResolvedWorkerSessionConfigWithConfigPersistsStoredMCPMetadata(t *testi
 	}
 }
 
+func TestResolvedWorkerSessionConfigWithConfigSkipsStoredMCPMetadataForTmuxTransport(t *testing.T) {
+	cfg, err := resolvedWorkerSessionConfigWithConfig(
+		"",
+		"legacy-provider",
+		"/tmp/work",
+		"worker",
+		"",
+		"worker",
+		"Worker",
+		"",
+		&config.ResolvedProvider{
+			Name: "custom-provider",
+		},
+		map[string]string{
+			"session_origin": "test",
+			"agent_name":     "myrig/worker-adhoc-123",
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("resolvedWorkerSessionConfigWithConfig: %v", err)
+	}
+	if got := cfg.Metadata[session.MCPIdentityMetadataKey]; got != "" {
+		t.Fatalf("Metadata[mcp_identity] = %q, want empty for tmux transport", got)
+	}
+	if got := cfg.Metadata[session.MCPServersSnapshotMetadataKey]; got != "" {
+		t.Fatalf("Metadata[mcp_servers_snapshot] = %q, want empty for tmux transport", got)
+	}
+}
+
 func TestResolvedWorkerRuntimeWithConfigFallsBackToCityPathAndSyncsHintsWorkDir(t *testing.T) {
 	cityDir := t.TempDir()
 	writePhase0InterfaceCity(t, cityDir, `[workspace]
