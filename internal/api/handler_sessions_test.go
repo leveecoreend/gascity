@@ -1914,6 +1914,76 @@ func TestHandleProviderSessionCreateUsesACPTransportCapabilityProvider(t *testin
 	}
 }
 
+func TestHandleProviderSessionCreateUsesPerSessionMCPIdentity(t *testing.T) {
+	supportsACP := true
+	fs := newSessionFakeState(t)
+	fs.cfg.Providers["opencode"] = config.ProviderSpec{
+		DisplayName: "OpenCode",
+		Command:     "/bin/echo",
+		PathCheck:   "true",
+		SupportsACP: &supportsACP,
+		ACPCommand:  "/bin/echo",
+		ACPArgs:     []string{"acp"},
+	}
+	fs.cfg.PackMCPDir = filepath.Join(fs.cityPath, "mcp")
+	if err := os.MkdirAll(fs.cfg.PackMCPDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(mcp): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fs.cfg.PackMCPDir, "identity.template.toml"), []byte(`
+name = "identity"
+command = "/bin/mcp"
+args = ["{{.AgentName}}", "{{.WorkDir}}", "{{.TemplateName}}"]
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(mcp): %v", err)
+	}
+	provider := &transportCapableProvider{Fake: runtime.NewFake()}
+	state := &stateWithSessionProvider{
+		fakeState: fs,
+		provider:  provider,
+	}
+	srv := New(state)
+	h := newTestCityHandlerWith(t, state, srv)
+
+	req := newPostRequest(cityURL(fs, "/sessions"), strings.NewReader(`{"kind":"provider","name":"opencode"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var resp sessionResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	start := provider.LastStartConfig(resp.SessionName)
+	if start == nil {
+		t.Fatalf("LastStartConfig(%q) = nil", resp.SessionName)
+	}
+	if len(start.MCPServers) != 1 {
+		t.Fatalf("Start MCPServers len = %d, want 1", len(start.MCPServers))
+	}
+	bead, err := fs.cityBeadStore.Get(resp.ID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", resp.ID, err)
+	}
+	if got := bead.Metadata[session.MCPIdentityMetadataKey]; got == "" {
+		t.Fatal("mcp_identity metadata = empty, want per-session identity")
+	}
+	if got, want := start.MCPServers[0].Args[0], bead.Metadata[session.MCPIdentityMetadataKey]; got != want {
+		t.Fatalf("Start MCP identity = %q, want %q", got, want)
+	}
+	if got := bead.Metadata[session.MCPIdentityMetadataKey]; got == "opencode" {
+		t.Fatalf("mcp_identity metadata = %q, want unique per-session identity", got)
+	}
+	if got, want := start.MCPServers[0].Args[1], fs.cityPath; got != want {
+		t.Fatalf("Start workdir arg = %q, want %q", got, want)
+	}
+	if got, want := start.MCPServers[0].Args[2], bead.Metadata[session.MCPIdentityMetadataKey]; got != want {
+		t.Fatalf("Start template arg = %q, want %q", got, want)
+	}
+}
+
 func TestHandleProviderSessionCreateRejectsACPProviderWithoutACPRouting(t *testing.T) {
 	supportsACP := true
 	fs := newSessionFakeState(t)

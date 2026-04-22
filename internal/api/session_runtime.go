@@ -47,38 +47,44 @@ func sessionResumeHints(resolved *config.ResolvedProvider, workDir string, mcpSe
 	}
 }
 
-func resumeSessionIdentity(info session.Info) string {
+func resumeSessionIdentity(info session.Info, metadata map[string]string) string {
+	if metadata != nil {
+		if identity := strings.TrimSpace(metadata[session.MCPIdentityMetadataKey]); identity != "" {
+			return identity
+		}
+	}
 	return firstNonEmptyString(info.AgentName, info.Alias, info.Template, info.Provider)
 }
 
-func (s *Server) resumeSessionMCPServers(info session.Info, resolved *config.ResolvedProvider, workDir, transport string) []runtime.MCPServerConfig {
+func (s *Server) resumeSessionMCPServers(info session.Info, metadata map[string]string, resolved *config.ResolvedProvider, workDir, transport string) ([]runtime.MCPServerConfig, error) {
 	if resolved == nil {
-		return nil
+		return nil, nil
 	}
-	// Existing ACP sessions resume from their stored session state. Current
-	// MCP catalog materialization only seeds session/new and should not strand
-	// already-created sessions if the catalog on disk is currently broken.
 	mcpServers, err := s.sessionMCPServers(
 		info.Template,
 		firstNonEmptyString(info.Provider, resolved.Name),
-		resumeSessionIdentity(info),
+		resumeSessionIdentity(info, metadata),
 		workDir,
 		transport,
 		s.sessionKind(info.ID),
 	)
-	if err != nil {
-		return nil
+	if err == nil {
+		return mcpServers, nil
 	}
-	return mcpServers
+	stored, decodeErr := session.DecodeMCPServersSnapshot(metadata[session.MCPServersSnapshotMetadataKey])
+	if decodeErr != nil {
+		return nil, fmt.Errorf("decoding stored MCP snapshot: %w", decodeErr)
+	}
+	return stored, nil
 }
 
-func (s *Server) providerSessionMCPServers(providerName, workDir, transport string) ([]runtime.MCPServerConfig, error) {
+func (s *Server) providerSessionMCPServers(providerName, identity, workDir, transport string) ([]runtime.MCPServerConfig, error) {
 	cfg := s.state.Config()
 	if cfg == nil || strings.TrimSpace(workDir) == "" || strings.TrimSpace(transport) != "acp" {
 		return nil, nil
 	}
 	synthetic := &config.Agent{Provider: providerName}
-	catalog, err := materialize.EffectiveMCPForSession(cfg, s.state.CityPath(), synthetic, providerName, workDir)
+	catalog, err := materialize.EffectiveMCPForSession(cfg, s.state.CityPath(), synthetic, firstNonEmptyString(identity, providerName), workDir)
 	if err != nil {
 		return nil, fmt.Errorf("loading effective MCP: %w", err)
 	}
@@ -105,7 +111,26 @@ func (s *Server) sessionMCPServers(template, providerName, identity, workDir, tr
 			return materialize.RuntimeMCPServers(catalog.Servers), nil
 		}
 	}
-	return s.providerSessionMCPServers(firstNonEmptyString(providerName, template), workDir, transport)
+	return s.providerSessionMCPServers(firstNonEmptyString(providerName, template), identity, workDir, transport)
+}
+
+func (s *Server) sessionMetadata(sessionID string) map[string]string {
+	store := s.state.CityBeadStore()
+	if store == nil || strings.TrimSpace(sessionID) == "" {
+		return nil
+	}
+	bead, err := store.Get(sessionID)
+	if err != nil {
+		return nil
+	}
+	return bead.Metadata
+}
+
+func providerSessionMCPIdentity(providerName, alias string) (string, error) {
+	if alias = strings.TrimSpace(alias); alias != "" {
+		return alias, nil
+	}
+	return session.GenerateAdhocIdentity(providerName)
 }
 
 func sessionExplicitNameForCreate(agentCfg config.Agent, alias string) (string, error) {
@@ -181,7 +206,10 @@ func (s *Server) buildSessionResume(info session.Info) (string, runtime.Config, 
 	if resolved == nil {
 		return cmd, runtime.Config{WorkDir: info.WorkDir}, nil
 	}
-	mcpServers := s.resumeSessionMCPServers(info, resolved, firstNonEmptyString(workDir, info.WorkDir), transport)
+	mcpServers, err := s.resumeSessionMCPServers(info, s.sessionMetadata(info.ID), resolved, firstNonEmptyString(workDir, info.WorkDir), transport)
+	if err != nil {
+		return "", runtime.Config{}, err
+	}
 	resolvedInfo := info
 	if command, err := s.resolvedSessionRuntimeCommand(resolved, transport, info.Command); err == nil {
 		resolvedInfo.Command = command
@@ -236,12 +264,19 @@ func shouldPreserveStoredRuntimeCommand(storedCommand, resolvedCommand string) b
 	return strings.HasPrefix(storedCommand, resolvedCommand+" ")
 }
 
-func (s *Server) resolveWorkerSessionRuntime(info session.Info, _ string) (*worker.ResolvedRuntime, error) {
+func (s *Server) resolveWorkerSessionRuntime(info session.Info, sessionKind string) (*worker.ResolvedRuntime, error) {
+	return s.resolveWorkerSessionRuntimeWithMetadata(info, sessionKind, nil)
+}
+
+func (s *Server) resolveWorkerSessionRuntimeWithMetadata(info session.Info, _ string, metadata map[string]string) (*worker.ResolvedRuntime, error) {
 	resolved, workDir, transport := s.resolveSessionRuntime(info)
 	if resolved == nil {
 		return nil, nil
 	}
-	mcpServers := s.resumeSessionMCPServers(info, resolved, firstNonEmptyString(workDir, info.WorkDir), transport)
+	mcpServers, err := s.resumeSessionMCPServers(info, metadata, resolved, firstNonEmptyString(workDir, info.WorkDir), transport)
+	if err != nil {
+		return nil, err
+	}
 	command, err := s.resolvedSessionRuntimeCommand(resolved, transport, info.Command)
 	if err != nil {
 		return nil, err

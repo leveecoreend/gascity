@@ -247,6 +247,78 @@ args = ["{{.AgentName}}", "{{.WorkDir}}", "{{.TemplateName}}"]
 	}
 }
 
+func TestResolveWorkerSessionRuntimeFallsBackToStoredMCPServersWhenCatalogBreaks(t *testing.T) {
+	fs := newSessionFakeState(t)
+	fs.cfg.Agents = []config.Agent{{
+		Name:              "ant",
+		Dir:               "myrig",
+		Provider:          "resolved-worker",
+		Session:           "acp",
+		WorkDir:           ".gc/worktrees/{{.Rig}}/ants/{{.AgentBase}}",
+		MinActiveSessions: intPtr(0),
+		MaxActiveSessions: intPtr(4),
+	}}
+	supportsACP := true
+	fs.cfg.Providers["resolved-worker"] = config.ProviderSpec{
+		DisplayName: "Resolved Worker",
+		Command:     "/bin/echo",
+		SupportsACP: &supportsACP,
+		ACPCommand:  "/bin/echo",
+		ACPArgs:     []string{"acp"},
+	}
+	fs.cfg.PackMCPDir = filepath.Join(fs.cityPath, "mcp")
+	if err := os.MkdirAll(fs.cfg.PackMCPDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(mcp): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(fs.cfg.PackMCPDir, "identity.template.toml"), []byte(`
+name = "identity"
+command = [broken
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile(mcp): %v", err)
+	}
+
+	workDir := filepath.Join(fs.cityPath, ".gc", "worktrees", "myrig", "ants", "ant")
+	metadata, err := session.WithStoredMCPMetadata(nil, "myrig/ant-adhoc-123", []runtime.MCPServerConfig{{
+		Name:      "identity",
+		Transport: runtime.MCPTransportStdio,
+		Command:   "/bin/mcp",
+		Args:      []string{"myrig/ant-adhoc-123", workDir, "myrig/ant"},
+	}})
+	if err != nil {
+		t.Fatalf("WithStoredMCPMetadata: %v", err)
+	}
+
+	srv := New(fs)
+	info := session.Info{
+		ID:        "sess-1",
+		Template:  "myrig/ant",
+		Alias:     "ant",
+		AgentName: "myrig/ant-adhoc-123",
+		Transport: "acp",
+		WorkDir:   workDir,
+	}
+
+	runtimeCfg, err := srv.resolveWorkerSessionRuntimeWithMetadata(info, "", metadata)
+	if err != nil {
+		t.Fatalf("resolveWorkerSessionRuntimeWithMetadata: %v", err)
+	}
+	if runtimeCfg == nil {
+		t.Fatal("resolveWorkerSessionRuntimeWithMetadata() = nil")
+	}
+	if len(runtimeCfg.Hints.MCPServers) != 1 {
+		t.Fatalf("Hints.MCPServers len = %d, want 1", len(runtimeCfg.Hints.MCPServers))
+	}
+	if got, want := runtimeCfg.Hints.MCPServers[0].Args[0], "myrig/ant-adhoc-123"; got != want {
+		t.Fatalf("Args[0] = %q, want %q", got, want)
+	}
+	if got, want := runtimeCfg.Hints.MCPServers[0].Args[1], workDir; got != want {
+		t.Fatalf("Args[1] = %q, want %q", got, want)
+	}
+	if got, want := runtimeCfg.Hints.MCPServers[0].Args[2], "myrig/ant"; got != want {
+		t.Fatalf("Args[2] = %q, want %q", got, want)
+	}
+}
+
 func TestWorkerFactorySessionByIDUsesResolvedTemplateRuntime(t *testing.T) {
 	fs := newSessionFakeState(t)
 	fs.cfg.Agents[0].Provider = "resolved-worker"

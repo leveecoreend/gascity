@@ -130,6 +130,11 @@ func (s *Server) humaHandleSessionCreate(ctx context.Context, input *SessionCrea
 		}
 		extraMeta["agent_name"] = workDirQualifiedName
 		extraMeta["session_origin"] = "manual"
+		var mcpMetaErr error
+		extraMeta, mcpMetaErr = session.WithStoredMCPMetadata(extraMeta, workDirQualifiedName, mcpServers)
+		if mcpMetaErr != nil {
+			return mcpMetaErr
+		}
 		resolvedCfg, cfgErr := resolvedSessionConfigForProvider(
 			alias,
 			explicitName,
@@ -239,6 +244,10 @@ func (s *Server) humaCreateProviderSession(ctx context.Context, store beads.Stor
 	if err != nil {
 		return nil, humaSessionManagerError(err)
 	}
+	mcpIdentity, err := providerSessionMCPIdentity(resolved.Name, alias)
+	if err != nil {
+		return nil, huma.Error500InternalServerError(err.Error())
+	}
 
 	transport, err := providerSessionTransport(resolved, s.state.SessionProvider())
 	if err != nil {
@@ -249,7 +258,13 @@ func (s *Server) humaCreateProviderSession(ctx context.Context, store beads.Stor
 		return nil, huma.Error400BadRequest(err.Error())
 	}
 	command := launchCommand.Command
-	mcpServers, err := s.providerSessionMCPServers(resolved.Name, workDir, transport)
+	mcpServers, err := s.providerSessionMCPServers(resolved.Name, mcpIdentity, workDir, transport)
+	if err != nil {
+		return nil, huma.Error500InternalServerError(err.Error())
+	}
+	extraMeta, err := session.WithStoredMCPMetadata(map[string]string{
+		"session_origin": "manual",
+	}, mcpIdentity, mcpServers)
 	if err != nil {
 		return nil, huma.Error500InternalServerError(err.Error())
 	}
@@ -262,7 +277,7 @@ func (s *Server) humaCreateProviderSession(ctx context.Context, store beads.Stor
 			return aliasErr
 		}
 		var createErr error
-		info, createErr = mgr.CreateAliasedNamedWithTransport(
+		info, createErr = mgr.CreateAliasedNamedWithTransportAndMetadata(
 			ctx,
 			alias,
 			"",
@@ -275,6 +290,7 @@ func (s *Server) humaCreateProviderSession(ctx context.Context, store beads.Stor
 			resolved.Env,
 			resume,
 			hints,
+			extraMeta,
 		)
 		return createErr
 	})

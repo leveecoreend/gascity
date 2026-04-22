@@ -148,7 +148,7 @@ func TestFactorySessionByIDResolvesSessionRuntime(t *testing.T) {
 	factory, err := NewFactory(FactoryConfig{
 		Store:    store,
 		Provider: sp,
-		ResolveSessionRuntime: func(_ sessionpkg.Info, sessionKind string) (*ResolvedRuntime, error) {
+		ResolveSessionRuntime: func(_ sessionpkg.Info, sessionKind string, _ map[string]string) (*ResolvedRuntime, error) {
 			gotSessionKind = sessionKind
 			return &ResolvedRuntime{
 				Command:  "/bin/echo",
@@ -286,7 +286,7 @@ func TestFactorySessionByIDPropagatesResolvedRuntimeError(t *testing.T) {
 	factory, err := NewFactory(FactoryConfig{
 		Store:    store,
 		Provider: sp,
-		ResolveSessionRuntime: func(sessionpkg.Info, string) (*ResolvedRuntime, error) {
+		ResolveSessionRuntime: func(sessionpkg.Info, string, map[string]string) (*ResolvedRuntime, error) {
 			return nil, wantErr
 		},
 	})

@@ -968,6 +968,77 @@ args = ["{{.AgentName}}", "{{.WorkDir}}", "{{.TemplateName}}"]
 	}
 }
 
+func TestResolvedWorkerRuntimeWithConfigFallsBackToStoredMCPServersWhenCatalogBreaks(t *testing.T) {
+	cityDir := t.TempDir()
+	writePhase0InterfaceCity(t, cityDir, `[workspace]
+name = "test-city"
+
+[beads]
+provider = "file"
+
+[[agent]]
+name = "ant"
+dir = "myrig"
+provider = "stub"
+session = "acp"
+work_dir = ".gc/worktrees/{{.Rig}}/ants/{{.AgentBase}}"
+min_active_sessions = 0
+max_active_sessions = 4
+
+[providers.stub]
+command = "/bin/echo"
+supports_acp = true
+acp_command = "/bin/echo"
+acp_args = ["acp"]
+`)
+	writeCatalogFile(t, cityDir, "mcp/identity.template.toml", `
+name = "identity"
+command = [broken
+`)
+
+	cfg, err := loadCityConfig(cityDir)
+	if err != nil {
+		t.Fatalf("loadCityConfig: %v", err)
+	}
+
+	workDir := filepath.Join(cityDir, ".gc", "worktrees", "myrig", "ants", "ant")
+	metadata, err := session.WithStoredMCPMetadata(nil, "myrig/ant-adhoc-123", []runtime.MCPServerConfig{{
+		Name:      "identity",
+		Transport: runtime.MCPTransportStdio,
+		Command:   "/bin/mcp",
+		Args:      []string{"myrig/ant-adhoc-123", workDir, "myrig/ant"},
+	}})
+	if err != nil {
+		t.Fatalf("WithStoredMCPMetadata: %v", err)
+	}
+
+	resolved, err := resolvedWorkerRuntimeWithConfigAndMetadata(cityDir, cfg, session.Info{
+		Template:  "myrig/ant",
+		Alias:     "ant",
+		AgentName: "myrig/ant-adhoc-123",
+		Transport: "acp",
+		WorkDir:   workDir,
+	}, "", metadata)
+	if err != nil {
+		t.Fatalf("resolvedWorkerRuntimeWithConfigAndMetadata: %v", err)
+	}
+	if resolved == nil {
+		t.Fatal("resolvedWorkerRuntimeWithConfigAndMetadata() = nil")
+	}
+	if len(resolved.Hints.MCPServers) != 1 {
+		t.Fatalf("Hints.MCPServers len = %d, want 1", len(resolved.Hints.MCPServers))
+	}
+	if got, want := resolved.Hints.MCPServers[0].Args[0], "myrig/ant-adhoc-123"; got != want {
+		t.Fatalf("Args[0] = %q, want %q", got, want)
+	}
+	if got, want := resolved.Hints.MCPServers[0].Args[1], workDir; got != want {
+		t.Fatalf("Args[1] = %q, want %q", got, want)
+	}
+	if got, want := resolved.Hints.MCPServers[0].Args[2], "myrig/ant"; got != want {
+		t.Fatalf("Args[2] = %q, want %q", got, want)
+	}
+}
+
 func TestWorkerSessionRuntimeResolverWithConfigFallsBackToProviderNameWhenResolvedCommandMissing(t *testing.T) {
 	cfg := &config.City{
 		Workspace: config.Workspace{Name: "test-city"},
@@ -985,7 +1056,7 @@ func TestWorkerSessionRuntimeResolverWithConfigFallsBackToProviderNameWhenResolv
 		t.Fatal("workerSessionRuntimeResolverWithConfig() = nil")
 	}
 
-	runtimeCfg, err := resolver(session.Info{Template: "worker"}, "")
+	runtimeCfg, err := resolver(session.Info{Template: "worker"}, "", nil)
 	if err != nil {
 		t.Fatalf("resolver: %v", err)
 	}
@@ -1030,7 +1101,7 @@ func TestWorkerSessionRuntimeResolverWithConfigFallsBackToPersistedRuntimeOnInco
 		ResumeCommand: "persisted resume {{.SessionKey}}",
 	}
 
-	runtimeCfg, err := resolver(info, "")
+	runtimeCfg, err := resolver(info, "", nil)
 	if err != nil {
 		t.Fatalf("resolver: %v", err)
 	}
@@ -1090,7 +1161,7 @@ func TestWorkerSessionRuntimeResolverWithConfigFallsBackToPersistedProviderWhenC
 		Provider: "persisted-provider",
 	}
 
-	runtimeCfg, err := resolver(info, "")
+	runtimeCfg, err := resolver(info, "", nil)
 	if err != nil {
 		t.Fatalf("resolver: %v", err)
 	}

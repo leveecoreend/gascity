@@ -690,6 +690,15 @@ func commitStartResultTraced(
 		ClearPendingCreateClaim: shouldRollbackPendingCreate(session),
 		Now:                     clk.Now(),
 	})
+	storedMCPSnapshot, err := sessionpkg.EncodeMCPServersSnapshot(result.prepared.cfg.MCPServers)
+	if err != nil {
+		fmt.Fprintf(stderr, "session reconciler: encoding MCP snapshot for %s: %v\n", name, err) //nolint:errcheck
+		logLifecycleOutcome(stderr, "start", wave, name, tp.TemplateName, "metadata_encode_failed", result.started, result.finished, err)
+		return false
+	}
+	if storedMCPSnapshot != "" || session.Metadata[sessionpkg.MCPServersSnapshotMetadataKey] != "" {
+		metadata[sessionpkg.MCPServersSnapshotMetadataKey] = storedMCPSnapshot
+	}
 	if err := store.SetMetadataBatch(session.ID, metadata); err != nil {
 		fmt.Fprintf(stderr, "session reconciler: storing hashes for %s: %v\n", name, err) //nolint:errcheck
 		if trace != nil {

@@ -373,6 +373,10 @@ func (m *Manager) createAliasedNamedWithTransport(ctx context.Context, alias, ex
 		if explicitName != "" {
 			b.Metadata["session_name_explicit"] = "true"
 		}
+		if err := m.syncStoredMCPServers(b.ID, &b, hints.MCPServers); err != nil {
+			_ = m.store.Close(b.ID)
+			return err
+		}
 
 		unroute := m.routeACPIfNeeded(provider, transport, sessName)
 		rollbackFailedCreate := func() error {

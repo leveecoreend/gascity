@@ -69,8 +69,8 @@ func workerSessionRuntimeResolverWithConfig(cityPath string, cfg *config.City) w
 	if cfg == nil {
 		return nil
 	}
-	return func(info session.Info, sessionKind string) (*worker.ResolvedRuntime, error) {
-		runtimeCfg, err := resolvedWorkerRuntimeWithConfig(cityPath, cfg, info, sessionKind)
+	return func(info session.Info, sessionKind string, metadata map[string]string) (*worker.ResolvedRuntime, error) {
+		runtimeCfg, err := resolvedWorkerRuntimeWithConfigAndMetadata(cityPath, cfg, info, sessionKind, metadata)
 		if err != nil {
 			return nil, err
 		}
@@ -107,7 +107,10 @@ func resolvedRuntimeMCPServersWithConfig(
 	if cfg == nil || strings.TrimSpace(workDir) == "" || strings.TrimSpace(transport) != "acp" {
 		return nil, nil
 	}
-	identity := strings.TrimSpace(metadata["agent_name"])
+	identity := strings.TrimSpace(metadata[session.MCPIdentityMetadataKey])
+	if identity == "" {
+		identity = strings.TrimSpace(metadata["agent_name"])
+	}
 	if identity == "" {
 		identity = strings.TrimSpace(alias)
 	}
@@ -138,21 +141,22 @@ func resumeRuntimeMCPServersWithConfig(
 	info session.Info,
 	resolved *config.ResolvedProvider,
 	transport string,
-) []runtime.MCPServerConfig {
+	metadata map[string]string,
+) ([]runtime.MCPServerConfig, error) {
 	if cfg == nil || resolved == nil {
-		return nil
+		return nil, nil
 	}
 	workDir := strings.TrimSpace(info.WorkDir)
 	if workDir == "" {
 		workDir = cityPath
 	}
-	var metadata map[string]string
-	if agentName := strings.TrimSpace(info.AgentName); agentName != "" {
-		metadata = map[string]string{"agent_name": agentName}
+	resumeMeta := make(map[string]string)
+	for key, value := range metadata {
+		resumeMeta[key] = value
 	}
-	// Existing ACP sessions resume from stored provider state. Current MCP
-	// catalog materialization only seeds session/new and should not block
-	// resume if the catalog on disk is currently broken.
+	if agentName := strings.TrimSpace(info.AgentName); agentName != "" {
+		resumeMeta["agent_name"] = agentName
+	}
 	mcpServers, err := resolvedRuntimeMCPServersWithConfig(
 		cityPath,
 		cfg,
@@ -161,12 +165,16 @@ func resumeRuntimeMCPServersWithConfig(
 		firstNonEmptyGCString(info.Provider, resolved.Name, info.Template),
 		workDir,
 		transport,
-		metadata,
+		resumeMeta,
 	)
-	if err != nil {
-		return nil
+	if err == nil {
+		return mcpServers, nil
 	}
-	return mcpServers
+	stored, decodeErr := session.DecodeMCPServersSnapshot(resumeMeta[session.MCPServersSnapshotMetadataKey])
+	if decodeErr != nil {
+		return nil, fmt.Errorf("decoding stored MCP snapshot: %w", decodeErr)
+	}
+	return stored, nil
 }
 
 func newWorkerSessionHandleForResolvedRuntimeWithConfig(
@@ -420,6 +428,10 @@ func workerRespondSessionTargetWithConfig(cityPath string, store beads.Store, sp
 }
 
 func resolvedWorkerRuntimeWithConfig(cityPath string, cfg *config.City, info session.Info, sessionKind string) (*worker.ResolvedRuntime, error) {
+	return resolvedWorkerRuntimeWithConfigAndMetadata(cityPath, cfg, info, sessionKind, nil)
+}
+
+func resolvedWorkerRuntimeWithConfigAndMetadata(cityPath string, cfg *config.City, info session.Info, sessionKind string, metadata map[string]string) (*worker.ResolvedRuntime, error) {
 	if cfg == nil {
 		return nil, nil
 	}
@@ -446,7 +458,10 @@ func resolvedWorkerRuntimeWithConfig(cityPath string, cfg *config.City, info ses
 	if workDir == "" {
 		workDir = cityPath
 	}
-	mcpServers := resumeRuntimeMCPServersWithConfig(cityPath, cfg, info, resolved, transport)
+	mcpServers, err := resumeRuntimeMCPServersWithConfig(cityPath, cfg, info, resolved, transport, metadata)
+	if err != nil {
+		return nil, err
+	}
 	return &worker.ResolvedRuntime{
 		Command:    command,
 		WorkDir:    workDir,
