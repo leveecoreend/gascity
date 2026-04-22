@@ -51,17 +51,17 @@ func buildDepsMap(cfg *config.City) map[string][]string {
 }
 
 func freshRestartSessionKey(tp TemplateParams, meta map[string]string) (string, bool) {
-	if tp.ResolvedProvider != nil {
-		if strings.TrimSpace(tp.ResolvedProvider.SessionIDFlag) != "" {
+	if provider := resolvedProviderWithStoredResumeFallback(tp.ResolvedProvider, meta); provider != nil {
+		if strings.TrimSpace(provider.SessionIDFlag) != "" {
 			newKey, err := sessionpkg.GenerateSessionKey()
 			if err != nil {
 				return "", false
 			}
 			return newKey, true
 		}
-		if strings.TrimSpace(tp.ResolvedProvider.ResumeFlag) != "" ||
-			strings.TrimSpace(tp.ResolvedProvider.ResumeCommand) != "" ||
-			strings.TrimSpace(tp.ResolvedProvider.ResumeStyle) != "" {
+		if strings.TrimSpace(provider.ResumeFlag) != "" ||
+			strings.TrimSpace(provider.ResumeCommand) != "" ||
+			strings.TrimSpace(provider.ResumeStyle) != "" {
 			return "", true
 		}
 		return "", true
@@ -647,16 +647,18 @@ func reconcileSessionBeadsTraced(
 					match := startedConfigMatchesFingerprint(session.Metadata, agentCfg, tp.ResolvedProvider)
 					currentHash := match.currentHash
 					if match.matches && match.legacyProviderFallback {
-						liveProvider := liveSessionProviderFamily(sp, name)
+						liveProvider, liveProviderErr := liveSessionProviderFamily(sp, name)
 						expectedProvider := expectedProviderFamilyForTemplate(session, tp)
-						if liveProvider != "" && liveProvider != expectedProvider {
-							match.matches = false
-						} else if liveProvider == "" && expectedProvider != "" && sessionProviderFamily(*session) == "" {
-							// A legacy hash with no stored provider identity and no
-							// live GC_PROVIDER signal is impossible to validate
-							// against provider-family drift. Fail closed once so the
-							// session restarts and stamps authoritative metadata.
-							match.matches = false
+						if liveProviderErr == nil {
+							if liveProvider != "" && liveProvider != expectedProvider {
+								match.matches = false
+							} else if liveProvider == "" && expectedProvider != "" && sessionProviderFamily(*session) == "" {
+								// A legacy hash with no stored provider identity and no
+								// live GC_PROVIDER signal is impossible to validate
+								// against provider-family drift. Fail closed once so the
+								// session restarts and stamps authoritative metadata.
+								match.matches = false
+							}
 						}
 					}
 					if !match.matches {

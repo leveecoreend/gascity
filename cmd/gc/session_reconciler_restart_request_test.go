@@ -184,6 +184,51 @@ func TestReconcileSessionBeads_RestartRequestClearsKeyForResumeOnlyProviders(t *
 	}
 }
 
+func TestReconcileSessionBeads_RestartRequestRotatesKeyWhenResolvedProviderFallsBackToStoredSessionIDFlag(t *testing.T) {
+	env := newRestartRequestTestEnv()
+	env.cfg = &config.City{
+		Workspace:     config.Workspace{Name: "test-city"},
+		Agents:        []config.Agent{{Name: "worker", StartCommand: "true", MaxActiveSessions: restartRequestTestIntPtr(1)}},
+		NamedSessions: []config.NamedSession{{Template: "worker", Mode: "on_demand"}},
+	}
+	sessionName := config.NamedSessionRuntimeName(env.cfg.Workspace.Name, env.cfg.Workspace, "worker")
+	env.desiredState[sessionName] = TemplateParams{
+		Command:      "true",
+		SessionName:  sessionName,
+		TemplateName: "worker",
+		ResolvedProvider: &config.ResolvedProvider{
+			Name: "claude-wrapper",
+		},
+	}
+
+	session := env.createSessionBead(sessionName, "worker")
+	env.setSessionMetadata(&session, map[string]string{
+		namedSessionMetadataKey:      "true",
+		namedSessionIdentityMetadata: "worker",
+		namedSessionModeMetadata:     "on_demand",
+		"restart_requested":          "true",
+		"session_key":                "original-key",
+		"session_id_flag":            "--session-id",
+		"started_config_hash":        "hash-before-restart",
+	})
+
+	env.reconcile([]beads.Bead{session})
+
+	got, _ := env.store.Get(session.ID)
+	if got.Metadata["session_key"] == "" {
+		t.Fatal("session_key = empty, want rotated key from stored session_id_flag fallback")
+	}
+	if got.Metadata["session_key"] == "original-key" {
+		t.Fatalf("session_key = %q, want rotated key", got.Metadata["session_key"])
+	}
+	if got.Metadata["started_config_hash"] != "" {
+		t.Fatalf("started_config_hash = %q, want empty", got.Metadata["started_config_hash"])
+	}
+	if got.Metadata["continuation_reset_pending"] != "true" {
+		t.Fatalf("continuation_reset_pending = %q, want true", got.Metadata["continuation_reset_pending"])
+	}
+}
+
 func TestReconcileSessionBeads_RestartRequestClearsKeyForExplicitProviderClear(t *testing.T) {
 	env := newRestartRequestTestEnv()
 	env.cfg = &config.City{

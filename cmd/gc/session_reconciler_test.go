@@ -1695,6 +1695,74 @@ func TestReconcileSessionBeads_LegacyStartedHashWithoutProviderMetadataDrainsWhe
 	}
 }
 
+func TestReconcileSessionBeads_LegacyStartedHashWithoutProviderMetadataDoesNotDrainWhenLiveProviderProbeErrors(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := &getMetaErrorProvider{Fake: runtime.NewFake()}
+	cfg := &config.City{Agents: []config.Agent{{Name: "worker"}}}
+	desiredState := map[string]TemplateParams{
+		"worker": {
+			Command:          "test-cmd",
+			SessionName:      "worker",
+			TemplateName:     "worker",
+			ResolvedProvider: &config.ResolvedProvider{Name: "claude-wrapper", Kind: "claude", BuiltinAncestor: "claude"},
+		},
+	}
+	if err := sp.Fake.Start(context.Background(), "worker", runtime.Config{Command: "test-cmd"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name": "worker",
+			"template":     "worker",
+			"state":        "active",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.SetMetadataBatch(session.ID, map[string]string{
+		"started_config_hash": runtime.CoreFingerprint(runtime.Config{Command: "test-cmd"}),
+	}); err != nil {
+		t.Fatalf("SetMetadataBatch: %v", err)
+	}
+	session.Metadata["started_config_hash"] = runtime.CoreFingerprint(runtime.Config{Command: "test-cmd"})
+	dt := newDrainTracker()
+	clk := &clock.Fake{Time: time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)}
+	var stdout, stderr bytes.Buffer
+
+	reconcileSessionBeads(
+		context.Background(),
+		[]beads.Bead{session},
+		desiredState,
+		configuredSessionNames(cfg, "", store),
+		cfg,
+		sp,
+		store,
+		nil,
+		nil,
+		nil,
+		dt,
+		map[string]int{"worker": 1},
+		false,
+		nil,
+		"",
+		nil,
+		clk,
+		events.Discard,
+		0,
+		0,
+		&stdout,
+		&stderr,
+	)
+
+	if ds := dt.get(session.ID); ds != nil {
+		t.Fatalf("expected no drain when live provider probe errors, got %+v", ds)
+	}
+}
+
 func TestReconcileSessionBeads_LegacyStartedHashWithoutProviderMetadataDrainsOnLiveProviderMismatch(t *testing.T) {
 	env := newReconcilerTestEnv()
 	env.cfg = &config.City{Agents: []config.Agent{{Name: "worker"}}}
@@ -1929,6 +1997,43 @@ func TestStartedConfigMatchesCurrentFingerprint_LegacyProviderMetadataWithoutSes
 	}
 	if match.providerMetadataSync {
 		t.Fatalf("providerMetadataSync = true, want false until session_id_flag is committed by a fresh start")
+	}
+}
+
+func TestStartedConfigMatchesCurrentFingerprint_ResolvedProviderFallsBackToStoredSessionIDFlag(t *testing.T) {
+	currentTP := TemplateParams{
+		Command:      "/usr/bin/custom --fast",
+		TemplateName: "worker",
+		ResolvedProvider: &config.ResolvedProvider{
+			Name:            "claude-wrapper",
+			BuiltinAncestor: "claude",
+			ResumeFlag:      "--resume",
+			ResumeStyle:     "flag",
+			ResumeCommand:   "claude --resume {{.SessionKey}}",
+		},
+	}
+	fallback := map[string]string{"session_id_flag": "--session-id"}
+	meta := map[string]string{
+		"provider":         "claude-wrapper",
+		"provider_kind":    "claude",
+		"builtin_ancestor": "claude",
+		"resume_flag":      "--resume",
+		"resume_style":     "flag",
+		"resume_command":   "claude --resume {{.SessionKey}}",
+		"session_id_flag":  "--session-id",
+	}
+	meta["started_config_hash"] = coreFingerprint(
+		templateParamsToConfig(currentTP),
+		resolvedProviderWithStoredResumeFallback(currentTP.ResolvedProvider, fallback),
+		meta,
+	)
+
+	match := startedConfigMatchesCurrentFingerprint(meta, currentTP)
+	if !match.matches {
+		t.Fatalf("expected resolved provider to fall back to stored session_id_flag, got %+v", match)
+	}
+	if !match.providerMetadataSync {
+		t.Fatalf("providerMetadataSync = false, want true when current fingerprint already reflects stored resume fallback")
 	}
 }
 

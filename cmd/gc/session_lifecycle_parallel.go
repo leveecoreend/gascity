@@ -260,15 +260,15 @@ func pendingCreateRecoveryMatchesDesired(meta map[string]string, tp TemplatePara
 	return legacyProviderSessionMetadataCompatible(storedProviderMeta, desiredProviderMeta)
 }
 
-func liveSessionProviderFamily(sp runtime.Provider, sessionName string) string {
+func liveSessionProviderFamily(sp runtime.Provider, sessionName string) (string, error) {
 	if sp == nil || strings.TrimSpace(sessionName) == "" {
-		return ""
+		return "", nil
 	}
 	family, err := sp.GetMeta(sessionName, "GC_PROVIDER")
 	if err != nil {
-		return ""
+		return "", err
 	}
-	return strings.TrimSpace(family)
+	return strings.TrimSpace(family), nil
 }
 
 func expectedProviderFamilyForTemplate(session *beads.Bead, tp TemplateParams) string {
@@ -466,6 +466,7 @@ func buildPreparedStart(
 ) (*preparedStart, error) {
 	session := candidate.session
 	tp := candidate.tp
+	effectiveProvider := resolvedProviderWithStoredResumeFallback(tp.ResolvedProvider, session.Metadata)
 	agentCfg := templateParamsToConfig(tp)
 
 	// Apply template_overrides from bead metadata. These are per-session
@@ -500,15 +501,15 @@ func buildPreparedStart(
 		}
 	}
 
-	coreHash := coreFingerprint(agentCfg, tp.ResolvedProvider, session.Metadata)
-	coreBreakdown := coreFingerprintBreakdown(agentCfg, tp.ResolvedProvider, session.Metadata)
+	coreHash := coreFingerprint(agentCfg, effectiveProvider, session.Metadata)
+	coreBreakdown := coreFingerprintBreakdown(agentCfg, effectiveProvider, session.Metadata)
 	liveHash := runtime.LiveFingerprint(agentCfg)
 	if wd := resolveTaskWorkDir(store, session.ID, candidate.name(), strings.TrimSpace(session.Metadata["alias"]), candidate.logicalTemplate(cfg)); wd != "" {
 		agentCfg.WorkDir = wd
 	} else if wd := session.Metadata["work_dir"]; wd != "" {
 		agentCfg.WorkDir = wd
 	}
-	if session.Metadata["session_key"] == "" && tp.ResolvedProvider != nil && tp.ResolvedProvider.SessionIDFlag != "" {
+	if session.Metadata["session_key"] == "" && effectiveProvider != nil && effectiveProvider.SessionIDFlag != "" {
 		sessionKey, err := sessionpkg.GenerateSessionKey()
 		if err != nil {
 			return nil, fmt.Errorf("generating session key: %w", err)
@@ -523,10 +524,10 @@ func buildPreparedStart(
 		}
 		session.Metadata["session_key"] = sessionKey
 	}
-	if sk := session.Metadata["session_key"]; sk != "" && tp.ResolvedProvider != nil {
+	if sk := session.Metadata["session_key"]; sk != "" && effectiveProvider != nil {
 		firstStart := session.Metadata["started_config_hash"] == ""
 		forceFresh := session.Metadata["wake_mode"] == "fresh"
-		agentCfg.Command = resolveSessionCommand(agentCfg.Command, sk, tp.ResolvedProvider, firstStart, forceFresh)
+		agentCfg.Command = resolveSessionCommand(agentCfg.Command, sk, effectiveProvider, firstStart, forceFresh)
 	}
 	firstStart := session.Metadata["started_config_hash"] == ""
 	forceFresh := session.Metadata["wake_mode"] == "fresh"
@@ -611,8 +612,8 @@ func buildPreparedStart(
 	agentCfg.Env = mergeEnv(agentCfg.Env, runtimeEnv)
 	gcProvider := ""
 	projectGCProvider := false
-	if tp.ResolvedProvider != nil {
-		gcProvider = resolvedProviderLaunchFamily(tp.ResolvedProvider)
+	if effectiveProvider != nil {
+		gcProvider = resolvedProviderLaunchFamily(effectiveProvider)
 		projectGCProvider = true
 	} else if fallback := sessionProviderFamily(*session); fallback != "" {
 		gcProvider = fallback
@@ -921,12 +922,46 @@ func recoverRunningPendingCreate(
 		return false
 	}
 	fingerprint, staged := pendingStartFingerprintFromMetadata(session.Metadata)
-	storedProviderMeta, storedProviderKnown := providerSessionFingerprintMetadata(nil, session.Metadata)
-	desiredProviderMeta, desiredProviderKnown := providerSessionFingerprintMetadata(tp.ResolvedProvider, nil)
 	if !staged {
 		desiredProviderName := ""
 		if tp.ResolvedProvider != nil {
 			desiredProviderName = strings.TrimSpace(tp.ResolvedProvider.Name)
+		}
+		if confirmPendingStart(session.Metadata["state"]) {
+			// Unstaged pending-create beads predate the stage-before-start
+			// contract. They do not retain enough input state to prove the full
+			// provider-aware core hash, so fail closed once and let the restart
+			// stamp authoritative metadata.
+			decision := "pending_create_unstaged_missing_fingerprint"
+			if !pendingCreateRecoveryMatchesDesired(session.Metadata, tp) {
+				decision = "pending_create_unstaged_drift"
+			}
+			batch := map[string]string{
+				"restart_requested": "true",
+			}
+			clearPendingStartFingerprintMetadata(batch)
+			if err := store.SetMetadataBatch(session.ID, batch); err != nil {
+				if trace != nil {
+					trace.recordDecision("reconciler.session.pending_create", tp.TemplateName, tp.SessionName, decision+"_write_failed", "failed", traceRecordPayload{
+						"error":            err.Error(),
+						"stored_command":   strings.TrimSpace(session.Metadata["command"]),
+						"desired_command":  strings.TrimSpace(tp.Command),
+						"stored_provider":  strings.TrimSpace(session.Metadata["provider"]),
+						"desired_provider": desiredProviderName,
+					}, nil, "")
+				}
+				return false
+			}
+			applySessionMetadataBatch(session, batch)
+			if trace != nil {
+				trace.recordDecision("reconciler.session.pending_create", tp.TemplateName, tp.SessionName, decision, "restart_requested", traceRecordPayload{
+					"stored_command":   strings.TrimSpace(session.Metadata["command"]),
+					"desired_command":  strings.TrimSpace(tp.Command),
+					"stored_provider":  strings.TrimSpace(session.Metadata["provider"]),
+					"desired_provider": desiredProviderName,
+				}, nil, "")
+			}
+			return true
 		}
 		if !pendingCreateRecoveryMatchesDesired(session.Metadata, tp) {
 			batch := map[string]string{
@@ -982,38 +1017,8 @@ func recoverRunningPendingCreate(
 	if expectedProvider == "" {
 		expectedProvider = expectedProviderFamilyForTemplate(session, tp)
 	}
-	liveProvider := liveSessionProviderFamily(sp, sessionName)
-	if !staged && confirmPendingStart(session.Metadata["state"]) && expectedProvider != "" && liveProvider == "" && (!storedProviderKnown || !desiredProviderKnown) {
-		batch := map[string]string{
-			"restart_requested": "true",
-		}
-		clearPendingStartFingerprintMetadata(batch)
-		if err := store.SetMetadataBatch(session.ID, batch); err != nil {
-			if trace != nil {
-				trace.recordDecision("reconciler.session.pending_create", tp.TemplateName, tp.SessionName, "pending_create_provider_uncertain_write_failed", "failed", traceRecordPayload{
-					"error":                  err.Error(),
-					"expected_provider":      expectedProvider,
-					"stored_provider_known":  strconv.FormatBool(storedProviderKnown),
-					"desired_provider_known": strconv.FormatBool(desiredProviderKnown),
-					"stored_provider":        strings.TrimSpace(storedProviderMeta["provider"]),
-					"desired_provider":       strings.TrimSpace(desiredProviderMeta["provider"]),
-				}, nil, "")
-			}
-			return false
-		}
-		applySessionMetadataBatch(session, batch)
-		if trace != nil {
-			trace.recordDecision("reconciler.session.pending_create", tp.TemplateName, tp.SessionName, "pending_create_provider_uncertain", "restart_requested", traceRecordPayload{
-				"expected_provider":      expectedProvider,
-				"stored_provider_known":  strconv.FormatBool(storedProviderKnown),
-				"desired_provider_known": strconv.FormatBool(desiredProviderKnown),
-				"stored_provider":        strings.TrimSpace(storedProviderMeta["provider"]),
-				"desired_provider":       strings.TrimSpace(desiredProviderMeta["provider"]),
-			}, nil, "")
-		}
-		return true
-	}
-	if liveProvider != "" && liveProvider != expectedProvider {
+	liveProvider, liveProviderErr := liveSessionProviderFamily(sp, sessionName)
+	if liveProviderErr == nil && liveProvider != "" && liveProvider != expectedProvider {
 		batch := map[string]string{
 			"restart_requested": "true",
 		}

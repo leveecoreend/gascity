@@ -603,6 +603,7 @@ func providerSessionFingerprintMetadata(
 	fallback map[string]string,
 ) (map[string]string, bool) {
 	if resolved != nil {
+		resolved = resolvedProviderWithStoredResumeFallback(resolved, fallback)
 		selected := make(map[string]string, len(resolvedProviderConfigMetadataKeys))
 		meta := resolvedProviderSessionMetadata(resolved)
 		for _, key := range resolvedProviderConfigMetadataKeys {
@@ -627,6 +628,70 @@ func providerSessionFingerprintMetadata(
 		return nil, false
 	}
 	return selected, true
+}
+
+func resolvedProviderExplicitClear(resolved *config.ResolvedProvider) bool {
+	if resolved == nil {
+		return false
+	}
+	meta := resolvedProviderSessionMetadata(resolved)
+	for _, key := range resolvedProviderConfigMetadataKeys {
+		if strings.TrimSpace(meta[key]) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func resolvedProviderWithStoredResumeFallback(
+	resolved *config.ResolvedProvider,
+	fallback map[string]string,
+) *config.ResolvedProvider {
+	if resolved == nil || len(fallback) == 0 || resolvedProviderExplicitClear(resolved) {
+		return resolved
+	}
+	clone := *resolved
+	for _, key := range resolvedProviderResumeMetadataKeys {
+		if strings.TrimSpace(providerSessionMetadataValue(&clone, key)) != "" {
+			continue
+		}
+		setProviderSessionMetadataValue(&clone, key, strings.TrimSpace(fallback[key]))
+	}
+	return &clone
+}
+
+func providerSessionMetadataValue(resolved *config.ResolvedProvider, key string) string {
+	if resolved == nil {
+		return ""
+	}
+	switch key {
+	case "resume_flag":
+		return resolved.ResumeFlag
+	case "resume_style":
+		return resolved.ResumeStyle
+	case "resume_command":
+		return resolved.ResumeCommand
+	case "session_id_flag":
+		return resolved.SessionIDFlag
+	default:
+		return ""
+	}
+}
+
+func setProviderSessionMetadataValue(resolved *config.ResolvedProvider, key, value string) {
+	if resolved == nil {
+		return
+	}
+	switch key {
+	case "resume_flag":
+		resolved.ResumeFlag = value
+	case "resume_style":
+		resolved.ResumeStyle = value
+	case "resume_command":
+		resolved.ResumeCommand = value
+	case "session_id_flag":
+		resolved.SessionIDFlag = value
+	}
 }
 
 func withProviderSessionFingerprint(cfg runtime.Config, resolved *config.ResolvedProvider, fallback map[string]string) runtime.Config {

@@ -50,6 +50,14 @@ func (s *failNthMetadataBatchStore) SetMetadataBatch(id string, kvs map[string]s
 	return s.MemStore.SetMetadataBatch(id, kvs)
 }
 
+type getMetaErrorProvider struct {
+	*runtime.Fake
+}
+
+func (p *getMetaErrorProvider) GetMeta(name, key string) (string, error) {
+	return "", fmt.Errorf("metadata unavailable for %s/%s", name, key)
+}
+
 type gatedStartProvider struct {
 	*runtime.Fake
 	mu            sync.Mutex
@@ -1156,6 +1164,44 @@ func TestPrepareStartCandidate_StagesPendingStartFingerprintBeforeLaunch(t *test
 	}
 }
 
+func TestBuildPreparedStart_UsesStoredSessionIDFlagWhenResolvedProviderIncomplete(t *testing.T) {
+	store := beads.NewMemStore()
+	bead, err := store.Create(beads.Bead{
+		Title:  "helper",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name":    "sky",
+			"session_key":     "session-123",
+			"session_id_flag": "--session-id",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tp := TemplateParams{
+		Command:      "agent run",
+		SessionName:  "sky",
+		TemplateName: "helper",
+		ResolvedProvider: &config.ResolvedProvider{
+			Name: "claude-wrapper",
+		},
+	}
+
+	prepared, err := buildPreparedStart(startCandidate{session: &bead, tp: tp}, &config.City{Agents: []config.Agent{{Name: "helper"}}}, store)
+	if err != nil {
+		t.Fatalf("buildPreparedStart: %v", err)
+	}
+
+	if !strings.Contains(prepared.cfg.Command, "--session-id session-123") {
+		t.Fatalf("command = %q, want stored session_id_flag fallback applied", prepared.cfg.Command)
+	}
+	wantHash := coreFingerprint(templateParamsToConfig(tp), resolvedProviderWithStoredResumeFallback(tp.ResolvedProvider, bead.Metadata), bead.Metadata)
+	if prepared.coreHash != wantHash {
+		t.Fatalf("coreHash = %q, want %q", prepared.coreHash, wantHash)
+	}
+}
+
 func TestRecoverRunningPendingCreate_UsesStagedPendingFingerprintAcrossDesiredProviderChange(t *testing.T) {
 	store := beads.NewMemStore()
 	oldTP := TemplateParams{
@@ -1396,7 +1442,7 @@ func TestRecoverRunningPendingCreate_SetsRestartRequestedWhenDesiredProviderChan
 	}
 }
 
-func TestRecoverRunningPendingCreate_DoesNotRestartWhenResolvedProviderUnavailableWithoutStagedFingerprintAndLiveProviderMatches(t *testing.T) {
+func TestRecoverRunningPendingCreate_SetsRestartRequestedWhenPendingFingerprintMissingWithoutStagedFingerprintEvenIfProviderMatches(t *testing.T) {
 	store := beads.NewMemStore()
 	bead, err := store.Create(beads.Bead{
 		Title:  "helper",
@@ -1438,14 +1484,14 @@ func TestRecoverRunningPendingCreate_DoesNotRestartWhenResolvedProviderUnavailab
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Metadata["restart_requested"] != "" {
-		t.Fatalf("restart_requested = %q, want empty", got.Metadata["restart_requested"])
+	if got.Metadata["restart_requested"] != "true" {
+		t.Fatalf("restart_requested = %q, want true", got.Metadata["restart_requested"])
 	}
-	if got.Metadata["pending_create_claim"] != "" {
-		t.Fatalf("pending_create_claim = %q, want cleared", got.Metadata["pending_create_claim"])
+	if got.Metadata["pending_create_claim"] != "true" {
+		t.Fatalf("pending_create_claim = %q, want preserved until restart", got.Metadata["pending_create_claim"])
 	}
-	if got.Metadata["started_config_hash"] == "" {
-		t.Fatal("started_config_hash = empty, want healed hash")
+	if got.Metadata["started_config_hash"] != "" {
+		t.Fatalf("started_config_hash = %q, want empty until restarted", got.Metadata["started_config_hash"])
 	}
 }
 
@@ -1548,6 +1594,57 @@ func TestRecoverRunningPendingCreate_SetsRestartRequestedWhenStoredProviderIdent
 	}
 	if got.Metadata[pendingStartedConfigHashMetadataKey] != "" {
 		t.Fatalf("%s = %q, want cleared when scheduling restart", pendingStartedConfigHashMetadataKey, got.Metadata[pendingStartedConfigHashMetadataKey])
+	}
+}
+
+func TestRecoverRunningPendingCreate_UsesStagedPendingFingerprintWhenLiveProviderProbeErrors(t *testing.T) {
+	store := beads.NewMemStore()
+	bead, err := store.Create(beads.Bead{
+		Title:  "helper",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name":                      "sky",
+			"pending_create_claim":              "true",
+			"state":                             "creating",
+			pendingStartedConfigHashMetadataKey: "old-hash",
+			pendingStartedLiveHashMetadataKey:   "old-live-hash",
+			pendingProviderFamilyMetadataKey:    "claude",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := &getMetaErrorProvider{Fake: runtime.NewFake()}
+	if err := sp.Start(context.Background(), "sky", runtime.Config{Command: "test-cmd"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	tp := TemplateParams{
+		Command:      "test-cmd",
+		SessionName:  "sky",
+		TemplateName: "helper",
+		ResolvedProvider: &config.ResolvedProvider{
+			Name:            "claude-wrapper",
+			BuiltinAncestor: "claude",
+		},
+	}
+
+	if !recoverRunningPendingCreate(&bead, tp, &config.City{Agents: []config.Agent{{Name: "helper"}}}, store, sp, &clock.Fake{Time: time.Date(2026, 4, 22, 12, 14, 0, 0, time.UTC)}, nil) {
+		t.Fatal("recoverRunningPendingCreate returned false, want true")
+	}
+
+	got, err := store.Get(bead.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata["restart_requested"] != "" {
+		t.Fatalf("restart_requested = %q, want empty", got.Metadata["restart_requested"])
+	}
+	if got.Metadata["started_config_hash"] != "old-hash" {
+		t.Fatalf("started_config_hash = %q, want staged hash", got.Metadata["started_config_hash"])
+	}
+	if got.Metadata["pending_create_claim"] != "" {
+		t.Fatalf("pending_create_claim = %q, want cleared after staged recovery", got.Metadata["pending_create_claim"])
 	}
 }
 

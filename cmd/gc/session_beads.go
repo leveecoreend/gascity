@@ -34,6 +34,12 @@ var (
 		"resume_command",
 		"session_id_flag",
 	}
+	resolvedProviderResumeMetadataKeys = []string{
+		"resume_flag",
+		"resume_style",
+		"resume_command",
+		"session_id_flag",
+	}
 )
 
 // loadSessionBeads returns all open session beads from the store.
