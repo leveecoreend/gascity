@@ -1,6 +1,8 @@
 package config
 
 import (
+	"strings"
+
 	"github.com/gastownhall/gascity/internal/shellquote"
 	workerbuiltin "github.com/gastownhall/gascity/internal/worker/builtin"
 )
@@ -231,7 +233,17 @@ func (rp *ResolvedProvider) ACPCommandString() string {
 // DefaultSessionTransport returns the transport used for provider-backed
 // sessions when no template-level session override exists.
 func (rp *ResolvedProvider) DefaultSessionTransport() string {
-	if rp != nil && rp.SupportsACP {
+	if rp == nil || !rp.SupportsACP {
+		return ""
+	}
+	family := strings.TrimSpace(rp.BuiltinAncestor)
+	if family == "" {
+		family = strings.TrimSpace(rp.Kind)
+	}
+	if family == "" {
+		family = strings.TrimSpace(rp.Name)
+	}
+	if family == "opencode" {
 		return "acp"
 	}
 	return ""

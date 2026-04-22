@@ -296,6 +296,41 @@ func TestBuildSessionResumeUsesConfiguredACPCommandForLegacyProviderSessionWitho
 	}
 }
 
+func TestBuildSessionResumeKeepsDefaultCommandForLegacyProviderSessionOnACPEnabledCustomProvider(t *testing.T) {
+	supportsACP := true
+	fs := newSessionFakeState(t)
+	fs.cfg = &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Providers: map[string]config.ProviderSpec{
+			"custom-acp": {
+				DisplayName: "Custom ACP",
+				Command:     "/bin/echo",
+				PathCheck:   "true",
+				SupportsACP: &supportsACP,
+				ACPCommand:  "/bin/echo",
+				ACPArgs:     []string{"acp"},
+			},
+		},
+	}
+
+	srv := New(fs)
+	info := session.Info{
+		ID:       "gc-1",
+		Template: "custom-acp",
+		Command:  "/bin/echo",
+		Provider: "custom-acp",
+		WorkDir:  "/tmp/workdir",
+	}
+
+	cmd, _, err := srv.buildSessionResume(info)
+	if err != nil {
+		t.Fatalf("buildSessionResume: %v", err)
+	}
+	if got, want := cmd, "/bin/echo"; got != want {
+		t.Fatalf("resume command = %q, want %q", got, want)
+	}
+}
+
 func TestBuildSessionResumeUsesStoredACPTransportForTemplateSession(t *testing.T) {
 	supportsACP := true
 	fs := newSessionFakeState(t)

@@ -414,6 +414,43 @@ acp_args = ["acp"]
 	}
 }
 
+func TestResolvedWorkerRuntimeWithConfigKeepsDefaultTransportForLegacyProviderSessionOnACPEnabledCustomProvider(t *testing.T) {
+	cityDir := t.TempDir()
+	writePhase0InterfaceCity(t, cityDir, `[workspace]
+name = "test-city"
+
+[beads]
+provider = "file"
+
+[providers.custom-acp]
+command = "/bin/echo"
+path_check = "true"
+supports_acp = true
+acp_command = "/bin/echo"
+acp_args = ["acp"]
+`)
+
+	cfg, err := loadCityConfig(cityDir)
+	if err != nil {
+		t.Fatalf("loadCityConfig: %v", err)
+	}
+
+	resolved, err := resolvedWorkerRuntimeWithConfig(cityDir, cfg, session.Info{
+		Template: "custom-acp",
+		Command:  "/bin/echo",
+		WorkDir:  cityDir,
+	}, "provider")
+	if err != nil {
+		t.Fatalf("resolvedWorkerRuntimeWithConfig: %v", err)
+	}
+	if resolved == nil {
+		t.Fatal("resolvedWorkerRuntimeWithConfig() = nil")
+	}
+	if got, want := resolved.Command, "/bin/echo"; got != want {
+		t.Fatalf("Command = %q, want %q", got, want)
+	}
+}
+
 func TestWorkerHandleForSessionWithConfigUsesResolvedProviderOnResume(t *testing.T) {
 	skipSlowCmdGCTest(t, "waits through stale session-key detection; run make test-cmd-gc-process for full coverage")
 	cityDir := t.TempDir()

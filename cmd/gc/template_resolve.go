@@ -476,7 +476,10 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 			)
 		}
 	}
-	mcpServers := materialize.RuntimeMCPServers(mcpCatalog.Servers)
+	var mcpServers []runtime.MCPServerConfig
+	if cfgAgent.Session == "acp" {
+		mcpServers = materialize.RuntimeMCPServers(mcpCatalog.Servers)
+	}
 
 	// Step 12: Build startup hints.
 	hints := agent.StartupHints{
@@ -584,11 +587,16 @@ func templateParamsToConfig(tp TemplateParams) runtime.Config {
 		env[startupPromptDeliveredEnv] = "1"
 	}
 	return runtime.Config{
-		Command:                tp.Command,
-		PromptSuffix:           promptSuffix,
-		PromptFlag:             promptFlag,
-		Env:                    env,
-		MCPServers:             tp.MCPServers,
+		Command:      tp.Command,
+		PromptSuffix: promptSuffix,
+		PromptFlag:   promptFlag,
+		Env:          env,
+		MCPServers: func() []runtime.MCPServerConfig {
+			if tp.IsACP {
+				return tp.MCPServers
+			}
+			return nil
+		}(),
 		WorkDir:                tp.WorkDir,
 		ReadyPromptPrefix:      tp.Hints.ReadyPromptPrefix,
 		ReadyDelayMs:           tp.Hints.ReadyDelayMs,

@@ -347,3 +347,52 @@ func TestACPCommandString(t *testing.T) {
 		}
 	})
 }
+
+func TestDefaultSessionTransportOpenCodeFamilyDefaultsToACP(t *testing.T) {
+	tests := []struct {
+		name string
+		rp   ResolvedProvider
+	}{
+		{
+			name: "direct builtin name",
+			rp: ResolvedProvider{
+				Name:        "opencode",
+				SupportsACP: true,
+			},
+		},
+		{
+			name: "builtin ancestor",
+			rp: ResolvedProvider{
+				Name:            "custom-opencode",
+				BuiltinAncestor: "opencode",
+				SupportsACP:     true,
+			},
+		},
+		{
+			name: "deprecated kind fallback",
+			rp: ResolvedProvider{
+				Name:        "custom-opencode",
+				Kind:        "opencode",
+				SupportsACP: true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.rp.DefaultSessionTransport(); got != "acp" {
+				t.Fatalf("DefaultSessionTransport() = %q, want %q", got, "acp")
+			}
+		})
+	}
+}
+
+func TestDefaultSessionTransportSupportsACPDoesNotImplyACPDefault(t *testing.T) {
+	rp := &ResolvedProvider{
+		Name:        "custom-acp",
+		SupportsACP: true,
+	}
+	if got := rp.DefaultSessionTransport(); got != "" {
+		t.Fatalf("DefaultSessionTransport() = %q, want empty default transport", got)
+	}
+}
