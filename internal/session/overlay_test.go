@@ -21,6 +21,7 @@ func TestOverlay_BannedKeys(t *testing.T) {
 		"command", "provider", "provider_kind", "builtin_ancestor", "session_key", "state",
 		"generation", "continuation_epoch", "continuation_reset_pending", "instance_token",
 		"wait_hold", "sleep_intent", "resume_flag", "resume_command", "resume_style", "session_id_flag",
+		"pending_started_config_hash", "pending_started_live_hash", "pending_core_hash_breakdown", "pending_provider_family",
 	} {
 		err := ValidateOverlay(
 			map[string]string{key: "value"},

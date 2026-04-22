@@ -921,6 +921,8 @@ func recoverRunningPendingCreate(
 		return false
 	}
 	fingerprint, staged := pendingStartFingerprintFromMetadata(session.Metadata)
+	storedProviderMeta, storedProviderKnown := providerSessionFingerprintMetadata(nil, session.Metadata)
+	desiredProviderMeta, desiredProviderKnown := providerSessionFingerprintMetadata(tp.ResolvedProvider, nil)
 	if !staged {
 		desiredProviderName := ""
 		if tp.ResolvedProvider != nil {
@@ -981,6 +983,36 @@ func recoverRunningPendingCreate(
 		expectedProvider = expectedProviderFamilyForTemplate(session, tp)
 	}
 	liveProvider := liveSessionProviderFamily(sp, sessionName)
+	if !staged && confirmPendingStart(session.Metadata["state"]) && expectedProvider != "" && liveProvider == "" && (!storedProviderKnown || !desiredProviderKnown) {
+		batch := map[string]string{
+			"restart_requested": "true",
+		}
+		clearPendingStartFingerprintMetadata(batch)
+		if err := store.SetMetadataBatch(session.ID, batch); err != nil {
+			if trace != nil {
+				trace.recordDecision("reconciler.session.pending_create", tp.TemplateName, tp.SessionName, "pending_create_provider_uncertain_write_failed", "failed", traceRecordPayload{
+					"error":                  err.Error(),
+					"expected_provider":      expectedProvider,
+					"stored_provider_known":  strconv.FormatBool(storedProviderKnown),
+					"desired_provider_known": strconv.FormatBool(desiredProviderKnown),
+					"stored_provider":        strings.TrimSpace(storedProviderMeta["provider"]),
+					"desired_provider":       strings.TrimSpace(desiredProviderMeta["provider"]),
+				}, nil, "")
+			}
+			return false
+		}
+		applySessionMetadataBatch(session, batch)
+		if trace != nil {
+			trace.recordDecision("reconciler.session.pending_create", tp.TemplateName, tp.SessionName, "pending_create_provider_uncertain", "restart_requested", traceRecordPayload{
+				"expected_provider":      expectedProvider,
+				"stored_provider_known":  strconv.FormatBool(storedProviderKnown),
+				"desired_provider_known": strconv.FormatBool(desiredProviderKnown),
+				"stored_provider":        strings.TrimSpace(storedProviderMeta["provider"]),
+				"desired_provider":       strings.TrimSpace(desiredProviderMeta["provider"]),
+			}, nil, "")
+		}
+		return true
+	}
 	if liveProvider != "" && liveProvider != expectedProvider {
 		batch := map[string]string{
 			"restart_requested": "true",

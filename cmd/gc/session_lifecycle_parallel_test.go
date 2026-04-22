@@ -1396,7 +1396,7 @@ func TestRecoverRunningPendingCreate_SetsRestartRequestedWhenDesiredProviderChan
 	}
 }
 
-func TestRecoverRunningPendingCreate_DoesNotRestartWhenResolvedProviderUnavailableWithoutStagedFingerprint(t *testing.T) {
+func TestRecoverRunningPendingCreate_DoesNotRestartWhenResolvedProviderUnavailableWithoutStagedFingerprintAndLiveProviderMatches(t *testing.T) {
 	store := beads.NewMemStore()
 	bead, err := store.Create(beads.Bead{
 		Title:  "helper",
@@ -1446,6 +1446,108 @@ func TestRecoverRunningPendingCreate_DoesNotRestartWhenResolvedProviderUnavailab
 	}
 	if got.Metadata["started_config_hash"] == "" {
 		t.Fatal("started_config_hash = empty, want healed hash")
+	}
+}
+
+func TestRecoverRunningPendingCreate_SetsRestartRequestedWhenResolvedProviderUnavailableAndLiveProviderUnknownWithoutStagedFingerprint(t *testing.T) {
+	store := beads.NewMemStore()
+	bead, err := store.Create(beads.Bead{
+		Title:  "helper",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name":         "sky",
+			"pending_create_claim": "true",
+			"state":                "creating",
+			"command":              "test-cmd",
+			"provider":             "claude-wrapper-a",
+			"provider_kind":        "claude",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := runtime.NewFake()
+	if err := sp.Start(context.Background(), "sky", runtime.Config{Command: "test-cmd"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := sp.SetMeta("sky", "GC_SESSION_ID", bead.ID); err != nil {
+		t.Fatalf("SetMeta(GC_SESSION_ID): %v", err)
+	}
+	tp := TemplateParams{
+		Command:      "test-cmd",
+		SessionName:  "sky",
+		TemplateName: "helper",
+	}
+
+	if !recoverRunningPendingCreate(&bead, tp, &config.City{Agents: []config.Agent{{Name: "helper"}}}, store, sp, &clock.Fake{Time: time.Date(2026, 4, 22, 12, 13, 50, 0, time.UTC)}, nil) {
+		t.Fatal("recoverRunningPendingCreate returned false, want true")
+	}
+
+	got, err := store.Get(bead.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata["restart_requested"] != "true" {
+		t.Fatalf("restart_requested = %q, want true", got.Metadata["restart_requested"])
+	}
+	if got.Metadata["started_config_hash"] != "" {
+		t.Fatalf("started_config_hash = %q, want empty until restarted", got.Metadata["started_config_hash"])
+	}
+	if got.Metadata[pendingStartedConfigHashMetadataKey] != "" {
+		t.Fatalf("%s = %q, want cleared when scheduling restart", pendingStartedConfigHashMetadataKey, got.Metadata[pendingStartedConfigHashMetadataKey])
+	}
+}
+
+func TestRecoverRunningPendingCreate_SetsRestartRequestedWhenStoredProviderIdentityUnknownAndLiveProviderUnknownWithoutStagedFingerprint(t *testing.T) {
+	store := beads.NewMemStore()
+	bead, err := store.Create(beads.Bead{
+		Title:  "helper",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name":         "sky",
+			"pending_create_claim": "true",
+			"state":                "creating",
+			"command":              "test-cmd",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp := runtime.NewFake()
+	if err := sp.Start(context.Background(), "sky", runtime.Config{Command: "test-cmd"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := sp.SetMeta("sky", "GC_SESSION_ID", bead.ID); err != nil {
+		t.Fatalf("SetMeta(GC_SESSION_ID): %v", err)
+	}
+	tp := TemplateParams{
+		Command:      "test-cmd",
+		SessionName:  "sky",
+		TemplateName: "helper",
+		ResolvedProvider: &config.ResolvedProvider{
+			Name:            "claude-wrapper-a",
+			BuiltinAncestor: "claude",
+		},
+	}
+
+	if !recoverRunningPendingCreate(&bead, tp, &config.City{Agents: []config.Agent{{Name: "helper"}}}, store, sp, &clock.Fake{Time: time.Date(2026, 4, 22, 12, 13, 55, 0, time.UTC)}, nil) {
+		t.Fatal("recoverRunningPendingCreate returned false, want true")
+	}
+
+	got, err := store.Get(bead.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata["restart_requested"] != "true" {
+		t.Fatalf("restart_requested = %q, want true", got.Metadata["restart_requested"])
+	}
+	if got.Metadata["started_config_hash"] != "" {
+		t.Fatalf("started_config_hash = %q, want empty until restarted", got.Metadata["started_config_hash"])
+	}
+	if got.Metadata[pendingStartedConfigHashMetadataKey] != "" {
+		t.Fatalf("%s = %q, want cleared when scheduling restart", pendingStartedConfigHashMetadataKey, got.Metadata[pendingStartedConfigHashMetadataKey])
 	}
 }
 
