@@ -106,6 +106,35 @@ func TestRegisterCityWithSupervisorKeepsRegistrationWhenCityNeverBecomesReady(t 
 	}
 }
 
+func TestRegisterCityForAPIRegistersWithoutWaitingForReadiness(t *testing.T) {
+	t.Setenv("GC_HOME", t.TempDir())
+
+	cityPath := filepath.Join(t.TempDir(), "bright-lights")
+	if err := os.MkdirAll(cityPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"bright-lights\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := registerCityForAPI(cityPath, "api-name"); err != nil {
+		t.Fatalf("registerCityForAPI: %v", err)
+	}
+
+	reg := supervisor.NewRegistry(supervisor.RegistryPath())
+	entries, err := reg.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("registry entries = %+v, want one", entries)
+	}
+	assertSameTestPath(t, entries[0].Path, cityPath)
+	if entries[0].EffectiveName() != "api-name" {
+		t.Fatalf("effective name = %q, want api-name", entries[0].EffectiveName())
+	}
+}
+
 func TestRegisterCityWithSupervisorRetriesControllerLockInitFailure(t *testing.T) {
 	gcHome := t.TempDir()
 	t.Setenv("GC_HOME", gcHome)
