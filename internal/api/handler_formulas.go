@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gastownhall/gascity/internal/formula"
+	"github.com/gastownhall/gascity/internal/molecule"
 )
 
 var (
@@ -182,6 +183,11 @@ func buildFormulaDetail(ctx context.Context, name string, paths []string, _ stri
 	recipe, err := formula.Compile(ctx, name, paths, vars)
 	if err != nil {
 		return nil, err
+	}
+	if len(vars) > 0 {
+		if err := molecule.ValidateRecipeRuntimeVars(recipe, molecule.Options{Vars: vars}); err != nil {
+			return nil, fmt.Errorf("formula %q: %w", name, err)
+		}
 	}
 	displayVars := formula.ApplyDefaults(resolved, vars)
 
