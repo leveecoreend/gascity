@@ -270,6 +270,193 @@ func TestCachingStoreParentListRefreshesReparentedChildren(t *testing.T) {
 	}
 }
 
+func TestCachingStoreParentListPreservesConcurrentUpdate(t *testing.T) {
+	mem := beads.NewMemStore()
+	parent, err := mem.Create(beads.Bead{Title: "parent"})
+	if err != nil {
+		t.Fatalf("Create(parent): %v", err)
+	}
+	child, err := mem.Create(beads.Bead{Title: "before", ParentID: parent.ID})
+	if err != nil {
+		t.Fatalf("Create(child): %v", err)
+	}
+	backing := &parentListRaceStore{
+		Store:    mem,
+		parentID: parent.ID,
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		stale:    []beads.Bead{child},
+	}
+	cs := beads.NewCachingStoreForTest(backing, nil)
+	if err := cs.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	childrenCh := make(chan []beads.Bead, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		children, listErr := cs.List(beads.ListQuery{ParentID: parent.ID})
+		if listErr != nil {
+			errCh <- listErr
+			return
+		}
+		childrenCh <- children
+	}()
+
+	<-backing.started
+	title := "after concurrent update"
+	if err := cs.Update(child.ID, beads.UpdateOpts{Title: &title}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	close(backing.release)
+
+	select {
+	case listErr := <-errCh:
+		t.Fatalf("List(parent): %v", listErr)
+	case children := <-childrenCh:
+		if len(children) != 1 || children[0].Title != title {
+			t.Fatalf("List(parent) = %#v, want updated title %q", children, title)
+		}
+	}
+
+	got, err := cs.Get(child.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Title != title {
+		t.Fatalf("Get title = %q, want %q", got.Title, title)
+	}
+}
+
+func TestCachingStoreParentListDoesNotResurrectConcurrentDelete(t *testing.T) {
+	mem := beads.NewMemStore()
+	parent, err := mem.Create(beads.Bead{Title: "parent"})
+	if err != nil {
+		t.Fatalf("Create(parent): %v", err)
+	}
+	child, err := mem.Create(beads.Bead{Title: "before", ParentID: parent.ID})
+	if err != nil {
+		t.Fatalf("Create(child): %v", err)
+	}
+	backing := &parentListRaceStore{
+		Store:    mem,
+		parentID: parent.ID,
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		stale:    []beads.Bead{child},
+	}
+	cs := beads.NewCachingStoreForTest(backing, nil)
+	if err := cs.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	childrenCh := make(chan []beads.Bead, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		children, listErr := cs.List(beads.ListQuery{ParentID: parent.ID})
+		if listErr != nil {
+			errCh <- listErr
+			return
+		}
+		childrenCh <- children
+	}()
+
+	<-backing.started
+	if err := cs.Delete(child.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	close(backing.release)
+
+	select {
+	case listErr := <-errCh:
+		t.Fatalf("List(parent): %v", listErr)
+	case children := <-childrenCh:
+		if len(children) != 0 {
+			t.Fatalf("List(parent) = %#v, want deleted child omitted", children)
+		}
+	}
+
+	if _, err := cs.Get(child.ID); !errors.Is(err, beads.ErrNotFound) {
+		t.Fatalf("Get after delete error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestCachingStoreDirtyGetPreservesConcurrentEvent(t *testing.T) {
+	mem := beads.NewMemStore()
+	original, err := mem.Create(beads.Bead{Title: "before"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	backing := &dirtyGetRaceStore{Store: mem}
+	cs := beads.NewCachingStoreForTest(backing, nil)
+	if err := cs.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	firstTitle := "after first update"
+	backing.mu.Lock()
+	backing.failNextGet = true
+	backing.mu.Unlock()
+	if err := cs.Update(original.ID, beads.UpdateOpts{Title: &firstTitle}); err != nil {
+		t.Fatalf("Update(first): %v", err)
+	}
+
+	stale, err := mem.Get(original.ID)
+	if err != nil {
+		t.Fatalf("Get(backing stale): %v", err)
+	}
+	backing.mu.Lock()
+	backing.stale = stale
+	backing.started = make(chan struct{})
+	backing.release = make(chan struct{})
+	backing.blockNextGet = true
+	backing.mu.Unlock()
+
+	gotCh := make(chan beads.Bead, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		got, getErr := cs.Get(original.ID)
+		if getErr != nil {
+			errCh <- getErr
+			return
+		}
+		gotCh <- got
+	}()
+
+	<-backing.started
+	secondTitle := "after concurrent event"
+	if err := mem.Update(original.ID, beads.UpdateOpts{Title: &secondTitle}); err != nil {
+		t.Fatalf("Update(backing second): %v", err)
+	}
+	eventBead, err := mem.Get(original.ID)
+	if err != nil {
+		t.Fatalf("Get(backing second): %v", err)
+	}
+	payload, err := json.Marshal(eventBead)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	cs.ApplyEvent("bead.updated", payload)
+	close(backing.release)
+
+	select {
+	case getErr := <-errCh:
+		t.Fatalf("Get: %v", getErr)
+	case got := <-gotCh:
+		if got.Title != secondTitle {
+			t.Fatalf("Get title = %q, want %q", got.Title, secondTitle)
+		}
+	}
+
+	got, err := cs.Get(original.ID)
+	if err != nil {
+		t.Fatalf("Get cached: %v", err)
+	}
+	if got.Title != secondTitle {
+		t.Fatalf("cached title = %q, want %q", got.Title, secondTitle)
+	}
+}
+
 func TestCachingStoreUpdateReflectsWriteIntentWhenImmediateReadIsStale(t *testing.T) {
 	mem := beads.NewMemStore()
 	original, err := mem.Create(beads.Bead{
@@ -410,6 +597,58 @@ func (s *primeRaceStore) List(query beads.ListQuery) ([]beads.Bead, error) {
 	})
 	<-s.release
 	return append([]beads.Bead(nil), s.stale...), nil
+}
+
+type parentListRaceStore struct {
+	beads.Store
+	parentID string
+	started  chan struct{}
+	release  chan struct{}
+	stale    []beads.Bead
+	once     sync.Once
+}
+
+func (s *parentListRaceStore) List(query beads.ListQuery) ([]beads.Bead, error) {
+	if query.ParentID != s.parentID {
+		return s.Store.List(query)
+	}
+	s.once.Do(func() {
+		close(s.started)
+	})
+	<-s.release
+	return append([]beads.Bead(nil), s.stale...), nil
+}
+
+type dirtyGetRaceStore struct {
+	beads.Store
+	mu           sync.Mutex
+	failNextGet  bool
+	blockNextGet bool
+	started      chan struct{}
+	release      chan struct{}
+	stale        beads.Bead
+}
+
+func (s *dirtyGetRaceStore) Get(id string) (beads.Bead, error) {
+	s.mu.Lock()
+	switch {
+	case s.failNextGet:
+		s.failNextGet = false
+		s.mu.Unlock()
+		return beads.Bead{}, errors.New("transient get failure")
+	case s.blockNextGet && id == s.stale.ID:
+		s.blockNextGet = false
+		started := s.started
+		release := s.release
+		stale := s.stale
+		s.mu.Unlock()
+		close(started)
+		<-release
+		return stale, nil
+	default:
+		s.mu.Unlock()
+		return s.Store.Get(id)
+	}
 }
 
 func TestCachingStoreGetFallsBackForClosedBeadsAfterPrime(t *testing.T) {

@@ -61,6 +61,12 @@ func TestValidateInitRequest(t *testing.T) {
 			wantErr: cityinit.ErrInvalidProvider,
 		},
 		{
+			name:         "provider and start command are mutually exclusive",
+			req:          cityinit.InitRequest{Dir: absDir, Provider: "codex", StartCommand: "custom-agent"},
+			wantErr:      cityinit.ErrInvalidProvider,
+			wantContains: "mutually exclusive",
+		},
+		{
 			name:    "unknown provider",
 			req:     cityinit.InitRequest{Dir: absDir, Provider: "not-a-provider"},
 			wantErr: cityinit.ErrInvalidProvider,
@@ -99,6 +105,11 @@ func TestValidateInitRequest(t *testing.T) {
 			}
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("validateInitRequest() error = %v, want %v", err, tc.wantErr)
+			}
+			if tc.wantContains != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantContains) {
+					t.Fatalf("validateInitRequest() error = %v, want message containing %q", err, tc.wantContains)
+				}
 			}
 		})
 	}
@@ -208,6 +219,44 @@ func TestLocalInitializerScaffoldDoesNotEmitCreatedWhenRegisterFails(t *testing.
 	}
 	if len(evts) != 0 {
 		t.Fatalf("city.created events = %d, want 0: %+v", len(evts), evts)
+	}
+}
+
+func TestLocalInitializerScaffoldPreservesExistingDirectoryWhenRegisterFails(t *testing.T) {
+	t.Setenv("GC_HOME", t.TempDir())
+	cityPath := filepath.Join(t.TempDir(), "api-city")
+	keepPath := filepath.Join(cityPath, "keep.txt")
+	if err := os.MkdirAll(cityPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keepPath, []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	oldNewSupervisorRegistry := newSupervisorRegistry
+	newSupervisorRegistry = func() supervisorRegistry {
+		return &fakeSupervisorRegistry{registerErr: errors.New("boom")}
+	}
+	t.Cleanup(func() {
+		newSupervisorRegistry = oldNewSupervisorRegistry
+	})
+
+	_, err := localInitializer{}.Scaffold(context.Background(), cityinit.InitRequest{
+		Dir:              cityPath,
+		Provider:         "codex",
+		BootstrapProfile: bootstrapProfileSingleHostCompat,
+		NameOverride:     "api-city",
+	})
+	if err == nil || !strings.Contains(err.Error(), "register with supervisor") {
+		t.Fatalf("Scaffold error = %v, want register with supervisor failure", err)
+	}
+
+	data, readErr := os.ReadFile(keepPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile(%q): %v", keepPath, readErr)
+	}
+	if string(data) != "keep" {
+		t.Fatalf("keep.txt = %q, want keep", string(data))
 	}
 }
 

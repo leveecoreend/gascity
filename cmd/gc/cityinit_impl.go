@@ -80,6 +80,12 @@ func (localInitializer) Scaffold(_ context.Context, req cityinit.InitRequest) (*
 		return nil, err
 	}
 	dir := req.Dir
+	dirExisted := false
+	if _, err := os.Stat(dir); err == nil {
+		dirExisted = true
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat directory %q: %w", dir, err)
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating directory %q: %w", dir, err)
 	}
@@ -133,8 +139,10 @@ func (localInitializer) Scaffold(_ context.Context, req cityinit.InitRequest) (*
 	// very blocking behavior the async POST /v0/city contract
 	// exists to avoid.
 	if err := registerCityForAPI(dir, req.NameOverride); err != nil {
-		if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
-			return nil, errors.Join(fmt.Errorf("register with supervisor: %w", err), fmt.Errorf("cleaning scaffold after failed registration: %w", cleanupErr))
+		if !dirExisted {
+			if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
+				return nil, errors.Join(fmt.Errorf("register with supervisor: %w", err), fmt.Errorf("cleaning scaffold after failed registration: %w", cleanupErr))
+			}
 		}
 		return nil, fmt.Errorf("register with supervisor: %w", err)
 	}
@@ -293,6 +301,9 @@ func validateInitRequest(req *cityinit.InitRequest) error {
 	}
 	if req.Provider == "" && req.StartCommand == "" {
 		return fmt.Errorf("%w: provider or start_command required", cityinit.ErrInvalidProvider)
+	}
+	if req.Provider != "" && req.StartCommand != "" {
+		return fmt.Errorf("%w: provider and start_command are mutually exclusive", cityinit.ErrInvalidProvider)
 	}
 	if req.Provider != "" {
 		if _, ok := config.BuiltinProviders()[req.Provider]; !ok {

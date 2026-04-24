@@ -15,9 +15,12 @@ func (c *CachingStore) List(query ListQuery) ([]Bead, error) {
 		return nil, fmt.Errorf("listing beads: %w", ErrQueryRequiresScan)
 	}
 	if query.Live || query.ParentID != "" {
+		c.mu.RLock()
+		startSeq := c.mutationSeq
+		c.mu.RUnlock()
 		items, err := c.backing.List(query)
 		if err == nil {
-			c.refreshCachedBeads(query, items)
+			items = c.refreshCachedBeads(query, startSeq, items)
 		}
 		return items, err
 	}
@@ -80,7 +83,7 @@ func (c *CachingStore) List(query ListQuery) ([]Bead, error) {
 	return c.backing.List(query)
 }
 
-func (c *CachingStore) refreshCachedBeads(query ListQuery, items []Bead) {
+func (c *CachingStore) refreshCachedBeads(query ListQuery, startSeq uint64, items []Bead) []Bead {
 	refreshedParents := make(map[string]Bead)
 	removedParents := make(map[string]struct{})
 	for _, id := range c.staleParentCacheIDs(query.ParentID, items) {
@@ -95,31 +98,55 @@ func (c *CachingStore) refreshCachedBeads(query ListQuery, items []Bead) {
 		}
 	}
 	if len(items) == 0 && len(refreshedParents) == 0 && len(removedParents) == 0 {
-		return
+		return items
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.state != cacheLive && c.state != cachePartial {
-		return
+		return items
 	}
+	refreshed := make([]Bead, 0, len(items))
 	for _, item := range items {
+		switch {
+		case c.deletedSeq[item.ID] > startSeq:
+			continue
+		case c.beadSeq[item.ID] > startSeq:
+			current, ok := c.beads[item.ID]
+			if ok && query.Matches(current) {
+				refreshed = append(refreshed, cloneBead(current))
+			}
+			continue
+		}
 		c.beads[item.ID] = cloneBead(item)
 		delete(c.dirty, item.ID)
 		delete(c.deletedSeq, item.ID)
+		delete(c.beadSeq, item.ID)
+		if query.Matches(item) {
+			refreshed = append(refreshed, cloneBead(item))
+		}
 	}
 	for id, bead := range refreshedParents {
+		if c.deletedSeq[id] > startSeq || c.beadSeq[id] > startSeq {
+			continue
+		}
 		c.beads[id] = bead
 		delete(c.dirty, id)
 		delete(c.deletedSeq, id)
+		delete(c.beadSeq, id)
 	}
 	for id := range removedParents {
+		if c.deletedSeq[id] > startSeq || c.beadSeq[id] > startSeq {
+			continue
+		}
 		delete(c.beads, id)
 		delete(c.deps, id)
 		delete(c.dirty, id)
 		delete(c.deletedSeq, id)
+		delete(c.beadSeq, id)
 	}
 	c.markFreshLocked(time.Now())
 	c.updateStatsLocked()
+	return refreshed
 }
 
 func (c *CachingStore) staleParentCacheIDs(parentID string, fresh []Bead) []string {
@@ -165,12 +192,33 @@ func (c *CachingStore) Get(id string) (Bead, error) {
 	c.mu.RLock()
 	if c.state == cacheLive || c.state == cachePartial {
 		if _, ok := c.dirty[id]; ok {
+			startSeq := c.mutationSeq
 			c.mu.RUnlock()
 			fresh, err := c.backing.Get(id)
 			if err != nil {
 				return Bead{}, err
 			}
 			c.mu.Lock()
+			if c.state != cacheLive && c.state != cachePartial {
+				c.mu.Unlock()
+				return fresh, nil
+			}
+			switch {
+			case c.deletedSeq[id] > startSeq:
+				c.mu.Unlock()
+				return Bead{}, ErrNotFound
+			case c.beadSeq[id] > startSeq:
+				if _, stillDirty := c.dirty[id]; stillDirty {
+					c.mu.Unlock()
+					return c.backing.Get(id)
+				}
+				if current, ok := c.beads[id]; ok {
+					c.mu.Unlock()
+					return cloneBead(current), nil
+				}
+				c.mu.Unlock()
+				return Bead{}, ErrNotFound
+			}
 			c.beads[id] = cloneBead(fresh)
 			delete(c.dirty, id)
 			delete(c.deletedSeq, id)
