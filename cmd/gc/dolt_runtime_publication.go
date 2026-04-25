@@ -101,13 +101,38 @@ func syncManagedDoltPortMirrors(cityPath string) error {
 }
 
 func publishManagedDoltRuntimeState(cityPath string) error {
-	state, err := readDoltRuntimeStateFile(providerManagedDoltStatePath(cityPath))
-	if err != nil {
-		return fmt.Errorf("read provider dolt runtime state: %w", err)
+	providerStatePath := providerManagedDoltStatePath(cityPath)
+	state, readErr := readDoltRuntimeStateFile(providerStatePath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return fmt.Errorf("read provider dolt runtime state: %w", readErr)
 	}
-	if !validDoltRuntimeState(state, cityPath) {
-		return fmt.Errorf("invalid managed dolt runtime state")
+
+	if readErr != nil || !validDoltRuntimeState(state, cityPath) {
+		// Provider state is missing or stale. Attempt recovery by inspecting
+		// the actual running dolt process. This handles the case where dolt
+		// was restarted (new PID) but the provider state file was not yet
+		// updated, or where a crash left the provider state file absent.
+		layout, layoutErr := resolveManagedDoltRuntimeLayout(cityPath)
+		if layoutErr != nil {
+			if readErr != nil {
+				return fmt.Errorf("read provider dolt runtime state: %w", readErr)
+			}
+			return fmt.Errorf("invalid managed dolt runtime state")
+		}
+		repaired, ok := repairedManagedDoltRuntimeState(cityPath, layout, state)
+		if !ok {
+			if readErr != nil {
+				return fmt.Errorf("read provider dolt runtime state: %w", readErr)
+			}
+			return fmt.Errorf("invalid managed dolt runtime state")
+		}
+		// Repair the provider state file so future calls see a consistent view.
+		if err := writeDoltRuntimeStateFile(providerStatePath, repaired); err != nil {
+			return fmt.Errorf("repair provider dolt runtime state: %w", err)
+		}
+		state = repaired
 	}
+
 	if err := writeDoltRuntimeStateFile(managedDoltStatePath(cityPath), state); err != nil {
 		return fmt.Errorf("write published dolt runtime state: %w", err)
 	}
