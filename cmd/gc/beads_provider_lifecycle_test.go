@@ -5968,13 +5968,36 @@ func TestGcBeadsBdStartConcurrentWaitPassesRemainingExistingManagedBudget(t *tes
 		t.Fatal(err)
 	}
 	invocationFile := filepath.Join(t.TempDir(), "gc-invocation")
+	nowFile := filepath.Join(t.TempDir(), "gc-now-ms")
 	fakeGC := filepath.Join(binDir, "gc")
 	fakeGCScript := fmt.Sprintf(`#!/bin/sh
 set -eu
 invocation_file=%q
+now_file=%q
 subcmd="$1 $2"
 shift 2
 case "$subcmd" in
+  "dolt-state now-ms")
+    if [ -f "$now_file" ]; then
+      step=$(cat "$now_file")
+    else
+      step=0
+    fi
+    case "$step" in
+      0)
+        printf '1000000\n'
+        printf '1\n' > "$now_file"
+        ;;
+      1)
+        printf '1000000\n'
+        printf '2\n' > "$now_file"
+        ;;
+      *)
+        printf '1001000\n'
+        printf '3\n' > "$now_file"
+        ;;
+    esac
+    ;;
   "dolt-state runtime-layout")
     while [ "$#" -gt 0 ]; do
       case "$1" in
@@ -6045,7 +6068,7 @@ case "$subcmd" in
     exit 64
     ;;
 esac
-`, invocationFile, layout.PackStateDir, layout.DataDir, layout.LogFile, layout.StateFile, layout.PIDFile, layout.LockFile, layout.ConfigFile)
+`, invocationFile, nowFile, layout.PackStateDir, layout.DataDir, layout.LogFile, layout.StateFile, layout.PIDFile, layout.LockFile, layout.ConfigFile)
 	if err := os.WriteFile(fakeGC, []byte(fakeGCScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
