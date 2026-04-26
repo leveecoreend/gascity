@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -71,10 +72,10 @@ func TestPublishManagedDoltRuntimeStateRepairsStaleProviderState(t *testing.T) {
 	}
 }
 
-// TestPublishManagedDoltRuntimeStateRecoversMissingProviderState verifies that
-// publishManagedDoltRuntimeState succeeds when dolt-provider-state.json is
-// entirely absent (e.g. a crash deleted it) but dolt is running and reachable.
-func TestPublishManagedDoltRuntimeStateRecoversMissingProviderState(t *testing.T) {
+// TestPublishManagedDoltRuntimeStateFailsWhenProviderStateMissingWithoutPortHint
+// verifies that publishManagedDoltRuntimeState fails clearly when
+// dolt-provider-state.json is absent and no persisted port hint exists.
+func TestPublishManagedDoltRuntimeStateFailsWhenProviderStateMissingWithoutPortHint(t *testing.T) {
 	cityPath := t.TempDir()
 	layout, err := resolveManagedDoltRuntimeLayout(cityPath)
 	if err != nil {
@@ -88,13 +89,6 @@ func TestPublishManagedDoltRuntimeStateRecoversMissingProviderState(t *testing.T
 		t.Fatalf("MkdirAll(state dir): %v", err)
 	}
 
-	port := reserveRandomTCPPort(t)
-	listener := startTCPListenerProcessInDir(t, port, layout.DataDir)
-	defer func() {
-		_ = listener.Process.Kill()
-		_ = listener.Wait()
-	}()
-
 	// No provider state file — absent entirely.
 	if _, err := os.Stat(layout.StateFile); err == nil {
 		if err := os.Remove(layout.StateFile); err != nil {
@@ -102,18 +96,18 @@ func TestPublishManagedDoltRuntimeStateRecoversMissingProviderState(t *testing.T
 		}
 	}
 
-	// publishManagedDoltRuntimeState cannot recover from a truly absent provider
-	// state file when there's no port hint at all: repairedManagedDoltRuntimeState
-	// needs a port from the existing state. Verify it returns a meaningful error
-	// rather than panicking or silently succeeding with wrong data.
 	err = publishManagedDoltRuntimeState(cityPath)
-	// The function must either succeed (if it can discover the process) or
-	// return an error containing context.  It must never panic.
-	if err != nil {
-		if !strings.Contains(err.Error(), "provider dolt runtime state") &&
-			!strings.Contains(err.Error(), "managed dolt runtime state") {
-			t.Fatalf("unexpected error format (missing context): %v", err)
-		}
+	if err == nil {
+		t.Fatal("publishManagedDoltRuntimeState() succeeded, want error (no port hint)")
+	}
+	if !strings.Contains(err.Error(), "no published dolt runtime state hint") {
+		t.Fatalf("error missing no-hint context: %v", err)
+	}
+	if _, statErr := os.Stat(layout.StateFile); statErr == nil {
+		t.Fatal("dolt-provider-state.json was created despite missing port hint")
+	}
+	if _, statErr := os.Stat(managedDoltStatePath(cityPath)); statErr == nil {
+		t.Fatal("dolt-state.json was created despite missing port hint")
 	}
 }
 
@@ -139,10 +133,10 @@ func TestPublishManagedDoltRuntimeStateRecoversMissingProviderStateWithPortHint(
 		_ = listener.Wait()
 	}()
 
-	// Write provider state with a stopped (running=false) entry that still
-	// carries the correct port. This simulates the state after op_stop_impl
-	// clears running=false but before a new start writes the new PID.
-	if err := writeDoltRuntimeStateFile(layout.StateFile, doltRuntimeState{
+	// The provider state file is absent, but the published dolt-state.json
+	// still carries the correct port. This is the only safe hint source for
+	// repairing a missing provider state file.
+	if err := writeDoltRuntimeStateFile(managedDoltStatePath(cityPath), doltRuntimeState{
 		Running:   false,
 		PID:       0,
 		Port:      port,
@@ -168,6 +162,119 @@ func TestPublishManagedDoltRuntimeStateRecoversMissingProviderStateWithPortHint(
 	}
 	if published.PID != listener.Process.Pid {
 		t.Fatalf("published.PID = %d, want %d (listener PID)", published.PID, listener.Process.Pid)
+	}
+
+	repaired, err := readDoltRuntimeStateFile(layout.StateFile)
+	if err != nil {
+		t.Fatalf("readDoltRuntimeStateFile(provider): %v", err)
+	}
+	if !repaired.Running {
+		t.Fatal("repaired.Running = false, want true")
+	}
+	if repaired.Port != port {
+		t.Fatalf("repaired.Port = %d, want %d", repaired.Port, port)
+	}
+	if repaired.PID != listener.Process.Pid {
+		t.Fatalf("repaired.PID = %d, want %d (listener PID)", repaired.PID, listener.Process.Pid)
+	}
+}
+
+func TestPublishManagedDoltRuntimeStateRecoversStaleWrongPortProviderStateWithPublishedHint(t *testing.T) {
+	cityPath := t.TempDir()
+	layout, err := resolveManagedDoltRuntimeLayout(cityPath)
+	if err != nil {
+		t.Fatalf("resolveManagedDoltRuntimeLayout: %v", err)
+	}
+	if err := os.MkdirAll(layout.DataDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(data dir): %v", err)
+	}
+
+	stalePort := reserveRandomTCPPort(t)
+	if err := writeDoltRuntimeStateFile(layout.StateFile, doltRuntimeState{
+		Running:   true,
+		PID:       999999,
+		Port:      stalePort,
+		DataDir:   layout.DataDir,
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("writeDoltRuntimeStateFile(provider): %v", err)
+	}
+
+	port := reserveRandomTCPPort(t)
+	listener := startTCPListenerProcessInDir(t, port, layout.DataDir)
+	defer func() {
+		_ = listener.Process.Kill()
+		_ = listener.Wait()
+	}()
+
+	if err := writeDoltRuntimeStateFile(managedDoltStatePath(cityPath), doltRuntimeState{
+		Running:   false,
+		PID:       0,
+		Port:      port,
+		DataDir:   layout.DataDir,
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("writeDoltRuntimeStateFile(published): %v", err)
+	}
+
+	if err := publishManagedDoltRuntimeState(cityPath); err != nil {
+		t.Fatalf("publishManagedDoltRuntimeState: %v", err)
+	}
+
+	published, err := readDoltRuntimeStateFile(managedDoltStatePath(cityPath))
+	if err != nil {
+		t.Fatalf("readDoltRuntimeStateFile(dolt-state.json): %v", err)
+	}
+	if published.Port != port {
+		t.Fatalf("published.Port = %d, want %d", published.Port, port)
+	}
+	if published.PID != listener.Process.Pid {
+		t.Fatalf("published.PID = %d, want %d", published.PID, listener.Process.Pid)
+	}
+
+	repaired, err := readDoltRuntimeStateFile(layout.StateFile)
+	if err != nil {
+		t.Fatalf("readDoltRuntimeStateFile(provider): %v", err)
+	}
+	if repaired.Port != port {
+		t.Fatalf("repaired.Port = %d, want %d", repaired.Port, port)
+	}
+	if repaired.PID != listener.Process.Pid {
+		t.Fatalf("repaired.PID = %d, want %d", repaired.PID, listener.Process.Pid)
+	}
+}
+
+func TestPublishManagedDoltRuntimeStateFailsWhenPublishedHintIsDead(t *testing.T) {
+	cityPath := t.TempDir()
+	layout, err := resolveManagedDoltRuntimeLayout(cityPath)
+	if err != nil {
+		t.Fatalf("resolveManagedDoltRuntimeLayout: %v", err)
+	}
+	if err := os.MkdirAll(layout.DataDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(data dir): %v", err)
+	}
+
+	port := reserveRandomTCPPort(t)
+	if err := writeDoltRuntimeStateFile(managedDoltStatePath(cityPath), doltRuntimeState{
+		Running:   false,
+		PID:       0,
+		Port:      port,
+		DataDir:   layout.DataDir,
+		StartedAt: time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("writeDoltRuntimeStateFile(published): %v", err)
+	}
+
+	err = publishManagedDoltRuntimeState(cityPath)
+	if err == nil {
+		t.Fatal("publishManagedDoltRuntimeState() succeeded, want error (dead port hint)")
+	}
+	want := "no live managed dolt found for published port hint " + strconv.Itoa(port)
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want context %q", err, want)
+	}
+	if _, statErr := os.Stat(layout.StateFile); statErr == nil {
+		t.Fatal("dolt-provider-state.json was created despite dead port hint")
 	}
 }
 
@@ -259,4 +366,3 @@ func TestPublishManagedDoltRuntimeStateFailsWhenDoltNotRunning(t *testing.T) {
 		t.Fatal("dolt-state.json was created despite dolt not running")
 	}
 }
-
