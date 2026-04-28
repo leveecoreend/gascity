@@ -396,6 +396,7 @@ func unclaimWorkAssignedToRetiredSessionBead(store beads.Store, sessionID, fallb
 		stderr = io.Discard
 	}
 	empty := ""
+	open := "open"
 	for _, status := range []string{"open", "in_progress"} {
 		work, err := store.List(beads.ListQuery{Assignee: sessionID, Status: status, Live: true})
 		if err != nil {
@@ -407,6 +408,13 @@ func unclaimWorkAssignedToRetiredSessionBead(store beads.Store, sessionID, fallb
 				continue
 			}
 			update := beads.UpdateOpts{Assignee: &empty}
+			// Clearing assignee on an in_progress bead leaves it invisible to
+			// the work_query: Tier 1 needs an assignee match, Tiers 2/3 only
+			// match "ready" status. Reset to "open" so a fresh worker can
+			// re-claim via the routed queue (gc.routed_to + --unassigned).
+			if item.Status == "in_progress" {
+				update.Status = &open
+			}
 			if fallbackRoute != "" && strings.TrimSpace(item.Metadata["gc.routed_to"]) == "" {
 				update.Metadata = map[string]string{"gc.routed_to": fallbackRoute}
 			}
@@ -1222,13 +1230,20 @@ func setMetaBatch(store beads.Store, id string, batch map[string]string, stderr 
 	return nil
 }
 
-// reapStaleSessionBeads cross-references open session beads against live
-// tmux sessions. If a bead claims a session_name but no matching tmux
-// session exists, and the bead has been in that state past the startup
-// grace period, the bead is closed.
+// reapStaleSessionBeads closes session beads that are stuck in the creating
+// state past the startup grace period — sessions whose tmux process never
+// completed startup, so they are guaranteed not to hold work claims (claim
+// is the first thing a worker does after startup).
 //
-// This prevents infinite retry loops where a dead tmux session's bead
-// blocks name availability for new sessions (see #742).
+// Sessions that completed startup (state=active, awake, etc.) are NEVER reaped
+// here even if their tmux session has died: they may hold in_progress claims,
+// and reaping would orphan that work without a way for the reconciler to
+// recover via the assignee-keyed wake path. The session lifecycle reconciler
+// is responsible for restarting completed-but-dead session beads so the
+// original assignee resumes its work.
+//
+// This prevents infinite retry loops for stuck-creating sessions while
+// preserving claim continuity across tmux death+restart for active ones.
 //
 // Returns the number of beads reaped.
 func reapStaleSessionBeads(
@@ -1253,8 +1268,13 @@ func reapStaleSessionBeads(
 		if sn == "" {
 			continue
 		}
-		// Don't reap beads whose tmux session hasn't been started yet.
-		if b.Metadata["state"] == "creating" || strings.TrimSpace(b.Metadata["pending_create_claim"]) == "true" {
+		// Only reap beads stuck in the creating state. Sessions past creating
+		// may hold work claims; reaping them would orphan in_progress beads
+		// because the assignee link to a live session is the only signal the
+		// reconciler has for resume-after-restart.
+		state := strings.TrimSpace(b.Metadata["state"])
+		pendingCreate := strings.TrimSpace(b.Metadata["pending_create_claim"]) == "true"
+		if state != "creating" && !pendingCreate {
 			continue
 		}
 		// Don't reap beads with an active drain — the drainTracker is
@@ -1280,7 +1300,7 @@ func reapStaleSessionBeads(
 			continue
 		}
 		if closeBead(store, b.ID, "stale-session", now.UTC(), stderr) {
-			fmt.Fprintf(stderr, "WARN: reconciler: reaped stale session bead %s — tmux session %q not found\n", b.ID, sn) //nolint:errcheck
+			fmt.Fprintf(stderr, "WARN: reconciler: reaped stuck-creating session bead %s — tmux session %q not found\n", b.ID, sn) //nolint:errcheck
 			reaped++
 		}
 	}
@@ -1294,7 +1314,19 @@ func reapStaleSessionBeads(
 // Follows the commit-signal pattern: metadata is written first, and Close
 // is only called if all writes succeed. If any write fails, the bead stays
 // open so the next tick retries the entire sequence.
+//
+// Belt-and-suspenders against the stale-session reaper: refuses to close a
+// session bead while non-session work is still assigned to it. Closing would
+// strand that work — the reconciler relies on the assignee link to wake the
+// session and resume claims. Callers that legitimately need to retire an
+// active session must either drain it or unclaim its work first (via
+// unclaimWorkAssignedToRetiredSessionBead, which also resets in_progress
+// status to open so the routed queue can re-dispatch the work).
 func closeBead(store beads.Store, id, reason string, now time.Time, stderr io.Writer) bool {
+	if hasNonSessionAssignedWork(store, id, stderr) {
+		fmt.Fprintf(stderr, "session beads: refusing to close %s (reason=%s): has assigned work; drain or unclaim first\n", id, reason) //nolint:errcheck
+		return false
+	}
 	if setMetaBatch(store, id, session.ClosePatch(now, reason), stderr) != nil {
 		return false
 	}
@@ -1303,6 +1335,32 @@ func closeBead(store beads.Store, id, reason string, now time.Time, stderr io.Wr
 		return false
 	}
 	return true
+}
+
+// hasNonSessionAssignedWork reports whether any non-session bead is currently
+// assigned (open or in_progress) to the given session bead ID. Session beads
+// (and other session-repairable beads) are excluded so that session-internal
+// bookkeeping does not block close.
+func hasNonSessionAssignedWork(store beads.Store, sessionID string, stderr io.Writer) bool {
+	if store == nil || strings.TrimSpace(sessionID) == "" {
+		return false
+	}
+	for _, status := range []string{"open", "in_progress"} {
+		work, err := store.List(beads.ListQuery{Assignee: sessionID, Status: status, Live: true})
+		if err != nil {
+			if stderr != nil {
+				fmt.Fprintf(stderr, "session beads: listing assigned work for %s: %v\n", sessionID, err) //nolint:errcheck
+			}
+			continue
+		}
+		for _, item := range work {
+			if session.IsSessionBeadOrRepairable(item) {
+				continue
+			}
+			return true
+		}
+	}
+	return false
 }
 
 // resolveAgentTemplate returns the config agent template name for a given
