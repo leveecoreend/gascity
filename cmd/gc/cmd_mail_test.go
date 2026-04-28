@@ -16,6 +16,7 @@ import (
 	"github.com/gastownhall/gascity/internal/events"
 	"github.com/gastownhall/gascity/internal/mail"
 	"github.com/gastownhall/gascity/internal/mail/beadmail"
+	"github.com/gastownhall/gascity/internal/nudgequeue"
 	"github.com/gastownhall/gascity/internal/session"
 )
 
@@ -1404,6 +1405,246 @@ func TestCmdMailReply_FallsBackToGCSessionIDWhenAliasMissing(t *testing.T) {
 	}
 }
 
+func TestCmdMailReplyHumanNotifyQueuesNudge(t *testing.T) {
+	t.Setenv("GC_BEADS", "file")
+	t.Setenv("GC_MAIL", "")
+	t.Setenv("GC_SESSION", "fake")
+	t.Setenv("GC_ALIAS", "")
+	t.Setenv("GC_SESSION_ID", "")
+	t.Setenv("GC_AGENT", "")
+
+	cityPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"test-city\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(city.toml): %v", err)
+	}
+	t.Setenv("GC_CITY", cityPath)
+
+	store, err := openCityStoreAt(cityPath)
+	if err != nil {
+		t.Fatalf("openCityStoreAt: %v", err)
+	}
+	sessionBead, err := store.Create(beads.Bead{
+		Type:   session.BeadType,
+		Labels: []string{session.LabelSession},
+		Metadata: map[string]string{
+			"alias":        "alice",
+			"session_name": "alice-session",
+			"provider":     "fake",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create(session): %v", err)
+	}
+
+	mp := beadmail.New(store)
+	original, err := mp.Send("alice", "human", "Hello", "first")
+	if err != nil {
+		t.Fatalf("mp.Send(): %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := cmdMailReply([]string{original.ID, "reply body"}, "", "", true, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cmdMailReply() = %d, want 0; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "to alice") {
+		t.Fatalf("stdout = %q, want reply addressed to alice", stdout.String())
+	}
+
+	state, err := nudgequeue.LoadState(cityPath)
+	if err != nil {
+		t.Fatalf("LoadState(): %v", err)
+	}
+	if len(state.Pending) != 1 {
+		t.Fatalf("pending nudges = %d, want 1; state=%+v stderr=%s", len(state.Pending), state, stderr.String())
+	}
+	nudge := state.Pending[0]
+	if nudge.Agent != "alice" {
+		t.Fatalf("nudge.Agent = %q, want alice", nudge.Agent)
+	}
+	if nudge.SessionID != sessionBead.ID {
+		t.Fatalf("nudge.SessionID = %q, want %q", nudge.SessionID, sessionBead.ID)
+	}
+	if nudge.Source != "mail" {
+		t.Fatalf("nudge.Source = %q, want mail", nudge.Source)
+	}
+	if nudge.Message != "You have mail from human" {
+		t.Fatalf("nudge.Message = %q", nudge.Message)
+	}
+}
+
+func TestCmdMailReplyExecProviderNotifyQueuesNudge(t *testing.T) {
+	cityPath, sessionID, script := setupExecMailReplyNudgeTest(t)
+	t.Setenv("GC_MAIL", "exec:"+script)
+
+	var stdout, stderr bytes.Buffer
+	code := cmdMailReply([]string{"gc-1", "reply body"}, "", "", true, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cmdMailReply() = %d, want 0; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	assertQueuedMailNudge(t, cityPath, sessionID, stderr.String())
+}
+
+func TestMailReplyNudgeAliasQueuesNudge(t *testing.T) {
+	cityPath, sessionID, script := setupExecMailReplyNudgeTest(t)
+	t.Setenv("GC_MAIL", "exec:"+script)
+
+	var stdout, stderr bytes.Buffer
+	cmd := newMailReplyCmd(&stdout, &stderr)
+	if cmd.Flags().Lookup("nudge") == nil {
+		t.Fatal("reply command missing --nudge alias")
+	}
+	cmd.SetArgs([]string{"gc-1", "--nudge", "reply body"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("reply --nudge: %v; stdout=%s stderr=%s", err, stdout.String(), stderr.String())
+	}
+
+	assertQueuedMailNudge(t, cityPath, sessionID, stderr.String())
+}
+
+func TestCmdMailReplyExecProviderNotifyWithoutCityWarnsAndSendsReply(t *testing.T) {
+	t.Setenv("GC_BEADS", "file")
+	t.Setenv("GC_MAIL", "exec:"+writeExecReplyScript(t))
+	t.Setenv("GC_SESSION", "fake")
+	t.Setenv("GC_CITY", "")
+	t.Setenv("GC_CITY_PATH", "")
+	t.Setenv("GC_ALIAS", "")
+	t.Setenv("GC_SESSION_ID", "")
+	t.Setenv("GC_AGENT", "")
+	t.Chdir(t.TempDir())
+
+	var stdout, stderr bytes.Buffer
+	code := cmdMailReply([]string{"gc-1", "reply body"}, "", "", true, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cmdMailReply() = %d, want 0; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Replied to gc-1") {
+		t.Fatalf("stdout = %q, want reply confirmation", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "--notify requested but no city store available") {
+		t.Fatalf("stderr = %q, want notify warning", stderr.String())
+	}
+}
+
+func TestCmdMailReplyExecProviderNotifyResolvesNonHumanSender(t *testing.T) {
+	cityPath, sessionID, script := setupExecMailReplyNudgeTest(t)
+	t.Setenv("GC_MAIL", "exec:"+script)
+	t.Setenv("GC_SESSION_ID", "bob-session")
+
+	store, err := openCityStoreAt(cityPath)
+	if err != nil {
+		t.Fatalf("openCityStoreAt: %v", err)
+	}
+	if _, err := store.Create(beads.Bead{
+		Type:   session.BeadType,
+		Labels: []string{session.LabelSession},
+		Metadata: map[string]string{
+			"alias":        "bob",
+			"session_name": "bob-session",
+			"provider":     "fake",
+		},
+	}); err != nil {
+		t.Fatalf("Create(sender session): %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := cmdMailReply([]string{"gc-1", "reply body"}, "", "", true, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("cmdMailReply() = %d, want 0; stdout=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+
+	assertQueuedMailNudgeMessage(t, cityPath, sessionID, "You have mail from bob", stderr.String())
+}
+
+func setupExecMailReplyNudgeTest(t *testing.T) (string, string, string) {
+	t.Helper()
+	t.Setenv("GC_BEADS", "file")
+	t.Setenv("GC_SESSION", "fake")
+	t.Setenv("GC_ALIAS", "")
+	t.Setenv("GC_SESSION_ID", "")
+	t.Setenv("GC_AGENT", "")
+
+	cityPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityPath, "city.toml"), []byte("[workspace]\nname = \"test-city\"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(city.toml): %v", err)
+	}
+	t.Setenv("GC_CITY", cityPath)
+	t.Setenv("GC_CITY_PATH", cityPath)
+
+	store, err := openCityStoreAt(cityPath)
+	if err != nil {
+		t.Fatalf("openCityStoreAt: %v", err)
+	}
+	sessionBead, err := store.Create(beads.Bead{
+		Type:   session.BeadType,
+		Labels: []string{session.LabelSession},
+		Metadata: map[string]string{
+			"alias":        "alice",
+			"session_name": "alice-session",
+			"provider":     "fake",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create(session): %v", err)
+	}
+
+	return cityPath, sessionBead.ID, writeExecReplyScript(t)
+}
+
+func writeExecReplyScript(t *testing.T) string {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "mail-exec")
+	data := `#!/bin/sh
+case "$1" in
+  ensure-running)
+    exit 0
+    ;;
+  reply)
+    cat >/dev/null
+    printf '{"id":"exec-reply-1","from":"human","to":"alice","subject":"RE: Hello","body":"reply body","created_at":"2026-04-28T00:00:00Z","read":false,"thread_id":"thread-1","reply_to":"%s"}\n' "$2"
+    exit 0
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+`
+	if err := os.WriteFile(script, []byte(data), 0o755); err != nil {
+		t.Fatalf("WriteFile(exec script): %v", err)
+	}
+	return script
+}
+
+func assertQueuedMailNudge(t *testing.T, cityPath, sessionID, stderr string) {
+	t.Helper()
+	assertQueuedMailNudgeMessage(t, cityPath, sessionID, "You have mail from human", stderr)
+}
+
+func assertQueuedMailNudgeMessage(t *testing.T, cityPath, sessionID, message, stderr string) {
+	t.Helper()
+	state, err := nudgequeue.LoadState(cityPath)
+	if err != nil {
+		t.Fatalf("LoadState(): %v", err)
+	}
+	if len(state.Pending) != 1 {
+		t.Fatalf("pending nudges = %d, want 1; state=%+v stderr=%s", len(state.Pending), state, stderr)
+	}
+	nudge := state.Pending[0]
+	if nudge.Agent != "alice" {
+		t.Fatalf("nudge.Agent = %q, want alice", nudge.Agent)
+	}
+	if nudge.SessionID != sessionID {
+		t.Fatalf("nudge.SessionID = %q, want %q", nudge.SessionID, sessionID)
+	}
+	if nudge.Source != "mail" {
+		t.Fatalf("nudge.Source = %q, want mail", nudge.Source)
+	}
+	if nudge.Message != message {
+		t.Fatalf("nudge.Message = %q", nudge.Message)
+	}
+}
+
 // --- gc mail mark-read / mark-unread ---
 
 func TestMailMarkReadSuccess(t *testing.T) {
@@ -1835,6 +2076,17 @@ func TestMailSendToFlag(t *testing.T) {
 	}
 	if b.Assignee != "mayor" {
 		t.Errorf("bead Assignee = %q, want %q", b.Assignee, "mayor")
+	}
+}
+
+func TestMailSendAcceptsNudgeAlias(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	cmd := newMailSendCmd(&stdout, &stderr)
+	if cmd.Flags().Lookup("nudge") == nil {
+		t.Fatal("send command missing --nudge alias")
+	}
+	if err := cmd.Flags().Set("nudge", "true"); err != nil {
+		t.Fatalf("set --nudge: %v", err)
 	}
 }
 
