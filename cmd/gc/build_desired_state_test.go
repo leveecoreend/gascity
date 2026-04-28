@@ -2506,6 +2506,82 @@ func TestSelectOrCreatePoolSessionBead_ReusesAvailableForNewTier(t *testing.T) {
 	}
 }
 
+// TestRealizePoolDesiredSessions_NewSpawnSkipsSlotHeldByOpenSessionBead
+// reproduces the production bug where the slot allocator picks slot N
+// for a new pool spawn while another open (non-closed) session bead in
+// the store still holds slot N. The alias-bind step then fails with
+//
+//	session beads: alias "<template>-N" unavailable: already belongs to <other>
+//
+// silently leaving the pool under-spawned. Each subsequent reconcile
+// tick repeats the same collision until the holder bead closes, which
+// can be blocked indefinitely if its assigned work has a stale
+// assignee. The fix: claimPoolSlot must seed its `used` set with every
+// pool_slot already bound by an open session bead of the same template,
+// so a new spawn advances to the next free slot.
+func TestRealizePoolDesiredSessions_NewSpawnSkipsSlotHeldByOpenSessionBead(t *testing.T) {
+	store := beads.NewMemStore()
+	cityDir := t.TempDir()
+	cfgAgent := config.Agent{Name: "codex-max", Dir: cityDir, MinActiveSessions: intPtr(0), StartCommand: "/bin/true"}
+	template := cfgAgent.QualifiedName()
+	// Pool session bead currently in "drained" state still holds
+	// pool_slot=1 in the store. selectOrCreatePoolSessionBead skips
+	// drained beads for new-tier requests, so a new bead would be
+	// created — but claimPoolSlot, which has only the per-tick `used`
+	// map, has no idea slot 1 is taken by the drained bead and assigns
+	// slot 1 to the new spawn.
+	blocking, err := store.Create(beads.Bead{
+		Title:  "codex-max",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"template":     template,
+			"agent_name":   template,
+			"session_name": "codex-max-1-prior",
+			"pool_slot":    "1",
+			"state":        "drained",
+			"pool_managed": "true",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := newSessionBeadSnapshot([]beads.Bead{blocking})
+	cfg := &config.City{Agents: []config.Agent{cfgAgent}}
+	bp := &agentBuildParams{
+		city:         cfg,
+		cityPath:     cityDir,
+		workspace:    &cfg.Workspace,
+		beadStore:    store,
+		sessionBeads: snapshot,
+		agents:       []config.Agent{cfgAgent},
+		providers:    cfg.Providers,
+		lookPath:     func(string) (string, error) { return "/bin/true", nil },
+		fs:           fsys.OSFS{},
+	}
+
+	poolState := PoolDesiredState{
+		Template: "codex-max",
+		Requests: []SessionRequest{
+			{Template: "codex-max", Tier: "new"},
+		},
+	}
+
+	desired := make(map[string]TemplateParams)
+	var stderr strings.Builder
+	realizePoolDesiredSessions(bp, &cfgAgent, poolState, desired, &stderr)
+
+	if len(desired) == 0 {
+		t.Fatalf("realize produced no desired entries; stderr=%s", stderr.String())
+	}
+	for sn, tp := range desired {
+		if tp.PoolSlot == 1 {
+			t.Errorf("desired entry %q got pool_slot=1, which is already bound by open session bead %q (alias=%q) — alias-bind would fail",
+				sn, blocking.ID, tp.Alias)
+		}
+	}
+}
+
 func TestSelectOrCreatePoolSessionBead_SkipsAsleepBeads(t *testing.T) {
 	// An asleep pool session should NOT be reused for new demand.
 	// The reconciler should create a fresh session instead.
