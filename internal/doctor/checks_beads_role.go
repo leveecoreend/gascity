@@ -38,12 +38,27 @@ func (c *BeadsRoleCheck) CanFix() bool { return true }
 // Fix sets beads.role to "maintainer" in global git config if it is not
 // already set. A non-empty existing value is left unchanged.
 func (c *BeadsRoleCheck) Fix(_ *CheckContext) error {
-	out, err := exec.Command("git", "config", "--global", "beads.role").Output()
+	out, err := exec.Command("git", "config", "--global", "beads.role").CombinedOutput()
 	if err == nil && strings.TrimSpace(string(out)) != "" {
 		return nil
 	}
-	if err := exec.Command("git", "config", "--global", "beads.role", "maintainer").Run(); err != nil {
-		return fmt.Errorf("setting beads.role: %w", err)
+	writeOut, writeErr := exec.Command("git", "config", "--global", "beads.role", "maintainer").CombinedOutput()
+	if writeErr != nil {
+		writeMsg := strings.TrimSpace(string(writeOut))
+		if err != nil {
+			readMsg := strings.TrimSpace(string(out))
+			if readMsg == "" {
+				readMsg = err.Error()
+			}
+			if writeMsg != "" {
+				return fmt.Errorf("setting beads.role after reading current value failed (%s): %s: %w", readMsg, writeMsg, writeErr)
+			}
+			return fmt.Errorf("setting beads.role after reading current value failed (%s): %w", readMsg, writeErr)
+		}
+		if writeMsg != "" {
+			return fmt.Errorf("setting beads.role: %s: %w", writeMsg, writeErr)
+		}
+		return fmt.Errorf("setting beads.role: %w", writeErr)
 	}
 	return nil
 }

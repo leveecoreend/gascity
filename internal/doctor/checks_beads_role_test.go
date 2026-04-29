@@ -110,3 +110,23 @@ func TestBeadsRoleCheck_Fix_PreservesExistingRole(t *testing.T) {
 		t.Errorf("beads.role = %q, want %q (Fix should preserve existing value)", got, "contributor")
 	}
 }
+
+func TestBeadsRoleCheck_Fix_PreservesReadFailureContext(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	home := setupFakeGitConfig(t)
+	cfg := filepath.Join(home, ".gitconfig")
+	if err := os.WriteFile(cfg, []byte("not valid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c := &BeadsRoleCheck{}
+	err := c.Fix(&CheckContext{})
+	if err == nil {
+		t.Fatal("Fix error = nil, want read failure context")
+	}
+	if !strings.Contains(err.Error(), "bad config line 1") {
+		t.Fatalf("Fix error = %q, want preserved git read failure", err)
+	}
+}

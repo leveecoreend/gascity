@@ -166,8 +166,6 @@ is_retryable_error() {
         *"lock wait timeout"*) return 0 ;;
         *"try restarting transaction"*) return 0 ;;
         *"Unknown database"*) return 0 ;;
-        *"table not found"*) return 0 ;;
-        *"Unknown table"*) return 0 ;;
     esac
     return 1
 }
@@ -304,14 +302,57 @@ backfill_project_id_if_missing() {
 ensure_bd_runtime_issue_prefix() {
     local db="$1"
     local prefix="$2"
+    ensure_bd_runtime_config_value "$db" "issue_prefix" "$prefix"
+}
+
+valid_custom_types_value() {
+    local types="$1" old_ifs typ
+    [ -n "$types" ] || return 1
+    old_ifs=$IFS
+    IFS=','
+    for typ in $types; do
+        [ -n "$typ" ] || { IFS=$old_ifs; return 1; }
+        valid_sql_name "$typ" || { IFS=$old_ifs; return 1; }
+    done
+    IFS=$old_ifs
+    return 0
+}
+
+ensure_bd_runtime_custom_types() {
+    local db="$1"
+    local types="$2"
+    ensure_bd_runtime_config_value "$db" "types.custom" "$types"
+}
+
+ensure_bd_runtime_config_value() {
+    local db="$1"
+    local key="$2"
+    local value="$3"
     [ -n "$db" ] || return 0
-    [ -n "$prefix" ] || return 0
+    [ -n "$value" ] || return 0
     valid_sql_name "$db" || die "invalid dolt database name: $db"
-    valid_sql_name "$prefix" || die "invalid beads prefix: $prefix"
+    case "$key" in
+        issue_prefix)
+            valid_sql_name "$value" || die "invalid beads prefix: $value"
+            ;;
+        types.custom)
+            valid_custom_types_value "$value" || die "invalid custom bead types: $value"
+            ;;
+        *)
+            die "unsupported bd runtime config key: $key"
+            ;;
+    esac
 
     # bd v1.0.3 rejects `bd config set issue_prefix`; GC still needs raw
-    # bd commands to see the city prefix in the DB-backed config table.
-    server_sql_retry "USE \`$db\`; INSERT INTO config (\`key\`, value) VALUES ('issue_prefix', '$prefix') ON DUPLICATE KEY UPDATE value = VALUES(value)" >/dev/null || die "failed to set bd runtime issue_prefix for $db"
+    # bd commands to see GC's config in the DB-backed config table.
+    server_sql_retry "USE \`$db\`; INSERT INTO config (\`key\`, value) VALUES ('$key', '$value') ON DUPLICATE KEY UPDATE value = VALUES(value)" >/dev/null || die "failed to set bd runtime $key for $db"
+}
+
+bd_runtime_schema_ready() {
+    local db="$1"
+    [ -n "$db" ] || return 1
+    valid_sql_name "$db" || return 1
+    server_sql "USE \`$db\`; SELECT 1 FROM config LIMIT 1" >/dev/null 2>&1
 }
 
 # --- Robustness Helpers ---
@@ -1316,6 +1357,7 @@ ensure_beads_role() {
     if git config --global beads.role >/dev/null 2>&1; then
         return 0
     fi
+    echo "gc-beads-bd: setting git config --global beads.role maintainer" >&2
     git config --global beads.role maintainer || die "failed to set git config beads.role"
 }
 
@@ -1699,6 +1741,7 @@ op_init() {
     local metadata_path="$dir/.beads/metadata.json"
     local existing_db=""
     local allow_reserved_existing=false
+    local bd_init_force=""
     if [ -z "$dir" ] || [ -z "$prefix" ]; then
         die "usage: gc-beads-bd init <dir> <prefix> [dolt_database]"
     fi
@@ -1771,18 +1814,24 @@ op_init() {
     # directory but the server was restarted (or the database was quarantined).
     if [ -f "$dir/.beads/metadata.json" ]; then
         if ensure_database_registered "$dolt_database"; then
-            # GC owns canonical metadata/config normalization after this backend
-            # bridge returns. Keep the backend focused on database registration
-            # and bd-specific bootstrap only.
-            ensure_beads_dir_permissions "$dir"
-            normalize_scope_after_init "$dir" "$prefix" "$dolt_database"
-            run_bd_pinned "$dir" config set types.custom "$custom_types" 2>/dev/null || true
-            ensure_bd_runtime_issue_prefix "$dolt_database" "$prefix"
-            backfill_project_id_if_missing "$dir"
-            exit 0
+            if bd_runtime_schema_ready "$dolt_database"; then
+                # GC owns canonical metadata/config normalization after this backend
+                # bridge returns. Keep the backend focused on database registration
+                # and bd-specific bootstrap only.
+                ensure_beads_dir_permissions "$dir"
+                normalize_scope_after_init "$dir" "$prefix" "$dolt_database"
+                run_bd_pinned "$dir" config set types.custom "$custom_types" 2>/dev/null || true
+                ensure_bd_runtime_custom_types "$dolt_database" "$custom_types"
+                ensure_bd_runtime_issue_prefix "$dolt_database" "$prefix"
+                backfill_project_id_if_missing "$dir"
+                exit 0
+            fi
+            echo "warning: database '$dolt_database' missing bd schema; re-initializing" >&2
+            bd_init_force="--force"
+        else
+            echo "warning: database '$dolt_database' not registered; re-initializing" >&2
+            bd_init_force="--force"
         fi
-        # Database registration failed — fall through to full init.
-        echo "warning: database '$dolt_database' not registered; re-initializing" >&2
     fi
 
     local host
@@ -1804,8 +1853,17 @@ op_init() {
         init_prefix="$dolt_database"
     fi
 
-    # Run bd init in server mode.
-    (cd "$dir" && bd init --quiet --server -p "$init_prefix" --skip-hooks --skip-agents         --server-host "$host" --server-port "$DOLT_PORT"         "$dir") || die "bd init failed for $dir"
+    # Run bd init in server mode through the pinned wrapper so the fallback
+    # path uses the same authenticated Dolt target as the rest of init.
+    # Metadata-only scopes already look initialized to bd, so schema-repair
+    # fallback must force reinit to seed the missing tables into the pinned DB.
+    if [ -n "$bd_init_force" ]; then
+        run_bd_pinned "$dir" init --force --quiet --server -p "$init_prefix" --skip-hooks --skip-agents \
+            --server-host "$host" --server-port "$DOLT_PORT" "$dir" || die "bd init failed for $dir"
+    else
+        run_bd_pinned "$dir" init --quiet --server -p "$init_prefix" --skip-hooks --skip-agents \
+            --server-host "$host" --server-port "$DOLT_PORT" "$dir" || die "bd init failed for $dir"
+    fi
 
     # Drop orphan database created by bd init (upstream gt-sv1h).
     # bd init --prefix creates beads_<prefix> on the Dolt server, but we
@@ -1821,6 +1879,7 @@ op_init() {
 
     # Configure custom bead types (required since beads v0.46.0).
     run_bd_pinned "$dir" config set types.custom "$custom_types" 2>/dev/null || true
+    ensure_bd_runtime_custom_types "$dolt_database" "$custom_types"
 
     # Keep bd's runtime config in sync with GC's canonical prefix. This is
     # compatibility state for raw bd operations, not a second GC authority.

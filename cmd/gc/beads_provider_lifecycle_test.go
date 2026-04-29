@@ -3882,11 +3882,11 @@ esac
 	}
 
 	cmd := exec.Command(script, "init", cityPath, "gc", "gascity")
-	cmd.Env = sanitizedBaseEnv(
+	cmd.Env = sanitizedBaseEnv(append(gcBeadsBdTestHomeEnv(t),
 		"GC_CITY_PATH="+cityPath,
 		"GC_BIN="+currentGCBinaryForTests(t),
 		"PATH="+strings.Join([]string{binDir, os.Getenv("PATH")}, string(os.PathListSeparator)),
-	)
+	)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("gc-beads-bd init failed: %v\n%s", err, out)
@@ -4646,12 +4646,11 @@ esac
 	}
 }
 
-// TestGcBeadsBdInitFastPathRepairsIssuePrefixDirectly guards the fix for
-// bd v1.0.3 rejecting `bd config set issue_prefix`. The managed init fast path
-// must repair the DB-visible issue_prefix directly instead of falling back to
-// `bd init --database <db> -p <prefix>`, which real bd v1.0.3 rejects once the
-// orchestrator-created Dolt database already exists.
-func TestGcBeadsBdInitFastPathRepairsIssuePrefixDirectly(t *testing.T) {
+// TestGcBeadsBdInitFastPathRepairsRuntimeConfigDirectly guards the fix for
+// bd v1.0.3 rejecting DB-backed config writes during the managed fast path
+// after the schema already exists. In that state, the script should repair
+// issue_prefix and types.custom directly without falling back to bd init.
+func TestGcBeadsBdInitFastPathRepairsRuntimeConfigDirectly(t *testing.T) {
 	cityPath := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(cityPath, ".gc"), 0o755); err != nil {
 		t.Fatal(err)
@@ -4686,8 +4685,8 @@ case "$cmd" in
   config)
     sub="${2:-}"
     key="${3:-}"
-    if [ "$sub" = "set" ] && [ "$key" = "issue_prefix" ]; then
-      echo "issue_prefix must not be set through bd config set" >&2
+    if [ "$sub" = "set" ] && { [ "$key" = "issue_prefix" ] || [ "$key" = "types.custom" ]; }; then
+      echo "$key must not be set through bd config set" >&2
       exit 2
     fi
     exit 0
@@ -4737,11 +4736,118 @@ esac
 	}
 	sqlText := string(sqlData)
 	for _, want := range []string{
+		"SELECT 1 FROM config LIMIT 1",
 		"USE `hq`",
 		"VALUES ('issue_prefix', 'gc') ON DUPLICATE KEY UPDATE",
+		"VALUES ('types.custom', 'molecule,convoy,message,event,gate,merge-request,agent,role,rig,session,spec,convergence') ON DUPLICATE KEY UPDATE",
 	} {
 		if !strings.Contains(sqlText, want) {
 			t.Fatalf("dolt SQL log missing %q:\n%s", want, sqlText)
+		}
+	}
+}
+
+func TestGcBeadsBdInitMetadataOnlyFallsThroughToForcedBdInitWhenSchemaMissing(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityPath, ".gc"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(cityPath, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, ".beads", "metadata.json"),
+		[]byte(`{"database":"dolt","backend":"dolt","dolt_mode":"server","dolt_database":"hq"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := MaterializeBuiltinPacks(cityPath); err != nil {
+		t.Fatalf("MaterializeBuiltinPacks: %v", err)
+	}
+	script := gcBeadsBdScriptPath(cityPath)
+
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	initArgsFile := filepath.Join(t.TempDir(), "bd-init-args")
+	sqlLogFile := filepath.Join(t.TempDir(), "dolt-sql-args")
+	fakeBd := filepath.Join(binDir, "bd")
+	fakeBdScript := fmt.Sprintf(`#!/bin/sh
+set -eu
+cmd="${1:-}"
+case "$cmd" in
+  init)
+    has_force=false
+    for arg in "$@"; do
+      if [ "$arg" = "--force" ]; then
+        has_force=true
+      fi
+    done
+    if [ "$has_force" != "true" ]; then
+      echo "bd init fallback must force reinitialize existing workspace" >&2
+      exit 2
+    fi
+    printf '%%s\n' "$@" > %q
+    exit 0
+    ;;
+  config|migrate|list)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`, initArgsFile)
+	if err := os.WriteFile(fakeBd, []byte(fakeBdScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeDolt := filepath.Join(binDir, "dolt")
+	fakeDoltScript := fmt.Sprintf(`#!/bin/sh
+set -eu
+query=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-q" ]; then
+    query="$arg"
+    break
+  fi
+  prev="$arg"
+done
+printf '%%s\n' "$query" >> %q
+case "$query" in
+  'USE `+"`hq`"+`; SELECT 1 FROM config LIMIT 1')
+    echo "table not found: config" >&2
+    exit 1
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+`, sqlLogFile)
+	if err := os.WriteFile(fakeDolt, []byte(fakeDoltScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(script, "init", cityPath, "gc", "hq")
+	cmd.Env = sanitizedBaseEnv(append(gcBeadsBdTestHomeEnv(t),
+		"GC_CITY_PATH="+cityPath,
+		"PATH="+strings.Join([]string{binDir, os.Getenv("PATH")}, string(os.PathListSeparator)),
+	)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("gc-beads-bd init failed: %v\n%s", err, out)
+	}
+
+	data, err := os.ReadFile(initArgsFile)
+	if err != nil {
+		t.Fatalf("expected bd init fallback to run: %v", err)
+	}
+	got := string(data)
+	for _, want := range []string{"--force", "--server", "-p", "hq", cityPath} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("bd init argv missing %q:\n%s", want, got)
 		}
 	}
 }
@@ -7983,11 +8089,11 @@ esac
 	}
 
 	cmd := exec.Command(script, "init", rigPath, "fe", "fe")
-	cmd.Env = sanitizedBaseEnv(
+	cmd.Env = sanitizedBaseEnv(append(gcBeadsBdTestHomeEnv(t),
 		"GC_CITY_PATH="+cityPath,
 		"GC_BIN="+currentGCBinaryForTests(t),
 		"PATH="+strings.Join([]string{binDir, os.Getenv("PATH")}, string(os.PathListSeparator)),
-	)
+	)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("gc-beads-bd init failed: %v\n%s", err, out)
