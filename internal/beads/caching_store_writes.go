@@ -215,6 +215,15 @@ func (c *CachingStore) DepAdd(issueID, dependsOnID, depType string) error {
 
 	c.mu.Lock()
 	c.noteMutationLocked(issueID)
+	if !c.depsComplete {
+		delete(c.deps, issueID)
+		delete(c.dirty, issueID)
+		delete(c.deletedSeq, issueID)
+		c.markFreshLocked(time.Now())
+		c.updateStatsLocked()
+		c.mu.Unlock()
+		return nil
+	}
 	deps := c.deps[issueID]
 	for i, d := range deps {
 		if d.DependsOnID == dependsOnID {
@@ -245,6 +254,15 @@ func (c *CachingStore) DepRemove(issueID, dependsOnID string) error {
 
 	c.mu.Lock()
 	c.noteMutationLocked(issueID)
+	if !c.depsComplete {
+		delete(c.deps, issueID)
+		delete(c.dirty, issueID)
+		delete(c.deletedSeq, issueID)
+		c.markFreshLocked(time.Now())
+		c.updateStatsLocked()
+		c.mu.Unlock()
+		return nil
+	}
 	deps := c.deps[issueID]
 	for i, d := range deps {
 		if d.DependsOnID == dependsOnID {

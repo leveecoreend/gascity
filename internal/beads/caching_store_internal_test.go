@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -779,4 +780,255 @@ func TestCachingStoreRunReconciliationDoesNotEmitBeadClosedForAlreadyClosedCache
 			t.Fatalf("reconciler emitted duplicate bead.closed for an already-closed cache entry; events=%v", events)
 		}
 	}
+}
+
+func TestCachingStoreBdPrimeAndReconcileSkipFullDepScan(t *testing.T) {
+	t.Parallel()
+
+	var depListCalls int
+	var readyCalls int
+	issueJSON := []byte(`[{
+		"id":"bd-1",
+		"title":"task",
+		"status":"open",
+		"issue_type":"task",
+		"created_at":"2026-01-01T00:00:00Z",
+		"labels":["task"],
+		"metadata":{}
+	}]`)
+	runner := func(_, name string, args ...string) ([]byte, error) {
+		if name != "bd" {
+			t.Fatalf("command name = %q, want bd", name)
+		}
+		if len(args) > 0 && args[0] == "dep" {
+			depListCalls++
+			t.Fatalf("unexpected dep scan command: %v", args)
+		}
+		if len(args) > 0 && args[0] == "ready" {
+			readyCalls++
+			return issueJSON, nil
+		}
+		if len(args) > 0 && args[0] == "list" {
+			return issueJSON, nil
+		}
+		return []byte(`[]`), nil
+	}
+	cache := NewCachingStore(NewBdStore("/city", runner), nil)
+	if err := cache.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	cache.runReconciliation()
+	if depListCalls != 0 {
+		t.Fatalf("dep list calls = %d, want 0", depListCalls)
+	}
+	if _, err := cache.Ready(); err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if readyCalls != 1 {
+		t.Fatalf("Ready calls = %d, want backing Ready fallback when deps are incomplete", readyCalls)
+	}
+}
+
+func TestCachingStoreBdIncompleteDepsUseBackingForDownDepList(t *testing.T) {
+	t.Parallel()
+
+	runner := newCachingStoreBdDepRunner(t)
+	cache := NewCachingStore(NewBdStore("/city", runner.run), nil)
+	if err := cache.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	deps, err := cache.DepList("bd-1", "down")
+	if err != nil {
+		t.Fatalf("initial DepList: %v", err)
+	}
+	if len(deps) != 0 {
+		t.Fatalf("initial deps = %v, want empty", deps)
+	}
+
+	runner.deps["bd-1"] = []Dep{{IssueID: "bd-1", DependsOnID: "bd-2", Type: "blocks"}}
+	cache.runReconciliation()
+
+	deps, err = cache.DepList("bd-1", "down")
+	if err != nil {
+		t.Fatalf("DepList after external dep add: %v", err)
+	}
+	if !hasDep(deps, "bd-2") {
+		t.Fatalf("deps after external dep add = %v, want bd-1 -> bd-2 from backing store", deps)
+	}
+	if runner.depScanCalls != 0 {
+		t.Fatalf("dep scan calls = %d, want 0", runner.depScanCalls)
+	}
+}
+
+func TestCachingStoreBdIncompleteDepsDepAddDoesNotDropExistingBackingDeps(t *testing.T) {
+	t.Parallel()
+
+	runner := newCachingStoreBdDepRunner(t)
+	runner.deps["bd-1"] = []Dep{{IssueID: "bd-1", DependsOnID: "bd-2", Type: "blocks"}}
+	cache := NewCachingStore(NewBdStore("/city", runner.run), nil)
+	if err := cache.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+
+	if err := cache.DepAdd("bd-1", "bd-3", "blocks"); err != nil {
+		t.Fatalf("DepAdd: %v", err)
+	}
+
+	deps, err := cache.DepList("bd-1", "down")
+	if err != nil {
+		t.Fatalf("DepList after DepAdd: %v", err)
+	}
+	if !hasDep(deps, "bd-2") || !hasDep(deps, "bd-3") {
+		t.Fatalf("deps after DepAdd = %v, want existing bd-2 and added bd-3", deps)
+	}
+}
+
+func TestCachingStoreBdIncompleteDepsDepRemoveDoesNotDropExternalBackingDeps(t *testing.T) {
+	t.Parallel()
+
+	runner := newCachingStoreBdDepRunner(t)
+	runner.deps["bd-1"] = []Dep{
+		{IssueID: "bd-1", DependsOnID: "bd-2", Type: "blocks"},
+		{IssueID: "bd-1", DependsOnID: "bd-3", Type: "blocks"},
+	}
+	cache := NewCachingStore(NewBdStore("/city", runner.run), nil)
+	if err := cache.Prime(context.Background()); err != nil {
+		t.Fatalf("Prime: %v", err)
+	}
+	if _, err := cache.DepList("bd-1", "down"); err != nil {
+		t.Fatalf("DepList before external add: %v", err)
+	}
+	runner.deps["bd-1"] = append(runner.deps["bd-1"], Dep{IssueID: "bd-1", DependsOnID: "bd-4", Type: "blocks"})
+
+	if err := cache.DepRemove("bd-1", "bd-3"); err != nil {
+		t.Fatalf("DepRemove: %v", err)
+	}
+
+	deps, err := cache.DepList("bd-1", "down")
+	if err != nil {
+		t.Fatalf("DepList after DepRemove: %v", err)
+	}
+	if hasDep(deps, "bd-3") {
+		t.Fatalf("deps after DepRemove = %v, still contains removed bd-3", deps)
+	}
+	if !hasDep(deps, "bd-2") || !hasDep(deps, "bd-4") {
+		t.Fatalf("deps after DepRemove = %v, want retained bd-2 and external bd-4", deps)
+	}
+}
+
+type cachingStoreBdDepRunner struct {
+	t            *testing.T
+	deps         map[string][]Dep
+	depScanCalls int
+}
+
+func newCachingStoreBdDepRunner(t *testing.T) *cachingStoreBdDepRunner {
+	t.Helper()
+	return &cachingStoreBdDepRunner{
+		t:    t,
+		deps: make(map[string][]Dep),
+	}
+}
+
+func (r *cachingStoreBdDepRunner) run(_, name string, args ...string) ([]byte, error) {
+	r.t.Helper()
+	if name != "bd" {
+		r.t.Fatalf("command name = %q, want bd", name)
+	}
+	if len(args) == 0 {
+		r.t.Fatal("empty bd command")
+	}
+	switch args[0] {
+	case "list":
+		return []byte(`[
+			{"id":"bd-1","title":"task","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","labels":["task"],"metadata":{}},
+			{"id":"bd-2","title":"dep 2","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","labels":["task"],"metadata":{}},
+			{"id":"bd-3","title":"dep 3","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","labels":["task"],"metadata":{}},
+			{"id":"bd-4","title":"dep 4","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","labels":["task"],"metadata":{}}
+		]`), nil
+	case "ready":
+		return []byte(`[]`), nil
+	case "dep":
+		return r.runDep(args[1:]...)
+	default:
+		return []byte(`[]`), nil
+	}
+}
+
+func (r *cachingStoreBdDepRunner) runDep(args ...string) ([]byte, error) {
+	r.t.Helper()
+	if len(args) == 0 {
+		r.t.Fatal("empty bd dep command")
+	}
+	switch args[0] {
+	case "list":
+		if len(args) > 1 && args[1] == "bd-1" {
+			return r.depListOutput("bd-1"), nil
+		}
+		r.depScanCalls++
+		r.t.Fatalf("unexpected dep scan command: %v", args)
+	case "add":
+		if len(args) < 5 || args[3] != "--type" {
+			r.t.Fatalf("unexpected dep add args: %v", args)
+		}
+		r.addDep(args[1], args[2], args[4])
+		return []byte(`[]`), nil
+	case "remove":
+		if len(args) < 3 {
+			r.t.Fatalf("unexpected dep remove args: %v", args)
+		}
+		r.removeDep(args[1], args[2])
+		return []byte(`[]`), nil
+	}
+	r.t.Fatalf("unexpected dep command: %v", args)
+	return nil, nil
+}
+
+func (r *cachingStoreBdDepRunner) depListOutput(issueID string) []byte {
+	deps := r.deps[issueID]
+	if len(deps) == 0 {
+		return []byte(`[]`)
+	}
+	var b strings.Builder
+	b.WriteByte('[')
+	for i, dep := range deps {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, `{"id":%q,"title":"dep","status":"open","issue_type":"task","created_at":"2026-01-01T00:00:00Z","dependency_type":%q}`, dep.DependsOnID, dep.Type)
+	}
+	b.WriteByte(']')
+	return []byte(b.String())
+}
+
+func (r *cachingStoreBdDepRunner) addDep(issueID, dependsOnID, depType string) {
+	deps := r.deps[issueID]
+	for i, dep := range deps {
+		if dep.DependsOnID == dependsOnID {
+			deps[i].Type = depType
+			r.deps[issueID] = deps
+			return
+		}
+	}
+	r.deps[issueID] = append(deps, Dep{IssueID: issueID, DependsOnID: dependsOnID, Type: depType})
+}
+
+func (r *cachingStoreBdDepRunner) removeDep(issueID, dependsOnID string) {
+	deps := r.deps[issueID]
+	for i, dep := range deps {
+		if dep.DependsOnID == dependsOnID {
+			r.deps[issueID] = append(deps[:i], deps[i+1:]...)
+			return
+		}
+	}
+}
+
+func hasDep(deps []Dep, dependsOnID string) bool {
+	for _, dep := range deps {
+		if dep.IssueID == "bd-1" && dep.DependsOnID == dependsOnID {
+			return true
+		}
+	}
+	return false
 }

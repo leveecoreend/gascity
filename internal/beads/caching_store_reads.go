@@ -267,7 +267,7 @@ func (c *CachingStore) Get(id string) (Bead, error) {
 // Ready returns open beads whose blocking deps are all closed.
 func (c *CachingStore) Ready() ([]Bead, error) {
 	c.mu.RLock()
-	if c.state == cacheLive {
+	if c.state == cacheLive && c.depsComplete {
 		if len(c.dirty) > 0 {
 			c.mu.RUnlock()
 			return c.backing.Ready()
@@ -368,6 +368,10 @@ func (c *CachingStore) DepList(id, direction string) ([]Dep, error) {
 	c.mu.RLock()
 	if c.state == cacheLive {
 		if direction == "down" || direction == "" {
+			if !c.depsComplete {
+				c.mu.RUnlock()
+				return c.backing.DepList(id, direction)
+			}
 			if deps, ok := c.deps[id]; ok {
 				c.mu.RUnlock()
 				return cloneDeps(deps), nil
