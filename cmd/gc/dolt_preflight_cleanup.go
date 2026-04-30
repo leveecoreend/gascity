@@ -112,11 +112,13 @@ func quarantinePhantomManagedDoltDatabases(dataDir string, now time.Time) error 
 		if !info.IsDir() {
 			continue
 		}
-		manifest := filepath.Join(doltDir, "noms", "manifest")
-		if _, err := os.Stat(manifest); err == nil {
-			continue
-		} else if !os.IsNotExist(err) {
-			return err
+		if !retiredManagedDoltDatabaseName(entry.Name()) {
+			manifest := filepath.Join(doltDir, "noms", "manifest")
+			if _, err := os.Stat(manifest); err == nil {
+				continue
+			} else if !os.IsNotExist(err) {
+				return err
+			}
 		}
 		if err := os.MkdirAll(quarantineRoot, 0o755); err != nil {
 			return err
@@ -131,6 +133,11 @@ func quarantinePhantomManagedDoltDatabases(dataDir string, now time.Time) error 
 		fmt.Fprintf(os.Stderr, "gc dolt preflight: quarantined phantom database %s -> %s\n", dbDir, dest) //nolint:errcheck // best-effort warning
 	}
 	return nil
+}
+
+func retiredManagedDoltDatabaseName(name string) bool {
+	name = strings.TrimSpace(name)
+	return strings.Contains(name, ".replaced-")
 }
 
 func uniqueQuarantineDestination(root, stamp, name string) (string, error) {

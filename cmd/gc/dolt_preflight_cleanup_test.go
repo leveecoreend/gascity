@@ -106,6 +106,40 @@ func TestRemoveStaleManagedDoltLocksWithoutLsofUsesAvailableState(t *testing.T) 
 	}
 }
 
+func TestQuarantinePhantomManagedDoltDatabasesQuarantinesRetiredReplacementDB(t *testing.T) {
+	dataDir := t.TempDir()
+	activeManifest := filepath.Join(dataDir, "ga", ".dolt", "noms", "manifest")
+	if err := os.MkdirAll(filepath.Dir(activeManifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activeManifest, []byte("active\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	retiredManifest := filepath.Join(dataDir, "ga.replaced-20260428T100722Z", ".dolt", "noms", "manifest")
+	if err := os.MkdirAll(filepath.Dir(retiredManifest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(retiredManifest, []byte("retired\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Date(2026, 4, 29, 16, 20, 0, 0, time.UTC)
+	if err := quarantinePhantomManagedDoltDatabases(dataDir, now); err != nil {
+		t.Fatalf("quarantinePhantomManagedDoltDatabases: %v", err)
+	}
+
+	if _, err := os.Stat(activeManifest); err != nil {
+		t.Fatalf("active manifest stat: %v", err)
+	}
+	if _, err := os.Stat(retiredManifest); !os.IsNotExist(err) {
+		t.Fatalf("retired manifest stat err = %v, want moved out of data dir", err)
+	}
+	quarantined := filepath.Join(dataDir, ".quarantine", "20260429T162000-ga.replaced-20260428T100722Z", ".dolt", "noms", "manifest")
+	if _, err := os.Stat(quarantined); err != nil {
+		t.Fatalf("quarantined manifest stat: %v", err)
+	}
+}
+
 func TestRemoveStaleManagedDoltSocketsWithoutLsofKeepsSocket(t *testing.T) {
 	socketPath := filepath.Join("/tmp", "dolt-preflight-cleanup-live-test.sock")
 	_ = os.Remove(socketPath)
