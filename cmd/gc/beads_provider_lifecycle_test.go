@@ -2178,74 +2178,46 @@ func TestInitBeadsForDirExecWithoutCityPathPreservesAmbientEnv(t *testing.T) {
 }
 
 func TestInitBeadsForDirExecPreventsStrayGitInit(t *testing.T) {
-	skipSlowCmdGCTest(t, "uses real bd init process behavior; run make test-cmd-gc-process for full coverage")
-	configureTestDoltIdentityEnv(t)
-
-	findRealBD := func() string {
-		t.Helper()
-		for _, dir := range strings.Split(os.Getenv("PATH"), string(os.PathListSeparator)) {
-			if strings.TrimSpace(dir) == "" {
-				continue
-			}
-			candidate := filepath.Join(dir, "bd")
-			info, err := os.Stat(candidate)
-			if err != nil || info.Mode()&0o111 == 0 {
-				continue
-			}
-			helpCmd := exec.Command(candidate, "--help")
-			helpCmd.Env = sanitizedBaseEnv()
-			out, err := helpCmd.CombinedOutput()
-			if err == nil && strings.Contains(string(out), "Initialize bd in the current directory") {
-				return candidate
-			}
-		}
-		t.Skip("real bd with init support not found in PATH")
-		return ""
-	}
-	bdPath := findRealBD()
-
-	rawDir := t.TempDir()
-	rawCmd := exec.Command(bdPath, "init", "--quiet", "--server", "--prefix", "raw", "--skip-hooks", "--skip-agents", ".")
-	rawCmd.Dir = rawDir
-	rawCmd.Env = sanitizedBaseEnv()
-	rawOut, err := rawCmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("direct bd init failed: %v\n%s", err, rawOut)
-	}
-	if _, err := os.Stat(filepath.Join(rawDir, ".beads")); err != nil {
-		t.Fatalf("direct bd init did not create .beads: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(rawDir, ".git")); err == nil {
-		t.Log("direct bd init created .git without BEADS_DIR")
-	} else if !os.IsNotExist(err) {
-		t.Fatalf("stat direct bd init .git: %v", err)
-	}
-
-	cityDir := t.TempDir()
-	writeMinimalCityToml(t, cityDir)
-	rigDir := filepath.Join(cityDir, "frontend")
-	if err := os.MkdirAll(rigDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	script := filepath.Join(t.TempDir(), "provider.sh")
-	content := fmt.Sprintf(`#!/bin/sh
+	script := filepath.Join(t.TempDir(), "bd-like-provider.sh")
+	content := `#!/bin/sh
 set -eu
 op="$1"
 shift
 case "$op" in
   init)
     dir="$1"
-    prefix="$2"
-    cd "$dir"
-    exec %q init --quiet --server --prefix "$prefix" --skip-hooks --skip-agents .
+    mkdir -p "$dir/.beads"
+    if [ -z "${BEADS_DIR:-}" ]; then
+      mkdir -p "$dir/.git"
+    fi
     ;;
   *)
     exit 0
     ;;
 esac
-`, bdPath)
+`
 	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	rawDir := t.TempDir()
+	rawCmd := exec.Command(script, "init", rawDir, "raw")
+	rawCmd.Env = sanitizedBaseEnv()
+	rawOut, err := rawCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("direct provider init failed: %v\n%s", err, rawOut)
+	}
+	if _, err := os.Stat(filepath.Join(rawDir, ".beads")); err != nil {
+		t.Fatalf("direct provider init did not create .beads: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(rawDir, ".git")); err != nil {
+		t.Fatalf("direct provider init did not emulate stray .git creation: %v", err)
+	}
+
+	cityDir := t.TempDir()
+	writeMinimalCityToml(t, cityDir)
+	rigDir := filepath.Join(cityDir, "frontend")
+	if err := os.MkdirAll(rigDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
