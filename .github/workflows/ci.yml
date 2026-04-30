@@ -5,6 +5,13 @@ on:
   push:
     branches: [main]
   pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+      - labeled
+      - unlabeled
 
 permissions:
   contents: read
@@ -14,10 +21,114 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  runner-policy:
+    name: Runner policy
+    runs-on: ubuntu-latest
+    outputs:
+      use_blacksmith: ${{ steps.policy.outputs.use_blacksmith }}
+      reason: ${{ steps.policy.outputs.reason }}
+      runner_2vcpu: ${{ steps.policy.outputs.runner_2vcpu }}
+      runner_8vcpu: ${{ steps.policy.outputs.runner_8vcpu }}
+      runner_16vcpu: ${{ steps.policy.outputs.runner_16vcpu }}
+      runner_32vcpu: ${{ steps.policy.outputs.runner_32vcpu }}
+    steps:
+      # Read the allowlist from the trusted base revision, not from PR code.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        if: ${{ github.event_name == 'pull_request' }}
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        if: ${{ github.event_name != 'pull_request' }}
+      - name: Select runner backend
+        id: policy
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          event_name = os.environ["EVENT_NAME"]
+          author = os.environ.get("PR_AUTHOR", "").strip()
+          association = os.environ.get("PR_ASSOCIATION", "").strip().upper()
+          try:
+              labels_payload = json.loads(os.environ.get("PR_LABELS_JSON", "[]") or "[]")
+          except json.JSONDecodeError:
+              labels_payload = []
+          if labels_payload is None:
+              labels_payload = []
+          labels = {str(label).strip() for label in labels_payload if str(label).strip()}
+
+          allowlist_path = Path(".github/blacksmith-allowlist.txt")
+          allowlist = set()
+          if allowlist_path.exists():
+              for raw_line in allowlist_path.read_text(encoding="utf-8").splitlines():
+                  line = raw_line.split("#", 1)[0].strip()
+                  if line:
+                      allowlist.add(line.lower())
+
+          use_blacksmith = False
+          reason = ""
+          if event_name != "pull_request":
+              use_blacksmith = True
+              reason = f"{event_name} event"
+          elif "ok-to-blacksmith" in labels:
+              use_blacksmith = True
+              reason = "ok-to-blacksmith label"
+          elif association in {"OWNER", "MEMBER", "COLLABORATOR"}:
+              use_blacksmith = True
+              reason = f"trusted author association: {association}"
+          elif author.lower() in allowlist:
+              use_blacksmith = True
+              reason = "author is in .github/blacksmith-allowlist.txt"
+          else:
+              reason = (
+                  f"author {author or '<unknown>'} is not on the Blacksmith allowlist; "
+                  "using GitHub-hosted runners"
+              )
+
+          if use_blacksmith:
+              runners = {
+                  "runner_2vcpu": "blacksmith-2vcpu-ubuntu-2404",
+                  "runner_8vcpu": "blacksmith-8vcpu-ubuntu-2404",
+                  "runner_16vcpu": "blacksmith-16vcpu-ubuntu-2404",
+                  "runner_32vcpu": "blacksmith-32vcpu-ubuntu-2404",
+              }
+              backend = "Blacksmith"
+          else:
+              runners = {
+                  "runner_2vcpu": "ubuntu-latest",
+                  "runner_8vcpu": "ubuntu-latest",
+                  "runner_16vcpu": "ubuntu-latest",
+                  "runner_32vcpu": "ubuntu-latest",
+              }
+              backend = "GitHub-hosted"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"use_blacksmith={str(use_blacksmith).lower()}\n")
+              out.write(f"reason={reason}\n")
+              for name, runner in runners.items():
+                  out.write(f"{name}={runner}\n")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("## Runner policy\n\n")
+              summary.write(f"- backend: `{backend}`\n")
+              summary.write(f"- use_blacksmith: `{str(use_blacksmith).lower()}`\n")
+              summary.write(f"- reason: {reason}\n")
+              if event_name == "pull_request":
+                  summary.write(f"- author: `{author}`\n")
+                  summary.write(f"- association: `{association or '<empty>'}`\n")
+          PY
+
   # Detect which paths changed to gate conditional jobs.
   changes:
     name: Detect changes
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    needs: runner-policy
+    runs-on: ${{ needs.runner-policy.outputs.runner_2vcpu }}
     outputs:
       mail: ${{ steps.filter.outputs.mail }}
       docker: ${{ steps.filter.outputs.docker }}
@@ -86,7 +197,8 @@ jobs:
 
   preflight-lint:
     name: Preflight / lint
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    needs: runner-policy
+    runs-on: ${{ needs.runner-policy.outputs.runner_16vcpu }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
@@ -99,7 +211,8 @@ jobs:
 
   preflight-format:
     name: Preflight / format
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    needs: runner-policy
+    runs-on: ${{ needs.runner-policy.outputs.runner_8vcpu }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
@@ -112,7 +225,8 @@ jobs:
 
   preflight-vet:
     name: Preflight / vet
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    needs: runner-policy
+    runs-on: ${{ needs.runner-policy.outputs.runner_16vcpu }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
@@ -123,7 +237,8 @@ jobs:
 
   preflight-unit-cover:
     name: Preflight / unit cover
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    needs: runner-policy
+    runs-on: ${{ needs.runner-policy.outputs.runner_32vcpu }}
     env:
       DOLT_VERSION: "1.86.6"
       BD_VERSION: "v1.0.3"
@@ -147,7 +262,8 @@ jobs:
 
   preflight-docs:
     name: Preflight / docs
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    needs: runner-policy
+    runs-on: ${{ needs.runner-policy.outputs.runner_8vcpu }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
@@ -158,7 +274,8 @@ jobs:
 
   preflight-acceptance:
     name: Preflight / acceptance A
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    needs: runner-policy
+    runs-on: ${{ needs.runner-policy.outputs.runner_32vcpu }}
     env:
       DOLT_VERSION: "1.86.6"
       BD_VERSION: "v1.0.3"
@@ -174,7 +291,8 @@ jobs:
 
   preflight-dashboard:
     name: Preflight / dashboard drift
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    needs: runner-policy
+    runs-on: ${{ needs.runner-policy.outputs.runner_16vcpu }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
@@ -188,7 +306,8 @@ jobs:
 
   preflight-spec:
     name: Preflight / spec drift
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    needs: runner-policy
+    runs-on: ${{ needs.runner-policy.outputs.runner_16vcpu }}
     env:
       # Make TestGeneratedClientInSync fatal on missing oapi-codegen so the
       # spec->client drift check can never silently skip in CI.
@@ -206,6 +325,7 @@ jobs:
   check:
     name: Check
     needs:
+      - runner-policy
       - preflight-lint
       - preflight-format
       - preflight-vet
@@ -215,7 +335,7 @@ jobs:
       - preflight-dashboard
       - preflight-spec
     if: ${{ always() }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_2vcpu }}
     env:
       NEEDS_JSON: ${{ toJSON(needs) }}
     steps:
@@ -246,7 +366,8 @@ jobs:
 
   release-config:
     name: Release config
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    needs: runner-policy
+    runs-on: ${{ needs.runner-policy.outputs.runner_2vcpu }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -258,9 +379,11 @@ jobs:
 
   cmd-gc-process:
     name: cmd/gc process / ${{ matrix.shard_index }} of 6
-    needs: changes
+    needs:
+      - runner-policy
+      - changes
     if: needs.changes.outputs.cmd_gc_process == 'true'
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_32vcpu }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -283,7 +406,8 @@ jobs:
 
   integration-shards:
     name: Integration / ${{ matrix.shard_name }}
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    needs: runner-policy
+    runs-on: ${{ needs.runner-policy.outputs.runner_32vcpu }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
       fail-fast: false
@@ -393,9 +517,11 @@ jobs:
 
   worker-core-claude:
     name: Worker core (Claude)
-    needs: changes
+    needs:
+      - runner-policy
+      - changes
     if: needs.changes.outputs.worker == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_16vcpu }}
     env:
       PROFILE: claude/tmux-cli
       WORKER_REPORT_DIR: /tmp/worker-core-claude-reports
@@ -425,9 +551,11 @@ jobs:
 
   worker-core-codex:
     name: Worker core (Codex)
-    needs: changes
+    needs:
+      - runner-policy
+      - changes
     if: needs.changes.outputs.worker == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_16vcpu }}
     env:
       PROFILE: codex/tmux-cli
       WORKER_REPORT_DIR: /tmp/worker-core-codex-reports
@@ -457,9 +585,11 @@ jobs:
 
   worker-core-gemini:
     name: Worker core (Gemini)
-    needs: changes
+    needs:
+      - runner-policy
+      - changes
     if: needs.changes.outputs.worker == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_16vcpu }}
     env:
       PROFILE: gemini/tmux-cli
       WORKER_REPORT_DIR: /tmp/worker-core-gemini-reports
@@ -490,12 +620,13 @@ jobs:
   worker-core-summary:
     name: Worker core summary
     needs:
+      - runner-policy
       - changes
       - worker-core-claude
       - worker-core-codex
       - worker-core-gemini
     if: ${{ always() }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_2vcpu }}
     env:
       WORKER_ROLLUP_DIR: /tmp/worker-core-summary-reports
       WORKER_ROLLUP_JSON: /tmp/worker-core-summary-reports/worker-core-summary.json
@@ -597,9 +728,11 @@ jobs:
 
   worker-core-phase2-claude:
     name: Worker core phase 2 (Claude)
-    needs: changes
+    needs:
+      - runner-policy
+      - changes
     if: needs.changes.outputs.worker_phase2 == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_16vcpu }}
     env:
       PROFILE: claude/tmux-cli
       WORKER_REPORT_DIR: /tmp/worker-core-phase2-claude-reports
@@ -633,9 +766,11 @@ jobs:
 
   worker-core-phase2-codex:
     name: Worker core phase 2 (Codex)
-    needs: changes
+    needs:
+      - runner-policy
+      - changes
     if: needs.changes.outputs.worker_phase2 == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_16vcpu }}
     env:
       PROFILE: codex/tmux-cli
       WORKER_REPORT_DIR: /tmp/worker-core-phase2-codex-reports
@@ -669,9 +804,11 @@ jobs:
 
   worker-core-phase2-gemini:
     name: Worker core phase 2 (Gemini)
-    needs: changes
+    needs:
+      - runner-policy
+      - changes
     if: needs.changes.outputs.worker_phase2 == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_16vcpu }}
     env:
       PROFILE: gemini/tmux-cli
       WORKER_REPORT_DIR: /tmp/worker-core-phase2-gemini-reports
@@ -706,12 +843,13 @@ jobs:
   worker-core-phase2-summary:
     name: Worker core phase 2 summary
     needs:
+      - runner-policy
       - changes
       - worker-core-phase2-claude
       - worker-core-phase2-codex
       - worker-core-phase2-gemini
     if: ${{ always() }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_2vcpu }}
     env:
       WORKER_ROLLUP_DIR: /tmp/worker-core-phase2-summary-reports
       WORKER_ROLLUP_JSON: /tmp/worker-core-phase2-summary-reports/worker-core-phase2-summary.json
@@ -813,9 +951,11 @@ jobs:
 
   worker-inference-phase3-claude:
     name: Worker inference phase 3 (Claude)
-    needs: changes
+    needs:
+      - runner-policy
+      - changes
     if: needs.changes.outputs.worker == 'true'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_2vcpu }}
     env:
       PROFILE: claude/tmux-cli
       WORKER_REPORT_DIR: /tmp/worker-inference-phase3-claude-reports
@@ -838,9 +978,11 @@ jobs:
 
   worker-inference-phase3-codex:
     name: Worker inference phase 3 (Codex)
-    needs: changes
+    needs:
+      - runner-policy
+      - changes
     if: needs.changes.outputs.worker == 'true'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_2vcpu }}
     env:
       PROFILE: codex/tmux-cli
       WORKER_REPORT_DIR: /tmp/worker-inference-phase3-codex-reports
@@ -863,9 +1005,11 @@ jobs:
 
   worker-inference-phase3-gemini:
     name: Worker inference phase 3 (Gemini)
-    needs: changes
+    needs:
+      - runner-policy
+      - changes
     if: needs.changes.outputs.worker == 'true'
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_2vcpu }}
     env:
       PROFILE: gemini/tmux-cli
       WORKER_REPORT_DIR: /tmp/worker-inference-phase3-gemini-reports
@@ -889,12 +1033,13 @@ jobs:
   worker-inference-phase3-summary:
     name: Worker inference phase 3 summary
     needs:
+      - runner-policy
       - changes
       - worker-inference-phase3-claude
       - worker-inference-phase3-codex
       - worker-inference-phase3-gemini
     if: ${{ always() }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_2vcpu }}
     env:
       WORKER_ROLLUP_DIR: /tmp/worker-inference-phase3-summary-reports
       WORKER_ROLLUP_JSON: /tmp/worker-inference-phase3-summary-reports/worker-inference-phase3-summary.json
@@ -1000,9 +1145,12 @@ jobs:
   # Runs when pack-related files change — full gastown integration suite.
   pack-gate:
     name: Pack compatibility gate
-    needs: [changes, check]
+    needs:
+      - runner-policy
+      - changes
+      - check
     if: needs.changes.outputs.packs == 'true'
-    runs-on: blacksmith-32vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_32vcpu }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: ./.github/actions/setup-gascity-ubuntu
@@ -1026,7 +1174,8 @@ jobs:
   # load-bearing discipline step.
   dashboard:
     name: Dashboard SPA
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    needs: runner-policy
+    runs-on: ${{ needs.runner-policy.outputs.runner_16vcpu }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
@@ -1059,9 +1208,11 @@ jobs:
   # Runs when mail-related source paths change.
   mcp-mail:
     name: MCP mail conformance
-    needs: changes
+    needs:
+      - runner-policy
+      - changes
     if: needs.changes.outputs.mail == 'true'
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_8vcpu }}
     continue-on-error: true  # upstream mcp_agent_mail API may drift
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -1086,9 +1237,11 @@ jobs:
   # Runs when session/Docker-related source paths change.
   docker-session:
     name: Docker session
-    needs: changes
+    needs:
+      - runner-policy
+      - changes
     if: needs.changes.outputs.docker == 'true'
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_16vcpu }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -1112,9 +1265,11 @@ jobs:
   # Requires K8s CI infrastructure — no-op until secrets are configured.
   k8s-session:
     name: K8s session
-    needs: changes
+    needs:
+      - runner-policy
+      - changes
     if: needs.changes.outputs.k8s == 'true'
-    runs-on: blacksmith-8vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_8vcpu }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -1134,11 +1289,12 @@ jobs:
   ci-preflight:
     name: CI / preflight
     needs:
+      - runner-policy
       - check
       - release-config
       - dashboard
     if: ${{ always() }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_2vcpu }}
     env:
       NEEDS_JSON: ${{ toJSON(needs) }}
     steps:
@@ -1164,9 +1320,10 @@ jobs:
   ci-integration:
     name: CI / integration
     needs:
+      - runner-policy
       - integration-shards
     if: ${{ always() }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_2vcpu }}
     env:
       NEEDS_JSON: ${{ toJSON(needs) }}
     steps:
@@ -1192,6 +1349,7 @@ jobs:
   ci-required:
     name: CI / required
     needs:
+      - runner-policy
       - changes
       - ci-preflight
       - ci-integration
@@ -1203,7 +1361,7 @@ jobs:
       - docker-session
       - k8s-session
     if: ${{ always() }}
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ${{ needs.runner-policy.outputs.runner_2vcpu }}
     env:
       NEEDS_JSON: ${{ toJSON(needs) }}
     steps:
