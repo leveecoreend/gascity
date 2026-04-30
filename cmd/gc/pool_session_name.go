@@ -106,6 +106,9 @@ func releaseOrphanedPoolAssignments(
 			if assigneePreservesNamedSessionRoute(cfg, template, assignee) {
 				continue
 			}
+			if !storeAware && sessionAssigneeVisibleInStore(store, assignee) {
+				continue
+			}
 		}
 
 		var ownerStore beads.Store
@@ -127,6 +130,24 @@ func releaseOrphanedPoolAssignments(
 		released = append(released, releasedPoolAssignment{ID: wb.ID, Index: i})
 	}
 	return released
+}
+
+func sessionAssigneeVisibleInStore(store beads.Store, assignee string) bool {
+	assignee = strings.TrimSpace(assignee)
+	if store == nil || assignee == "" {
+		return false
+	}
+	matches, err := store.ListByMetadata(map[string]string{"session_name": assignee}, 0)
+	if err != nil {
+		return true
+	}
+	for _, match := range matches {
+		if match.Status == "closed" || !isSessionBead(match) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func storeForPoolAssignment(cfg *config.City, cityStore beads.Store, rigStores map[string]beads.Store, wb beads.Bead) beads.Store {

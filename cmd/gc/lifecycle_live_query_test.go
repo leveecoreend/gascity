@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"testing"
 
@@ -9,7 +10,7 @@ import (
 	"github.com/gastownhall/gascity/internal/config"
 )
 
-func TestCollectAssignedWorkBeads_UsesLiveReadyForAssignedOpenHandoff(t *testing.T) {
+func TestCollectAssignedWorkBeads_UsesCachedReadyEventForAssignedOpenHandoff(t *testing.T) {
 	t.Parallel()
 
 	backing := beads.NewMemStore()
@@ -46,10 +47,19 @@ func TestCollectAssignedWorkBeads_UsesLiveReadyForAssignedOpenHandoff(t *testing
 	if err := backing.Update(blocker.ID, beads.UpdateOpts{Status: &closed}); err != nil {
 		t.Fatalf("Update(%s, closed): %v", blocker.ID, err)
 	}
+	eventBead, err := backing.Get(blocker.ID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", blocker.ID, err)
+	}
+	payload, err := json.Marshal(eventBead)
+	if err != nil {
+		t.Fatalf("Marshal(%s): %v", blocker.ID, err)
+	}
+	cache.ApplyEvent("bead.closed", payload)
 
 	got, _ := collectAssignedWorkBeads(&config.City{}, cache)
 	if len(got) != 1 || got[0].ID != handoff.ID {
-		t.Fatalf("collectAssignedWorkBeads() = %#v, want [%s] from live ready state", got, handoff.ID)
+		t.Fatalf("collectAssignedWorkBeads() = %#v, want [%s] from cached ready event state", got, handoff.ID)
 	}
 }
 

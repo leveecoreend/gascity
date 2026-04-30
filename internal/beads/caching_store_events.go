@@ -2,7 +2,6 @@ package beads
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -23,27 +22,21 @@ func (c *CachingStore) ApplyEvent(eventType string, payload json.RawMessage) {
 		c.recordProblem(fmt.Sprintf("apply %s event", eventType), err)
 		return
 	}
+	if !c.ownsBeadID(patch.ID) {
+		return
+	}
 
 	c.mu.RLock()
-	if c.state != cacheLive {
+	if c.state != cacheLive && c.state != cachePartial {
 		c.mu.RUnlock()
 		return
 	}
-	_, cached := c.beads[patch.ID]
 	c.mu.RUnlock()
 
 	b := patch
-	if !cached {
-		if fresh, err := c.backing.Get(patch.ID); err == nil {
-			b = fresh
-		} else if !errors.Is(err, ErrNotFound) {
-			c.recordProblem(fmt.Sprintf("refresh %s event", eventType), err)
-		}
-	}
-
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.state != cacheLive {
+	if c.state != cacheLive && c.state != cachePartial {
 		return
 	}
 	if current, ok := c.beads[patch.ID]; ok {
@@ -56,6 +49,7 @@ func (c *CachingStore) ApplyEvent(eventType string, payload json.RawMessage) {
 		if _, exists := c.beads[b.ID]; !exists {
 			c.noteMutationLocked(b.ID)
 			c.beads[b.ID] = cloneBead(b)
+			c.updateEventDepsLocked(b, fields)
 			delete(c.dirty, b.ID)
 			delete(c.deletedSeq, b.ID)
 		}
@@ -64,6 +58,7 @@ func (c *CachingStore) ApplyEvent(eventType string, payload json.RawMessage) {
 	case "bead.updated":
 		c.noteMutationLocked(b.ID)
 		c.beads[b.ID] = cloneBead(b)
+		c.updateEventDepsLocked(b, fields)
 		delete(c.dirty, b.ID)
 		delete(c.deletedSeq, b.ID)
 		mutated = true
@@ -73,6 +68,7 @@ func (c *CachingStore) ApplyEvent(eventType string, payload json.RawMessage) {
 			c.updateStatsLocked()
 		}
 		c.beads[b.ID] = cloneBead(b)
+		c.updateEventDepsLocked(b, fields)
 		delete(c.dirty, b.ID)
 		delete(c.deletedSeq, b.ID)
 		mutated = true
@@ -85,12 +81,24 @@ func (c *CachingStore) ApplyEvent(eventType string, payload json.RawMessage) {
 	}
 }
 
+func (c *CachingStore) updateEventDepsLocked(b Bead, fields map[string]json.RawMessage) {
+	if hasCacheEventField(fields, "dependencies") {
+		c.deps[b.ID] = cloneDeps(b.Dependencies)
+		return
+	}
+	if _, ok := c.deps[b.ID]; ok {
+		return
+	}
+	delete(c.deps, b.ID)
+	c.depsComplete = false
+}
+
 // ApplyDepEvent updates the dep cache for a bead. Call after dep
 // mutations are detected via events or write-through.
 func (c *CachingStore) ApplyDepEvent(beadID string, deps []Dep) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.state != cacheLive {
+	if c.state != cacheLive && c.state != cachePartial {
 		return
 	}
 	c.noteMutationLocked(beadID)

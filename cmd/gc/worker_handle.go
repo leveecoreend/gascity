@@ -306,6 +306,61 @@ func workerHandleForSessionWithConfig(cityPath string, store beads.Store, sp run
 	return factory.SessionByID(id)
 }
 
+func workerHandleForPreparedStartWithConfig(cityPath string, store beads.Store, sp runtime.Provider, cfg *config.City, item preparedStart) (worker.Handle, error) {
+	if item.candidate.session == nil {
+		return nil, session.ErrSessionNotFound
+	}
+	factory, err := workerFactoryWithConfig(cityPath, store, sp, cfg)
+	if err != nil {
+		return nil, err
+	}
+	meta := item.candidate.session.Metadata
+	tp := item.candidate.tp
+	resume := session.ProviderResume{
+		ResumeFlag:    meta["resume_flag"],
+		ResumeStyle:   meta["resume_style"],
+		ResumeCommand: meta["resume_command"],
+	}
+	provider := strings.TrimSpace(meta["provider"])
+	if tp.ResolvedProvider != nil {
+		resume = session.ProviderResume{
+			ResumeFlag:    tp.ResolvedProvider.ResumeFlag,
+			ResumeStyle:   tp.ResolvedProvider.ResumeStyle,
+			ResumeCommand: tp.ResolvedProvider.ResumeCommand,
+			SessionIDFlag: tp.ResolvedProvider.SessionIDFlag,
+		}
+		if provider == "" {
+			provider = strings.TrimSpace(tp.ResolvedProvider.Name)
+		}
+	}
+	if provider == "" {
+		provider = strings.TrimSpace(tp.TemplateName)
+	}
+	if provider == "" {
+		provider = firstCommandField(item.cfg.Command)
+	}
+	return factory.SessionForResolvedRuntime(worker.ResolvedSessionConfig{
+		ID:       item.candidate.session.ID,
+		Template: firstNonEmptyGCString(meta["template"], tp.TemplateName),
+		Title:    item.candidate.session.Title,
+		Runtime: worker.ResolvedRuntime{
+			Command:  item.cfg.Command,
+			WorkDir:  item.cfg.WorkDir,
+			Provider: provider,
+			Resume:   resume,
+			Hints:    item.cfg,
+		},
+	})
+}
+
+func firstCommandField(command string) string {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
 func workerHandleForSessionTargetWithConfig(cityPath string, store beads.Store, sp runtime.Provider, cfg *config.City, target string) (worker.Handle, error) {
 	return workerHandleForSessionTargetWithRuntimeHintsWithConfig(cityPath, store, sp, cfg, target, nil)
 }

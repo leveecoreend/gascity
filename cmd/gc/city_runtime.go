@@ -93,6 +93,7 @@ const runtimeDemandSnapshotMaxAge = 30 * time.Second
 type runtimeDemandSnapshot struct {
 	createdAt          time.Time
 	sessionFingerprint string
+	storeFingerprint   string
 	result             DesiredStateResult
 }
 
@@ -435,6 +436,14 @@ func (cr *CityRuntime) run(ctx context.Context) {
 			return
 		}
 
+		// Dispatch due orders before startup session reconciliation. A cold-start
+		// reconcile can take minutes when it has stale or config-drifted sessions;
+		// due event/condition formulas should not wait behind that maintenance work.
+		cr.dispatchOrders(ctx, cityRoot)
+		if ctx.Err() != nil {
+			return
+		}
+
 		if cr.sessionDrains != nil {
 			cr.beadReconcileTick(ctx, result, sessionBeads, startupTrace)
 		}
@@ -663,6 +672,7 @@ func (cr *CityRuntime) tick(
 		cr.activeReload = nil
 	}()
 	configChanged := dirty.Swap(false)
+	demandConfigChanged := configChanged
 	if configChanged {
 		dirtyCleared = true
 		source := reloadSourceWatch
@@ -674,11 +684,16 @@ func (cr *CityRuntime) tick(
 		if manualReload != nil {
 			manualReloadCompleted = true
 		}
+		if manualReply.Outcome != reloadOutcomeApplied {
+			demandConfigChanged = false
+		}
 	}
 
 	// Order dispatch is intentionally before the expensive session reconcile
 	// phases so due formulas are not starved by slow startup/config drift work.
-	cr.dispatchOrders(ctx, cityRoot)
+	if cr.dispatchOrders(ctx, cityRoot) {
+		return
+	}
 
 	// Session bead sync BEFORE reconciliation (one-tick state lag; see run()).
 	// Post-reconcile sync was intentionally removed: the daemon's next tick
@@ -689,7 +704,7 @@ func (cr *CityRuntime) tick(
 	if reapStaleSessionBeads(cr.cityBeadStore(), cr.sp, cr.sessionDrains, clock.Real{}, cr.stderr) > 0 {
 		sessionBeads = cr.loadSessionBeadSnapshot()
 	}
-	demand := cr.loadDemandSnapshot(sessionBeads, trace, trigger, configChanged)
+	demand := cr.loadDemandSnapshot(sessionBeads, trace, trigger, demandConfigChanged)
 	result := demand.result
 	sessionBeads = cr.loadSessionBeadSnapshot()
 	result = refreshDesiredStateWithSessionBeads(
@@ -764,10 +779,11 @@ func (cr *CityRuntime) tick(
 	tickCompleted = true
 }
 
-func (cr *CityRuntime) dispatchOrders(ctx context.Context, cityRoot string) {
+func (cr *CityRuntime) dispatchOrders(ctx context.Context, cityRoot string) bool {
 	if cr.od != nil {
-		cr.od.dispatch(ctx, cityRoot, time.Now())
+		return cr.od.dispatch(ctx, cityRoot, time.Now())
 	}
+	return false
 }
 
 func (cr *CityRuntime) handleReloadRequest(req *reloadRequest) {
@@ -1184,7 +1200,11 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 	}
 	rigStores := cr.rigBeadStores()
 	assignedWorkBeads := result.AssignedWorkBeads
-	if released := releaseOrphanedPoolAssignments(store, cr.cfg, sessionBeads.Open(), assignedWorkBeads, result.AssignedWorkStores, rigStores); len(released) > 0 {
+	var released []releasedPoolAssignment
+	if !result.StoreQueryPartial {
+		released = releaseOrphanedPoolAssignments(store, cr.cfg, sessionBeads.Open(), assignedWorkBeads, result.AssignedWorkStores, rigStores)
+	}
+	if len(released) > 0 {
 		for _, r := range released {
 			fmt.Fprintf(cr.stderr, "released orphaned pool work: %s\n", r.ID) //nolint:errcheck
 		}
@@ -1239,12 +1259,12 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 		readyWaitSet = nil
 	}
 
-	// workSet: defense-in-depth wake signal from work_query. When work_query
-	// detects pending work but scale_check hasn't caught up yet, workSet
-	// ensures at least one session wakes without waiting for the next tick.
+	// Controller ticks must not shell out through agent work_query. Routed work
+	// demand comes from the cached store read model; agents run gc hook after
+	// start to claim exactly one routed bead.
 	workSet := result.WorkSet
 	if workSet == nil {
-		workSet = computeWorkSet(cr.cfg, shellScaleCheck, cityName, cr.cityPath, store, sessionBeads, cr.stderr)
+		workSet = map[string]bool{}
 	}
 	if trace != nil {
 		templateNames := make(map[string]struct{})
@@ -1350,10 +1370,7 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 			})
 		}
 	}
-	dispatchSessionBeads, err := loadSessionBeadSnapshot(store)
-	if err != nil {
-		fmt.Fprintf(cr.stderr, "%s: dispatching wait nudges: %v\n", cr.logPrefix, err) //nolint:errcheck
-	} else if err := dispatchReadyWaitNudgesWithSnapshot(cr.cityPath, store, time.Now(), dispatchSessionBeads); err != nil {
+	if err := dispatchReadyWaitNudgesWithSnapshot(cr.cityPath, store, time.Now(), sessionBeads); err != nil {
 		fmt.Fprintf(cr.stderr, "%s: dispatching wait nudges: %v\n", cr.logPrefix, err) //nolint:errcheck
 	}
 
@@ -1461,23 +1478,18 @@ func sweepUndesiredPoolSessionBeads(
 		if running, err := workerSessionTargetRunningWithConfig("", store, sp, cfg, bead.ID); err == nil && running {
 			continue
 		}
-		// Don't sweep beads that the reconciler still considers "start
-		// requested" — their work assignment window hasn't opened. Mirrors
-		// sessionStartRequested (session_reconcile.go) exactly so the two
-		// loops agree about ownership:
-		//   - pending_create_claim=true: in-flight create claim, protected
-		//     regardless of age until the lifecycle clears it.
-		//   - state=creating: protected until staleCreatingState would
-		//     return true (i.e., until staleCreatingStateTimeout has
-		//     elapsed; zero CreatedAt is treated as stale, matching
-		//     staleCreatingState in session_reconcile.go).
+		// Don't sweep fresh creating beads. Their work assignment window
+		// hasn't opened yet, and closing them during the same tick that
+		// created them spins the pool in a create→sweep→recreate loop.
+		//
+		// A pending_create_claim alone is not demand. If the session no
+		// longer appears in desiredState, the pool scaled back to zero or a
+		// retry abandoned this start; the sweep/reconciler may retire it once
+		// the fresh creating grace below no longer applies.
 		// Without this, a pool's freshly-created session bead gets swept
 		// on the same tick it's created (no work assigned →
 		// GCSweepSessionBeads closes it), spinning the pool in a rapid
 		// create→sweep→recreate loop.
-		if strings.TrimSpace(bead.Metadata["pending_create_claim"]) == "true" {
-			continue
-		}
 		if strings.TrimSpace(bead.Metadata["state"]) == "creating" && !isStaleCreating(bead.CreatedAt) {
 			continue
 		}
@@ -1715,7 +1727,8 @@ func (cr *CityRuntime) loadDemandSnapshot(
 	configChanged bool,
 ) runtimeDemandSnapshot {
 	sessionFingerprint := sessionBeadSnapshotFingerprint(sessionBeads)
-	if cr.shouldRefreshDemandSnapshot(trigger, configChanged, sessionFingerprint) {
+	storeFingerprint := cr.demandStoreFingerprint()
+	if cr.shouldRefreshDemandSnapshot(trigger, configChanged, sessionFingerprint, storeFingerprint) {
 		result := cr.buildDesiredState(sessionBeads, trace)
 		var openSessionBeads []beads.Bead
 		if sessionBeads != nil {
@@ -1727,10 +1740,11 @@ func (cr *CityRuntime) loadDemandSnapshot(
 			result.PoolDesiredCounts = make(map[string]int)
 		}
 		mergeNamedSessionDemand(result.PoolDesiredCounts, result.NamedSessionDemand, cr.cfg)
-		result.WorkSet = computeWorkSet(cr.cfg, shellScaleCheck, cr.cityName, cr.cityPath, cr.cityBeadStore(), sessionBeads, cr.stderr)
+		result.WorkSet = map[string]bool{}
 		cr.demandSnapshot = &runtimeDemandSnapshot{
 			createdAt:          time.Now(),
 			sessionFingerprint: sessionFingerprint,
+			storeFingerprint:   storeFingerprint,
 			result:             result,
 		}
 	}
@@ -1746,11 +1760,12 @@ func (cr *CityRuntime) shouldRefreshDemandSnapshot(
 	trigger string,
 	configChanged bool,
 	sessionFingerprint string,
+	storeFingerprint string,
 ) bool {
 	if !cr.demandSnapshotsEnabled() {
 		return true
 	}
-	if configChanged || trigger != "patrol" {
+	if configChanged {
 		return true
 	}
 	if cr.demandSnapshot == nil {
@@ -1759,11 +1774,48 @@ func (cr *CityRuntime) shouldRefreshDemandSnapshot(
 	if cr.demandSnapshot.sessionFingerprint != sessionFingerprint {
 		return true
 	}
+	if cr.demandSnapshot.storeFingerprint != storeFingerprint {
+		return true
+	}
+	if storeFingerprint != "" {
+		return false
+	}
+	if trigger != "patrol" {
+		return true
+	}
 	return time.Since(cr.demandSnapshot.createdAt) >= runtimeDemandSnapshotMaxAge
 }
 
 func (cr *CityRuntime) demandSnapshotsEnabled() bool {
-	return cr.cs != nil && cr.cs.EventProvider() != nil && demandSnapshotDemandSourcesEventBacked(cr.cfg)
+	if !demandSnapshotDemandSourcesEventBacked(cr.cfg) {
+		return false
+	}
+	if cr.demandStoreFingerprint() != "" {
+		return true
+	}
+	return cr.cs != nil && cr.cs.EventProvider() != nil
+}
+
+func (cr *CityRuntime) demandStoreFingerprint() string {
+	var parts []string
+	if seq, ok := cachedStoreMutationSeq(cr.cityBeadStore()); ok {
+		parts = append(parts, fmt.Sprintf("%s=%d", cr.cityName, seq))
+	}
+	for name, store := range cr.rigBeadStores() {
+		if seq, ok := cachedStoreMutationSeq(store); ok {
+			parts = append(parts, fmt.Sprintf("%s=%d", name, seq))
+		}
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, "|")
+}
+
+func cachedStoreMutationSeq(store beads.Store) (uint64, bool) {
+	cached, ok := store.(*beads.CachingStore)
+	if !ok || cached == nil {
+		return 0, false
+	}
+	return cached.MutationSeq(), true
 }
 
 func demandSnapshotDemandSourcesEventBacked(cfg *config.City) bool {
@@ -1771,7 +1823,7 @@ func demandSnapshotDemandSourcesEventBacked(cfg *config.City) bool {
 		return false
 	}
 	for i := range cfg.Agents {
-		if strings.TrimSpace(cfg.Agents[i].ScaleCheck) != "" || strings.TrimSpace(cfg.Agents[i].WorkQuery) != "" {
+		if strings.TrimSpace(cfg.Agents[i].ScaleCheck) != "" {
 			return false
 		}
 	}

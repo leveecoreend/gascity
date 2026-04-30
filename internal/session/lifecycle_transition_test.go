@@ -47,6 +47,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"continuation_reset_pending": "",
 				"detached_at":                "",
 				"last_woke_at":               now.UTC().Format(time.RFC3339),
+				"start_in_flight":            "true",
 				"sleep_reason":               "idle-timeout",
 				"sleep_intent":               "",
 				"generation":                 "3",
@@ -67,6 +68,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"continuation_reset_pending": "",
 				"detached_at":                "",
 				"last_woke_at":               now.UTC().Format(time.RFC3339),
+				"start_in_flight":            "true",
 				"sleep_reason":               "",
 				"sleep_intent":               "",
 				"generation":                 "4",
@@ -85,6 +87,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"state_reason":         "creation_complete",
 				"creation_complete_at": now.UTC().Format(time.RFC3339),
 				"pending_create_claim": "",
+				"start_in_flight":      "",
 				"sleep_reason":         "",
 			},
 		},
@@ -105,6 +108,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"sleep_reason":         "idle-timeout",
 				"last_woke_at":         "",
 				"pending_create_claim": "",
+				"start_in_flight":      "",
 				"sleep_intent":         "",
 				"slept_at":             now.Format(time.RFC3339),
 			},
@@ -116,6 +120,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"state":                "drained",
 				"last_woke_at":         "",
 				"pending_create_claim": "",
+				"start_in_flight":      "",
 			},
 		},
 		{
@@ -125,6 +130,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"state":                      "drained",
 				"last_woke_at":               "",
 				"pending_create_claim":       "",
+				"start_in_flight":            "",
 				"session_key":                "",
 				"started_config_hash":        "",
 				"started_live_hash":          "",
@@ -141,6 +147,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"sleep_reason":               "idle",
 				"last_woke_at":               "",
 				"pending_create_claim":       "",
+				"start_in_flight":            "",
 				"sleep_intent":               "",
 				"slept_at":                   now.Format(time.RFC3339),
 				"session_key":                "",
@@ -160,6 +167,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"continuation_reset_pending": "true",
 				"last_woke_at":               "",
 				"pending_create_claim":       "",
+				"start_in_flight":            "",
 				"session_key":                "new-session-key",
 			},
 		},
@@ -172,6 +180,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"continuation_reset_pending": "true",
 				"last_woke_at":               "",
 				"pending_create_claim":       "",
+				"start_in_flight":            "",
 			},
 		},
 		{
@@ -187,6 +196,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"restart_requested":          "",
 				"continuation_reset_pending": "true",
 				"pending_create_claim":       "true",
+				"start_in_flight":            "",
 				"session_key":                "new-session-key",
 			},
 		},
@@ -203,6 +213,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"restart_requested":          "",
 				"continuation_reset_pending": "true",
 				"pending_create_claim":       "",
+				"start_in_flight":            "",
 				"session_key":                "new-session-key",
 			},
 		},
@@ -219,6 +230,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"restart_requested":          "",
 				"continuation_reset_pending": "true",
 				"pending_create_claim":       "",
+				"start_in_flight":            "",
 			},
 		},
 		{
@@ -230,6 +242,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"archived_at":          now.Format(time.RFC3339),
 				"continuity_eligible":  "true",
 				"pending_create_claim": "",
+				"start_in_flight":      "",
 			},
 		},
 		{
@@ -241,6 +254,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"archived_at":          now.Format(time.RFC3339),
 				"continuity_eligible":  "false",
 				"pending_create_claim": "",
+				"start_in_flight":      "",
 			},
 		},
 		{
@@ -265,6 +279,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"session_name":           "",
 				"session_name_explicit":  "",
 				"pending_create_claim":   "",
+				"start_in_flight":        "",
 				"retired_named_identity": "worker",
 				"synced_at":              now.Format(time.RFC3339),
 				"held_until":             "",
@@ -283,6 +298,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"quarantined_until": later.Format(time.RFC3339),
 				"quarantine_cycle":  "3",
 				"last_woke_at":      "",
+				"start_in_flight":   "",
 			},
 		},
 		{
@@ -292,6 +308,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"state":                string(StateAsleep),
 				"state_reason":         "reactivated",
 				"pending_create_claim": "",
+				"start_in_flight":      "",
 				"continuity_eligible":  "true",
 				"quarantined_until":    "",
 				"crash_count":          "0",
@@ -305,6 +322,7 @@ func TestLifecycleTransitionPatchesSetCompleteMetadata(t *testing.T) {
 				"state":                string(StateAsleep),
 				"state_reason":         "reactivated",
 				"pending_create_claim": "",
+				"start_in_flight":      "",
 				"continuity_eligible":  "false",
 				"quarantined_until":    "",
 				"crash_count":          "0",
@@ -407,6 +425,7 @@ func TestCommitStartedPatchBuildsAtomicStartMetadata(t *testing.T) {
 		"creation_complete_at": now.Format(time.RFC3339),
 		"sleep_reason":         "",
 		"pending_create_claim": "",
+		"start_in_flight":      "",
 	}
 	if !reflect.DeepEqual(patch, want) {
 		t.Fatalf("patch = %#v, want %#v", patch, want)
@@ -449,6 +468,7 @@ func TestCommitStartedPatchCanPersistHashesWithoutRestampingState(t *testing.T) 
 		"live_hash":           "live-hash",
 		"started_live_hash":   "live-hash",
 		"sleep_reason":        "",
+		"start_in_flight":     "",
 	}
 	if !reflect.DeepEqual(patch, want) {
 		t.Fatalf("patch = %#v, want %#v", patch, want)

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -31,6 +32,8 @@ const (
 	sessionReconcilerTraceMaxAge           = 7 * 24 * time.Hour
 	sessionReconcilerTracePruneInterval    = 5 * time.Minute
 )
+
+var errTraceSegmentCorrupt = errors.New("trace segment corrupt")
 
 type SessionReconcilerTraceStore struct {
 	mu             sync.Mutex
@@ -612,6 +615,9 @@ func ReadTraceRecords(rootDir string, filter TraceFilter) ([]SessionReconcilerTr
 		for i := len(paths) - 1; i >= 0; i-- {
 			maxSeq, ok, scanErr := scanTraceSegment(paths[i])
 			if scanErr != nil {
+				if errors.Is(scanErr, errTraceSegmentCorrupt) {
+					continue
+				}
 				return nil, fmt.Errorf("reading trace file %s: %w", paths[i], scanErr)
 			}
 			if !ok {
@@ -631,6 +637,9 @@ func ReadTraceRecords(rootDir string, filter TraceFilter) ([]SessionReconcilerTr
 	for _, path := range paths {
 		fileRecords, _, err := readTraceRecordsFile(path, filter, true)
 		if err != nil {
+			if errors.Is(err, errTraceSegmentCorrupt) {
+				continue
+			}
 			return nil, fmt.Errorf("reading trace file %s: %w", path, err)
 		}
 		records = append(records, fileRecords...)
@@ -671,14 +680,14 @@ func readTraceRecordsFile(path string, filter TraceFilter, tolerateTail bool) ([
 			if tolerateTail && readErr == io.EOF {
 				break
 			}
-			return nil, 0, fmt.Errorf("unmarshal trace record %s: %w", path, parseErr)
+			return nil, 0, fmt.Errorf("%w: unmarshal trace record %s: %w", errTraceSegmentCorrupt, path, parseErr)
 		}
 		if rec.RecordType == TraceRecordBatchCommit {
 			if rec.RecordCount != len(batchRecords) {
-				return nil, 0, fmt.Errorf("trace batch %s: commit record_count=%d does not match buffered records=%d", path, rec.RecordCount, len(batchRecords))
+				return nil, 0, fmt.Errorf("%w: trace batch %s: commit record_count=%d does not match buffered records=%d", errTraceSegmentCorrupt, path, rec.RecordCount, len(batchRecords))
 			}
 			if rec.BatchCRC32 != batchCRC {
-				return nil, 0, fmt.Errorf("trace batch %s: crc32 mismatch", path)
+				return nil, 0, fmt.Errorf("%w: trace batch %s: crc32 mismatch", errTraceSegmentCorrupt, path)
 			}
 			for _, buffered := range batchRecords {
 				if matchesTraceFilter(buffered, filter) {

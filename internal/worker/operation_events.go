@@ -15,19 +15,18 @@ import (
 type workerOperation string
 
 const (
-	workerOperationStart         workerOperation = "start"
-	workerOperationStartResolved workerOperation = "start_resolved"
-	workerOperationAttach        workerOperation = "attach"
-	workerOperationCreate        workerOperation = "create"
-	workerOperationReset         workerOperation = "reset"
-	workerOperationStop          workerOperation = "stop"
-	workerOperationKill          workerOperation = "kill"
-	workerOperationClose         workerOperation = "close"
-	workerOperationRename        workerOperation = "rename"
-	workerOperationMessage       workerOperation = "message"
-	workerOperationInterrupt     workerOperation = "interrupt"
-	workerOperationNudge         workerOperation = "nudge"
-	workerOperationHistory       workerOperation = "history"
+	workerOperationStart     workerOperation = "start"
+	workerOperationAttach    workerOperation = "attach"
+	workerOperationCreate    workerOperation = "create"
+	workerOperationReset     workerOperation = "reset"
+	workerOperationStop      workerOperation = "stop"
+	workerOperationKill      workerOperation = "kill"
+	workerOperationClose     workerOperation = "close"
+	workerOperationRename    workerOperation = "rename"
+	workerOperationMessage   workerOperation = "message"
+	workerOperationInterrupt workerOperation = "interrupt"
+	workerOperationNudge     workerOperation = "nudge"
+	workerOperationHistory   workerOperation = "history"
 )
 
 type operationResult string

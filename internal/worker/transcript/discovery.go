@@ -12,7 +12,7 @@ import (
 func SupportsIDLookup(provider string) bool {
 	switch providerFamily(provider) {
 	case "codex", "gemini":
-		return false
+		return true
 	default:
 		return true
 	}
@@ -34,7 +34,7 @@ func DiscoverKeyedPath(searchPaths []string, provider, workDir, gcSessionID stri
 	if strings.TrimSpace(gcSessionID) == "" || !SupportsIDLookup(provider) {
 		return ""
 	}
-	return sessionlog.FindSessionFileByID(searchPaths, workDir, gcSessionID)
+	return sessionlog.FindSessionFileByIDForProvider(searchPaths, provider, workDir, gcSessionID)
 }
 
 // DiscoverFallbackPath resolves the narrow provider-specific fallback path to

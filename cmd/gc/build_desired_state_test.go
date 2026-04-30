@@ -28,6 +28,45 @@ func (s listFailStore) List(_ beads.ListQuery) ([]beads.Bead, error) {
 	return nil, errors.New("list failed")
 }
 
+type readyFailStore struct {
+	beads.Store
+	readyCalls int
+}
+
+func (s *readyFailStore) Ready() ([]beads.Bead, error) {
+	s.readyCalls++
+	return nil, errors.New("backing ready should not be used")
+}
+
+type readyStaticStore struct {
+	beads.Store
+	ready      []beads.Bead
+	readyCalls int
+}
+
+func (s *readyStaticStore) Ready() ([]beads.Bead, error) {
+	s.readyCalls++
+	out := make([]beads.Bead, len(s.ready))
+	copy(out, s.ready)
+	return out, nil
+}
+
+type demandListCountingStore struct {
+	beads.Store
+	liveInProgressLists int
+	liveOpenMolecules   int
+}
+
+func (s *demandListCountingStore) List(query beads.ListQuery) ([]beads.Bead, error) {
+	if query.Live && query.Status == "in_progress" {
+		s.liveInProgressLists++
+	}
+	if query.Live && query.Status == "open" && query.Type == "molecule" {
+		s.liveOpenMolecules++
+	}
+	return s.Store.List(query)
+}
+
 func TestCollectAssignedWorkBeads_IncludesReadyOpenAssignedHandoff(t *testing.T) {
 	store := beads.NewMemStore()
 	handoff, err := store.Create(beads.Bead{
@@ -59,6 +98,62 @@ func TestCollectAssignedWorkBeads_IncludesReadyOpenAssignedHandoff(t *testing.T)
 	}
 }
 
+func TestCollectAssignedWorkBeadsUsesCachedReadyReadModel(t *testing.T) {
+	backing := &readyFailStore{Store: beads.NewMemStore()}
+	handoff, err := backing.Create(beads.Bead{
+		Title:    "merge me",
+		Type:     "task",
+		Status:   "open",
+		Assignee: "repo/refinery",
+	})
+	if err != nil {
+		t.Fatalf("create handoff bead: %v", err)
+	}
+	cache := beads.NewCachingStoreForTest(backing, nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+
+	got, _, partial := collectAssignedWorkBeadsWithStores(&config.City{}, cache, nil, nil)
+	if partial {
+		t.Fatal("collectAssignedWorkBeadsWithStores returned partial=true")
+	}
+	if len(got) != 1 || got[0].ID != handoff.ID {
+		t.Fatalf("collectAssignedWorkBeadsWithStores = %+v, want %s", got, handoff.ID)
+	}
+	if backing.readyCalls != 0 {
+		t.Fatalf("backing Ready calls = %d, want cached demand read", backing.readyCalls)
+	}
+}
+
+func TestCollectAssignedWorkBeadsUsesCachedInProgressReadModel(t *testing.T) {
+	backing := &demandListCountingStore{Store: beads.NewMemStore()}
+	work, err := backing.Create(beads.Bead{
+		Title:    "active handoff",
+		Type:     "task",
+		Status:   "in_progress",
+		Assignee: "repo/refinery",
+	})
+	if err != nil {
+		t.Fatalf("create active work: %v", err)
+	}
+	cache := beads.NewCachingStoreForTest(backing, nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+
+	got, _, partial := collectAssignedWorkBeadsWithStores(&config.City{}, cache, nil, nil)
+	if partial {
+		t.Fatal("collectAssignedWorkBeadsWithStores returned partial=true")
+	}
+	if len(got) != 1 || got[0].ID != work.ID {
+		t.Fatalf("collectAssignedWorkBeadsWithStores = %+v, want %s", got, work.ID)
+	}
+	if backing.liveInProgressLists != 0 {
+		t.Fatalf("live in-progress list calls = %d, want cached demand read", backing.liveInProgressLists)
+	}
+}
+
 func TestCollectAssignedWorkBeads_ExcludesBlockedOpenAssignedHandoff(t *testing.T) {
 	store := beads.NewMemStore()
 	blocker, err := store.Create(beads.Bead{
@@ -85,6 +180,152 @@ func TestCollectAssignedWorkBeads_ExcludesBlockedOpenAssignedHandoff(t *testing.
 	got, _ := collectAssignedWorkBeads(&config.City{}, store)
 	if len(got) != 0 {
 		t.Fatalf("collectAssignedWorkBeads returned %d beads, want 0: %#v", len(got), got)
+	}
+}
+
+func TestDefaultScaleCheckCountsUsesCachedReadyReadModel(t *testing.T) {
+	backing := &readyFailStore{Store: beads.NewMemStore()}
+	if _, err := backing.Create(beads.Bead{
+		Title:  "queued routed work",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.routed_to": "gascity/workflows.codex-min",
+		},
+	}); err != nil {
+		t.Fatalf("create ready bead: %v", err)
+	}
+	cache := beads.NewCachingStoreForTest(backing, nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+
+	counts, errs := defaultScaleCheckCounts([]defaultScaleCheckTarget{{
+		template: "gascity/workflows.codex-min",
+		storeKey: "rig:gascity",
+		store:    cache,
+	}})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCounts errs = %v", errs)
+	}
+	if got := counts["gascity/workflows.codex-min"]; got != 1 {
+		t.Fatalf("defaultScaleCheckCounts = %d, want 1", got)
+	}
+	if backing.readyCalls != 0 {
+		t.Fatalf("backing Ready calls = %d, want cached demand read", backing.readyCalls)
+	}
+}
+
+func TestDefaultScaleCheckCountsIgnoresOpenMoleculeContainers(t *testing.T) {
+	backing := &demandListCountingStore{Store: beads.NewMemStore()}
+	if _, err := backing.Create(beads.Bead{
+		Title:  "workflow root",
+		Type:   "molecule",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.routed_to": "gascity/workflows.codex-min",
+		},
+	}); err != nil {
+		t.Fatalf("create molecule bead: %v", err)
+	}
+	cache := beads.NewCachingStoreForTest(backing, nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+
+	counts, errs := defaultScaleCheckCounts([]defaultScaleCheckTarget{{
+		template: "gascity/workflows.codex-min",
+		storeKey: "rig:gascity",
+		store:    cache,
+	}})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCounts errs = %v", errs)
+	}
+	if got := counts["gascity/workflows.codex-min"]; got != 0 {
+		t.Fatalf("defaultScaleCheckCounts = %d, want molecule container ignored", got)
+	}
+	if backing.liveOpenMolecules != 0 {
+		t.Fatalf("live open molecule list calls = %d, want no molecule demand query", backing.liveOpenMolecules)
+	}
+}
+
+func TestDefaultScaleCheckCountsHonorsCachedWriteThroughDependencies(t *testing.T) {
+	backing := &readyFailStore{Store: beads.NewMemStore()}
+	blocker, err := backing.Create(beads.Bead{
+		Title:  "blocked earlier step",
+		Type:   "task",
+		Status: "open",
+	})
+	if err != nil {
+		t.Fatalf("create blocker bead: %v", err)
+	}
+	blocked, err := backing.Create(beads.Bead{
+		Title:  "future routed work",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.routed_to": "gascity/workflows.codex-max",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create blocked bead: %v", err)
+	}
+	cache := beads.NewCachingStoreForTest(backing, nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+	if err := cache.DepAdd(blocked.ID, blocker.ID, "blocks"); err != nil {
+		t.Fatalf("DepAdd: %v", err)
+	}
+
+	counts, errs := defaultScaleCheckCounts([]defaultScaleCheckTarget{{
+		template: "gascity/workflows.codex-max",
+		storeKey: "rig:gascity",
+		store:    cache,
+	}})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCounts errs = %v", errs)
+	}
+	if got := counts["gascity/workflows.codex-max"]; got != 0 {
+		t.Fatalf("defaultScaleCheckCounts = %d, want blocked future work excluded", got)
+	}
+	if backing.readyCalls != 0 {
+		t.Fatalf("backing Ready calls = %d, want cached demand read", backing.readyCalls)
+	}
+}
+
+func TestDefaultScaleCheckCountsFallsBackWhenCachedEventDepsUnknown(t *testing.T) {
+	backing := &readyStaticStore{
+		Store: beads.NewMemStore(),
+		ready: []beads.Bead{{
+			ID:     "gc-ready",
+			Title:  "ready routed work",
+			Type:   "task",
+			Status: "open",
+			Metadata: map[string]string{
+				"gc.routed_to": "gascity/workflows.codex-max",
+			},
+		}},
+	}
+	cache := beads.NewCachingStoreForTest(backing, nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+	cache.ApplyEvent("bead.created", []byte(`{"id":"gc-blocked","title":"future routed work","status":"open","issue_type":"task","metadata":{"gc.routed_to":"gascity/workflows.codex-max"}}`))
+
+	counts, errs := defaultScaleCheckCounts([]defaultScaleCheckTarget{{
+		template: "gascity/workflows.codex-max",
+		storeKey: "rig:gascity",
+		store:    cache,
+	}})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCounts errs = %v", errs)
+	}
+	if got := counts["gascity/workflows.codex-max"]; got != 1 {
+		t.Fatalf("defaultScaleCheckCounts = %d, want live ready fallback count only", got)
+	}
+	if backing.readyCalls != 1 {
+		t.Fatalf("backing Ready calls = %d, want one live ready fallback", backing.readyCalls)
 	}
 }
 
@@ -597,6 +838,124 @@ func TestBuildDesiredState_MinZeroDefaultScaleCheckRoutedWorkCreatesPoolSession(
 	}
 	if polecatSessions != 1 {
 		t.Fatalf("polecat desired sessions = %d, want 1 for min=0 routed ready work; stderr:\n%s", polecatSessions, stderr.String())
+	}
+}
+
+func TestBuildDesiredState_DefaultScaleCheckDoesNotDoubleCountAssignedResume(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	if _, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Status: "open",
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"template":             "worker",
+			"session_name":         "worker-mc-1",
+			"agent_name":           "worker-1",
+			"state":                "active",
+			"session_origin":       "ephemeral",
+			poolManagedMetadataKey: boolMetadata(true),
+		},
+	}); err != nil {
+		t.Fatalf("create session bead: %v", err)
+	}
+	if _, err := store.Create(beads.Bead{
+		Title:    "claimed worker job",
+		Type:     "task",
+		Status:   "in_progress",
+		Assignee: "worker-mc-1",
+		Metadata: map[string]string{
+			"gc.routed_to": "worker",
+		},
+	}); err != nil {
+		t.Fatalf("create assigned work bead: %v", err)
+	}
+
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:              "worker",
+			StartCommand:      "true",
+			MinActiveSessions: intPtr(0),
+			MaxActiveSessions: intPtr(5),
+		}},
+	}
+
+	dsResult := buildDesiredState("test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(), store, io.Discard)
+
+	if got := dsResult.ScaleCheckCounts["worker"]; got != 0 {
+		t.Fatalf("ScaleCheckCounts[worker] = %d, want 0 for already-assigned work", got)
+	}
+	if len(dsResult.AssignedWorkBeads) != 1 {
+		t.Fatalf("AssignedWorkBeads = %d, want 1", len(dsResult.AssignedWorkBeads))
+	}
+	workerSessions := 0
+	for _, tp := range dsResult.State {
+		if tp.TemplateName == "worker" {
+			workerSessions++
+		}
+	}
+	if workerSessions != 1 {
+		t.Fatalf("worker desired sessions = %d, want 1 resume session", workerSessions)
+	}
+}
+
+func TestDefaultScaleCheckCountsUsesReadyRoutedWorkOnly(t *testing.T) {
+	store := beads.NewMemStore()
+	if _, err := store.Create(beads.Bead{
+		Title:  "ready task",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.routed_to": "worker",
+		},
+	}); err != nil {
+		t.Fatalf("create ready task: %v", err)
+	}
+	if _, err := store.Create(beads.Bead{
+		Title:  "ready wisp",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.kind":      "wisp",
+			"gc.routed_to": "worker",
+		},
+	}); err != nil {
+		t.Fatalf("create ready wisp: %v", err)
+	}
+	if _, err := store.Create(beads.Bead{
+		Title:  "open molecule",
+		Type:   "molecule",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.routed_to": "worker",
+		},
+	}); err != nil {
+		t.Fatalf("create molecule: %v", err)
+	}
+	if _, err := store.Create(beads.Bead{
+		Title:    "assigned task",
+		Type:     "task",
+		Status:   "open",
+		Assignee: "worker-mc-1",
+		Metadata: map[string]string{
+			"gc.routed_to": "worker",
+		},
+	}); err != nil {
+		t.Fatalf("create assigned task: %v", err)
+	}
+
+	counts, errs := defaultScaleCheckCounts([]defaultScaleCheckTarget{{
+		template: "worker",
+		storeKey: "city",
+		store:    store,
+	}})
+	if len(errs) != 0 {
+		t.Fatalf("defaultScaleCheckCounts errors = %v", errs)
+	}
+	if got := counts["worker"]; got != 2 {
+		t.Fatalf("counts[worker] = %d, want ready task plus ready wisp only", got)
 	}
 }
 
@@ -1883,6 +2242,69 @@ func TestBuildDesiredState_StoreBackedPoolUsesQualifiedInstanceNameForBindings(t
 	}
 }
 
+func TestBuildDesiredState_ScaleDemandReusesActivePoolSession(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	sessionName := "workflows__codex-min-mc-active"
+	session, err := store.Create(beads.Bead{
+		Title:  "codex-min",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "template:gascity/workflows.codex-min"},
+		Metadata: map[string]string{
+			"template":              "gascity/workflows.codex-min",
+			"session_name":          sessionName,
+			"session_name_explicit": boolMetadata(true),
+			"agent_name":            "gascity/workflows.codex-min-1",
+			"alias":                 "gascity/workflows.codex-min-1",
+			"state":                 "active",
+			"session_origin":        "ephemeral",
+			"pool_managed":          boolMetadata(true),
+			"pool_slot":             "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create session bead: %v", err)
+	}
+	if _, err := store.Create(beads.Bead{
+		Title:  "queued preflight",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.routed_to": "gascity/workflows.codex-min",
+		},
+	}); err != nil {
+		t.Fatalf("create routed work bead: %v", err)
+	}
+	cfg := &config.City{
+		Rigs: []config.Rig{{Name: "gascity", Path: filepath.Join(cityPath, "repos", "gascity")}},
+		Agents: []config.Agent{{
+			Name:              "workflows.codex-min",
+			Dir:               "gascity",
+			Provider:          "test-agent",
+			StartCommand:      "true",
+			WorkDir:           ".",
+			MinActiveSessions: intPtr(0),
+			MaxActiveSessions: intPtr(5),
+		}},
+	}
+
+	dsResult := buildDesiredState("test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(), store, io.Discard)
+	got, ok := dsResult.State[sessionName]
+	if !ok {
+		t.Fatalf("desired state missing existing active pool session: keys=%v", mapKeys(dsResult.State))
+	}
+	if got.SessionName != sessionName {
+		t.Fatalf("SessionName = %q, want %q", got.SessionName, sessionName)
+	}
+	all, err := store.List(beads.ListQuery{Type: sessionBeadType})
+	if err != nil {
+		t.Fatalf("List(session): %v", err)
+	}
+	if len(all) != 1 || all[0].ID != session.ID {
+		t.Fatalf("session beads = %+v, want only existing active session %s", all, session.ID)
+	}
+}
+
 func TestBuildDesiredState_PendingCreatePoolSessionUsesConcreteBeadIdentity(t *testing.T) {
 	cityPath := t.TempDir()
 	store := beads.NewMemStore()
@@ -1936,7 +2358,7 @@ func TestBuildDesiredState_PendingCreatePoolSessionUsesConcreteBeadIdentity(t *t
 	}
 }
 
-func TestBuildDesiredState_PendingCreatePoolSessionStaysDesiredWithoutScaleDemand(t *testing.T) {
+func TestBuildDesiredState_PendingCreatePoolSessionWithoutScaleDemandIsNotDesired(t *testing.T) {
 	cityPath := t.TempDir()
 	store := beads.NewMemStore()
 	sessionName := "workflows__codex-max-mc-new"
@@ -1975,15 +2397,8 @@ func TestBuildDesiredState_PendingCreatePoolSessionStaysDesiredWithoutScaleDeman
 	if got := dsResult.ScaleCheckCounts["gascity/workflows.codex-max"]; got != 0 {
 		t.Fatalf("ScaleCheckCounts[gascity/workflows.codex-max] = %d, want 0", got)
 	}
-	got, ok := dsResult.State[sessionName]
-	if !ok {
-		t.Fatalf("desired state missing pending-create pool session: keys=%v", mapKeys(dsResult.State))
-	}
-	if got.TemplateName != "gascity/workflows.codex-max" {
-		t.Fatalf("TemplateName = %q, want gascity/workflows.codex-max", got.TemplateName)
-	}
-	if got.InstanceName != sessionName {
-		t.Fatalf("InstanceName = %q, want existing session name %q", got.InstanceName, sessionName)
+	if _, ok := dsResult.State[sessionName]; ok {
+		t.Fatalf("desired state included pending-create pool session with no scale demand: keys=%v", mapKeys(dsResult.State))
 	}
 }
 
@@ -2388,7 +2803,7 @@ func TestSelectOrCreatePoolSessionBead_SkipsDrained(t *testing.T) {
 		agents:       []config.Agent{cfgAgent},
 	}
 
-	result, err := selectOrCreatePoolSessionBead(bp, "claude", nil, map[string]bool{})
+	result, err := selectOrCreatePoolSessionBead(bp, "claude", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("selectOrCreatePoolSessionBead: %v", err)
 	}
@@ -2423,7 +2838,7 @@ func TestSelectOrCreatePoolSessionBead_ReusesPreferredDrained(t *testing.T) {
 		agents:       []config.Agent{cfgAgent},
 	}
 
-	result, err := selectOrCreatePoolSessionBead(bp, "claude", &drained, map[string]bool{})
+	result, err := selectOrCreatePoolSessionBead(bp, "claude", &drained, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("selectOrCreatePoolSessionBead: %v", err)
 	}
@@ -2469,10 +2884,11 @@ func TestSelectOrCreateDependencyPoolSessionBead_SkipsDrained(t *testing.T) {
 	}
 }
 
-func TestSelectOrCreatePoolSessionBead_ReusesAvailableForNewTier(t *testing.T) {
+func TestSelectOrCreatePoolSessionBead_SkipsRunningForScaleDemand(t *testing.T) {
 	store := beads.NewMemStore()
-	// Existing awake session bead without assigned work — should be reused
-	// for new-tier to prevent session bead duplication across ticks.
+	// Existing awake session bead without assigned work should not satisfy
+	// scale/ready-work demand. That demand needs a start hook so the new
+	// session sees and claims the work.
 	awake, err := store.Create(beads.Bead{
 		Title:  "claude",
 		Type:   sessionBeadType,
@@ -2497,12 +2913,12 @@ func TestSelectOrCreatePoolSessionBead_ReusesAvailableForNewTier(t *testing.T) {
 		agents:       []config.Agent{cfgAgent},
 	}
 
-	result, err := selectOrCreatePoolSessionBead(bp, "claude", nil, map[string]bool{})
+	result, err := selectOrCreatePoolSessionBead(bp, "claude", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("selectOrCreatePoolSessionBead: %v", err)
 	}
-	if result.ID != awake.ID {
-		t.Fatal("new-tier should reuse available (non-drained) session bead")
+	if result.ID == awake.ID {
+		t.Fatal("scale demand should create a fresh session bead instead of reusing an awake one")
 	}
 }
 
@@ -2537,7 +2953,7 @@ func TestSelectOrCreatePoolSessionBead_SkipsAsleepBeads(t *testing.T) {
 		agents:       []config.Agent{cfgAgent},
 	}
 
-	result, err := selectOrCreatePoolSessionBead(bp, "polecat", nil, map[string]bool{})
+	result, err := selectOrCreatePoolSessionBead(bp, "polecat", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("selectOrCreatePoolSessionBead: %v", err)
 	}
@@ -2546,8 +2962,9 @@ func TestSelectOrCreatePoolSessionBead_SkipsAsleepBeads(t *testing.T) {
 	}
 }
 
-func TestSelectOrCreatePoolSessionBead_ReusesActiveBeforeCreatingNew(t *testing.T) {
-	// An active (awake) pool session IS reused — no fresh bead created.
+func TestSelectOrCreatePoolSessionBead_SkipsActiveForScaleDemand(t *testing.T) {
+	// An active pool session without assigned work must not satisfy scale
+	// demand, because no start hook will run for an already-running session.
 	store := beads.NewMemStore()
 	cfgAgent := config.Agent{Name: "polecat", MinActiveSessions: intPtr(0), MaxActiveSessions: intPtr(5)}
 
@@ -2573,12 +2990,47 @@ func TestSelectOrCreatePoolSessionBead_ReusesActiveBeforeCreatingNew(t *testing.
 		agents:       []config.Agent{cfgAgent},
 	}
 
-	result, err := selectOrCreatePoolSessionBead(bp, "polecat", nil, map[string]bool{})
+	result, err := selectOrCreatePoolSessionBead(bp, "polecat", nil, map[string]bool{}, false)
+	if err != nil {
+		t.Fatalf("selectOrCreatePoolSessionBead: %v", err)
+	}
+	if result.ID == active.ID {
+		t.Fatalf("scale demand should not reuse active pool session %s", active.ID)
+	}
+}
+
+func TestSelectOrCreatePoolSessionBead_ReusesActiveForMinFill(t *testing.T) {
+	store := beads.NewMemStore()
+	cfgAgent := config.Agent{Name: "polecat", MinActiveSessions: intPtr(1), MaxActiveSessions: intPtr(5)}
+
+	active, err := store.Create(beads.Bead{
+		Title:  "polecat",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "template:polecat"},
+		Metadata: map[string]string{
+			"template":     "polecat",
+			"session_name": "polecat-mc-live",
+			"state":        "active",
+			"pool_managed": "true",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshot := newSessionBeadSnapshot([]beads.Bead{active})
+	bp := &agentBuildParams{
+		beadStore:    store,
+		sessionBeads: snapshot,
+		agents:       []config.Agent{cfgAgent},
+	}
+
+	result, err := selectOrCreatePoolSessionBead(bp, "polecat", nil, map[string]bool{}, true)
 	if err != nil {
 		t.Fatalf("selectOrCreatePoolSessionBead: %v", err)
 	}
 	if result.ID != active.ID {
-		t.Fatalf("active pool session should be reused, got %s want %s", result.ID, active.ID)
+		t.Fatalf("min-fill should reuse active pool session, got %s want %s", result.ID, active.ID)
 	}
 }
 
@@ -2609,7 +3061,7 @@ func TestSelectOrCreatePoolSessionBead_ReusesCreatingBeforeCreatingNew(t *testin
 		agents:       []config.Agent{cfgAgent},
 	}
 
-	result, err := selectOrCreatePoolSessionBead(bp, "polecat", nil, map[string]bool{})
+	result, err := selectOrCreatePoolSessionBead(bp, "polecat", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("selectOrCreatePoolSessionBead: %v", err)
 	}
@@ -2618,9 +3070,9 @@ func TestSelectOrCreatePoolSessionBead_ReusesCreatingBeforeCreatingNew(t *testin
 	}
 }
 
-func TestSelectOrCreatePoolSessionBead_SkipsAsleepButReusesActive(t *testing.T) {
-	// With both an asleep and active bead for the same template,
-	// the active one is reused and the asleep one is ignored.
+func TestSelectOrCreatePoolSessionBead_SkipsAsleepAndActiveForScaleDemand(t *testing.T) {
+	// With both an asleep and active bead for the same template, scale demand
+	// skips both and creates a fresh bead whose startup hook can claim work.
 	store := beads.NewMemStore()
 	cfgAgent := config.Agent{Name: "polecat", MinActiveSessions: intPtr(0), MaxActiveSessions: intPtr(5)}
 
@@ -2660,15 +3112,15 @@ func TestSelectOrCreatePoolSessionBead_SkipsAsleepButReusesActive(t *testing.T) 
 		agents:       []config.Agent{cfgAgent},
 	}
 
-	result, err := selectOrCreatePoolSessionBead(bp, "polecat", nil, map[string]bool{})
+	result, err := selectOrCreatePoolSessionBead(bp, "polecat", nil, map[string]bool{}, false)
 	if err != nil {
 		t.Fatalf("selectOrCreatePoolSessionBead: %v", err)
 	}
 	if result.ID == asleep.ID {
 		t.Fatal("should skip asleep bead")
 	}
-	if result.ID != active.ID {
-		t.Fatalf("should reuse active bead, got %s want %s", result.ID, active.ID)
+	if result.ID == active.ID {
+		t.Fatalf("scale demand should skip active bead %s", active.ID)
 	}
 }
 

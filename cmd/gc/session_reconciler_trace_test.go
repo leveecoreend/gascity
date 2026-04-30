@@ -221,6 +221,61 @@ func TestTraceReaderFiltersAndRecoveryIgnoresTail(t *testing.T) {
 	}
 }
 
+func TestTraceReaderSkipsCorruptHistoricalSegment(t *testing.T) {
+	cityDir := t.TempDir()
+	store, err := newSessionReconcilerTraceStore(cityDir, io.Discard)
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	decision := SessionReconcilerTraceRecord{
+		TraceSchemaVersion: sessionReconcilerTraceSchemaVersion,
+		TraceID:            "cycle-valid",
+		TickID:             "trace-valid",
+		RecordType:         TraceRecordDecision,
+		Template:           "repo/polecat",
+		SessionName:        "polecat-1",
+		SiteCode:           TraceSiteReconcilerWakeDecision,
+		TraceMode:          TraceModeDetail,
+		TraceSource:        TraceSourceManual,
+		Ts:                 time.Now().UTC(),
+	}
+	if err := store.AppendBatch([]SessionReconcilerTraceRecord{decision}, TraceDurabilityDurable); err != nil {
+		t.Fatalf("append batch: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	root := filepath.Join(cityDir, ".gc", "runtime", sessionReconcilerTraceRootDir)
+	corruptDir := filepath.Join(root, sessionReconcilerTraceSegments, "2026", "04", "28")
+	if err := os.MkdirAll(corruptDir, sessionReconcilerTraceOwnerDirPerm); err != nil {
+		t.Fatalf("mkdir corrupt segment dir: %v", err)
+	}
+	corruptPath := filepath.Join(corruptDir, "segment-999999.jsonl")
+	if err := os.WriteFile(corruptPath, []byte("{not-json\n"), sessionReconcilerTraceOwnerFilePerm); err != nil {
+		t.Fatalf("write corrupt segment: %v", err)
+	}
+
+	records, err := ReadTraceRecords(root, TraceFilter{})
+	if err != nil {
+		t.Fatalf("ReadTraceRecords: %v", err)
+	}
+	var found bool
+	for _, rec := range records {
+		if rec.TraceID == "cycle-valid" && rec.RecordType == TraceRecordDecision {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("valid trace record missing after corrupt segment skip: %#v", records)
+	}
+
+	if _, err := ReadTraceRecords(root, TraceFilter{SeqAfter: 1}); err != nil {
+		t.Fatalf("ReadTraceRecords(seq-after): %v", err)
+	}
+}
+
 func TestTraceAutoArmPromotesBufferedDetail(t *testing.T) {
 	cityDir := t.TempDir()
 	tracer := newSessionReconcilerTracer(cityDir, "trace-town", io.Discard)

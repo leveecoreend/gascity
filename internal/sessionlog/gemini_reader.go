@@ -243,6 +243,38 @@ func FindGeminiSessionFile(searchPaths []string, workDir string) string {
 	return bestPath
 }
 
+// FindGeminiSessionFileByID searches Gemini's project chat directory for a
+// known provider session id.
+func FindGeminiSessionFileByID(searchPaths []string, workDir, sessionID string) string {
+	if workDir == "" {
+		return ""
+	}
+	fileName := safeSessionJSONFileName(sessionID)
+	if fileName == "" {
+		return ""
+	}
+
+	var (
+		bestPath string
+		bestTime time.Time
+	)
+	for _, root := range mergeGeminiSearchPaths(searchPaths) {
+		path := findGeminiSessionFileByIDIn(root, workDir, fileName)
+		if path == "" {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if bestPath == "" || info.ModTime().After(bestTime) {
+			bestPath = path
+			bestTime = info.ModTime()
+		}
+	}
+	return bestPath
+}
+
 func findGeminiSessionFileIn(root, workDir string) string {
 	info, err := os.Stat(root)
 	if err != nil || !info.IsDir() {
@@ -292,6 +324,51 @@ func findGeminiSessionFileIn(root, workDir string) string {
 		}
 	}
 
+	return bestPath
+}
+
+func findGeminiSessionFileByIDIn(root, workDir, fileName string) string {
+	info, err := os.Stat(root)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+
+	var candidates []string
+	if candidate := geminiProjectDir(root, workDir); candidate != "" {
+		candidates = append(candidates, candidate)
+	}
+	if geminiProjectRoot(root) == workDir {
+		candidates = append(candidates, root)
+	}
+	entries, err := os.ReadDir(root)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			dir := filepath.Join(root, entry.Name())
+			if geminiProjectRoot(dir) == workDir {
+				candidates = append(candidates, dir)
+			}
+		}
+	}
+	candidates = uniqueStrings(candidates)
+
+	var (
+		bestPath string
+		bestTime time.Time
+	)
+	for _, candidate := range candidates {
+		path := filepath.Join(candidate, "chats", fileName)
+		info, err := os.Stat(path)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		if bestPath == "" || info.ModTime().After(bestTime) {
+			bestPath = path
+			bestTime = info.ModTime()
+		}
+	}
 	return bestPath
 }
 

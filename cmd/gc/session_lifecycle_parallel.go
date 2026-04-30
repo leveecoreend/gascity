@@ -35,9 +35,10 @@ const (
 )
 
 type startCandidate struct {
-	session *beads.Bead
-	tp      TemplateParams
-	order   int
+	session    *beads.Bead
+	tp         TemplateParams
+	wakeReason string
+	order      int
 }
 
 func (c startCandidate) name() string {
@@ -512,29 +513,10 @@ func buildPreparedStart(
 	} else if wd := session.Metadata["work_dir"]; wd != "" {
 		agentCfg.WorkDir = wd
 	}
-	if session.Metadata["session_key"] == "" && tp.ResolvedProvider != nil && tp.ResolvedProvider.SessionIDFlag != "" {
-		sessionKey, err := sessionpkg.GenerateSessionKey()
-		if err != nil {
-			return nil, fmt.Errorf("generating session key: %w", err)
-		}
-		if store != nil && session.ID != "" {
-			if err := store.SetMetadata(session.ID, "session_key", sessionKey); err != nil {
-				return nil, fmt.Errorf("storing session key: %w", err)
-			}
-		}
-		if session.Metadata == nil {
-			session.Metadata = make(map[string]string)
-		}
-		session.Metadata["session_key"] = sessionKey
-	}
-	if sk := session.Metadata["session_key"]; sk != "" && tp.ResolvedProvider != nil {
-		firstStart := session.Metadata["started_config_hash"] == ""
-		forceFresh := session.Metadata["wake_mode"] == "fresh"
-		agentCfg.Command = resolveSessionCommand(agentCfg.Command, sk, tp.ResolvedProvider, firstStart, forceFresh)
-	}
 	firstStart := session.Metadata["started_config_hash"] == ""
 	forceFresh := session.Metadata["wake_mode"] == "fresh"
-	if !firstStart && !forceFresh {
+	replayStartupPrompt := shouldReplayStartupPromptForWake(candidate)
+	if !firstStart && !forceFresh && !replayStartupPrompt {
 		agentCfg.PromptSuffix = ""
 		agentCfg.PromptFlag = ""
 		agentCfg.Nudge = tp.Hints.Nudge
@@ -624,6 +606,25 @@ func buildPreparedStart(
 		coreBreakdown: coreBreakdown,
 		liveHash:      liveHash,
 	}, nil
+}
+
+func shouldReplayStartupPromptForWake(candidate startCandidate) bool {
+	// Direct assignment is the one wake path where a dormant ephemeral worker
+	// already owns work. It needs the workflow startup prompt so the prompt-side
+	// claim/verify protocol can run instead of launching at a bare provider REPL.
+	if strings.TrimSpace(candidate.wakeReason) != "assigned-work" {
+		return false
+	}
+	if candidate.session == nil {
+		return false
+	}
+	if !isPoolManagedSessionBead(*candidate.session) {
+		return false
+	}
+	if sessionOrigin(*candidate.session) != "ephemeral" {
+		return false
+	}
+	return true
 }
 
 func executePreparedStartWave(
@@ -944,11 +945,42 @@ func clearPendingStartInFlightLease(session *beads.Bead, store beads.Store, stde
 	if session == nil || store == nil {
 		return
 	}
+	batchErr := func() (err error) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				err = fmt.Errorf("panic: %v", recovered)
+			}
+		}()
+		return store.SetMetadataBatch(session.ID, map[string]string{
+			"last_woke_at":    "",
+			"start_in_flight": "",
+		})
+	}()
+	if batchErr == nil {
+		if session.Metadata == nil {
+			session.Metadata = make(map[string]string)
+		}
+		session.Metadata["last_woke_at"] = ""
+		session.Metadata["start_in_flight"] = ""
+		return
+	}
+	fmt.Fprintf(stderr, "session reconciler: clearing start lease for %s: %v\n", session.Metadata["session_name"], batchErr) //nolint:errcheck
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			fmt.Fprintf(stderr, "session reconciler: clearing start lease for %s: panic: %v\n", session.Metadata["session_name"], recovered) //nolint:errcheck
+		}
+	}()
 	if setMeta(store, session.ID, "last_woke_at", "", stderr) == nil {
 		if session.Metadata == nil {
 			session.Metadata = make(map[string]string)
 		}
 		session.Metadata["last_woke_at"] = ""
+	}
+	if setMeta(store, session.ID, "start_in_flight", "", stderr) == nil {
+		if session.Metadata == nil {
+			session.Metadata = make(map[string]string)
+		}
+		session.Metadata["start_in_flight"] = ""
 	}
 }
 
@@ -960,7 +992,20 @@ func stopStaleAsyncStartRuntime(result startResult, sp runtime.Provider, stderr 
 	if !runningSessionMatchesPendingCreate(result.prepared.candidate.session, name, sp) {
 		return
 	}
-	if err := sp.Stop(name); err != nil && !runtime.IsSessionGone(err) {
+	providerName := strings.TrimSpace(result.prepared.candidate.session.Metadata["provider_kind"])
+	if providerName == "" {
+		providerName = strings.TrimSpace(result.prepared.candidate.session.Metadata["provider"])
+	}
+	handle, err := worker.NewRuntimeHandle(worker.RuntimeHandleConfig{
+		Provider:     sp,
+		SessionName:  name,
+		ProviderName: providerName,
+		ProcessNames: result.prepared.candidate.tp.Hints.ProcessNames,
+	})
+	if err == nil {
+		err = handle.Kill(context.Background())
+	}
+	if err != nil && !runtime.IsSessionGone(err) {
 		fmt.Fprintf(stderr, "session reconciler: stopping stale async start runtime %s: %v\n", name, err) //nolint:errcheck
 	}
 }
@@ -977,13 +1022,13 @@ func asyncStartSessionStillCurrent(prepared, current beads.Bead) bool {
 	if preparedToken != "" && strings.TrimSpace(current.Metadata["instance_token"]) != preparedToken {
 		return false
 	}
+	currentState := sessionpkg.State(strings.TrimSpace(current.Metadata["state"]))
 	if shouldRollbackPendingCreate(&prepared) && !shouldRollbackPendingCreate(&current) {
-		return false
+		return currentState == sessionpkg.StateAwake || currentState == sessionpkg.StateActive
 	}
-	currentState := strings.TrimSpace(current.Metadata["state"])
-	return confirmPendingStart(currentState) ||
-		sessionpkg.State(currentState) == sessionpkg.StateAwake ||
-		sessionpkg.State(currentState) == sessionpkg.StateActive
+	return confirmPendingStart(string(currentState)) ||
+		currentState == sessionpkg.StateAwake ||
+		currentState == sessionpkg.StateActive
 }
 
 func asyncStartStaleRuntimeCleanupAllowed(prepared, current beads.Bead) bool {
@@ -1034,26 +1079,13 @@ func startPreparedStartCandidate(
 	cfg *config.City,
 ) (bool, error) {
 	if store == nil || item.candidate.session == nil || strings.TrimSpace(item.candidate.session.ID) == "" {
-		handle, err := runtimeWorkerHandleWithConfig(
-			cityPath,
-			store,
-			sp,
-			cfg,
-			item.candidate.name(),
-			item.candidate.name(),
-			"",
-			nil,
-		)
-		if err != nil {
-			return false, err
-		}
-		return true, handle.StartResolved(ctx, item.cfg.Command, item.cfg)
+		return false, fmt.Errorf("%w: start requires a bead-backed session", worker.ErrOperationUnsupported)
 	}
-	handle, err := workerHandleForSessionWithConfig(cityPath, store, sp, cfg, item.candidate.session.ID)
+	handle, err := workerHandleForPreparedStartWithConfig(cityPath, store, sp, cfg, item)
 	if err != nil {
 		return true, err
 	}
-	return true, handle.StartResolved(ctx, item.cfg.Command, item.cfg)
+	return true, handle.Start(ctx)
 }
 
 func commitStartResult(
@@ -1114,11 +1146,7 @@ func commitStartResultTraced(
 			return false
 		}
 		fmt.Fprintf(stderr, "session reconciler: starting %s: %s\n", name, formatLifecycleError(result.err)) //nolint:errcheck
-		if err := store.SetMetadata(session.ID, "last_woke_at", ""); err != nil {
-			fmt.Fprintf(stderr, "session reconciler: clearing last_woke_at for %s: %v\n", name, err) //nolint:errcheck
-		} else {
-			session.Metadata["last_woke_at"] = ""
-		}
+		clearPendingStartInFlightLease(session, store, stderr)
 		recordWakeFailure(session, store, clk)
 		if trace != nil {
 			trace.recordOperation("reconciler.start.failed", tp.TemplateName, name, "", "start", result.outcome, traceRecordPayload{

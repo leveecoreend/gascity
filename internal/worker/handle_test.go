@@ -789,6 +789,63 @@ func TestSessionHandleLiveObservationTracksProcessLiveness(t *testing.T) {
 	}
 }
 
+func TestSessionHandleLiveObservationPersistsLateCodexResumeKey(t *testing.T) {
+	base := t.TempDir()
+	dayDir := filepath.Join(base, "2026", "04", "14")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatalf("mkdir dayDir: %v", err)
+	}
+
+	workDir := "/tmp/codex-project"
+	resumeID := "019d8afb-efe8-7280-abf9-5901fd92e0cd"
+	handle, store, _, _ := newTestSessionHandle(t, SessionSpec{
+		Profile:  ProfileCodexTmuxCLI,
+		Template: "probe",
+		Title:    "Probe",
+		Command:  "codex --dangerously-bypass-approvals-and-sandbox",
+		WorkDir:  workDir,
+		Provider: "codex",
+		Resume: sessionpkg.ProviderResume{
+			ResumeFlag:  "resume",
+			ResumeStyle: "subcommand",
+		},
+	})
+	handle.adapter.SearchPaths = []string{base}
+
+	if err := handle.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	bead, err := store.Get(handle.sessionID)
+	if err != nil {
+		t.Fatalf("store.Get(%q): %v", handle.sessionID, err)
+	}
+	if bead.Metadata["session_key"] != "" {
+		t.Fatalf("session_key after Start = %q, want empty before transcript exists", bead.Metadata["session_key"])
+	}
+
+	transcriptPath := filepath.Join(dayDir, "rollout-2026-04-14T09-54-20-"+resumeID+".jsonl")
+	transcript := strings.Join([]string{
+		fmt.Sprintf(`{"timestamp":"2026-04-14T09:54:20Z","type":"session_meta","payload":{"cwd":%q}}`, workDir),
+		fmt.Sprintf(`{"timestamp":"2026-04-14T09:54:20Z","type":"event_msg","payload":{"message":%q}}`, bead.Metadata["session_name"]),
+		`{"timestamp":"2026-04-14T09:54:21Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"remember alpha"}]}}`,
+		`{"timestamp":"2026-04-14T09:54:22Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"remembered"}]}}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(transcriptPath, []byte(transcript), 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	if _, err := ObserveHandle(context.Background(), handle); err != nil {
+		t.Fatalf("ObserveHandle: %v", err)
+	}
+	bead, err = store.Get(handle.sessionID)
+	if err != nil {
+		t.Fatalf("store.Get(%q): %v", handle.sessionID, err)
+	}
+	if bead.Metadata["session_key"] != resumeID {
+		t.Fatalf("session_key after LiveObservation = %q, want %q", bead.Metadata["session_key"], resumeID)
+	}
+}
+
 func TestSessionHandleNudgeWaitIdleLiveOnlyDoesNotResumeStoppedSession(t *testing.T) {
 	handle, _, sp, _ := newTestSessionHandle(t, SessionSpec{
 		Profile:  ProfileClaudeTmuxCLI,
@@ -896,6 +953,22 @@ func TestSessionHandlePendingRespondAndBlockedState(t *testing.T) {
 }
 
 func TestSessionHandleHistoryLoadsNormalizedTranscript(t *testing.T) {
+	sourceRoot := filepath.Join("workertest", "testdata", "fixtures", "claude", "fresh")
+	sourceRel := filepath.Join("-tmp-gascity-phase1-claude", "session-claude-phase1.jsonl")
+	sourcePath := filepath.Join(sourceRoot, sourceRel)
+	fixtureRoot := t.TempDir()
+	fixturePath := filepath.Join(fixtureRoot, sourceRel)
+	if err := os.MkdirAll(filepath.Dir(fixturePath), 0o755); err != nil {
+		t.Fatalf("mkdir fixture dir: %v", err)
+	}
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if err := os.WriteFile(fixturePath, data, 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
 	handle, _, _, _ := newTestSessionHandle(t, SessionSpec{
 		ID:       "",
 		Profile:  ProfileClaudeTmuxCLI,
@@ -905,9 +978,7 @@ func TestSessionHandleHistoryLoadsNormalizedTranscript(t *testing.T) {
 		WorkDir:  "/tmp/gascity/phase1/claude",
 		Provider: "claude",
 	})
-	handle.adapter.SearchPaths = []string{
-		filepath.Join("workertest", "testdata", "fixtures", "claude", "fresh"),
-	}
+	handle.adapter.SearchPaths = []string{fixtureRoot}
 
 	if err := handle.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -940,9 +1011,11 @@ func TestSessionHandleHistoryPersistsCodexResumeKeyForLaterRestart(t *testing.T)
 
 	workDir := "/tmp/codex-project"
 	resumeID := "019d8afb-efe8-7280-abf9-5901fd92e0cd"
+	alias := "codex-probe-history"
 	transcriptPath := filepath.Join(dayDir, "rollout-2026-04-14T09-54-20-"+resumeID+".jsonl")
 	transcript := strings.Join([]string{
 		fmt.Sprintf(`{"timestamp":"2026-04-14T09:54:20Z","type":"session_meta","payload":{"cwd":%q}}`, workDir),
+		fmt.Sprintf(`{"timestamp":"2026-04-14T09:54:20Z","type":"event_msg","payload":{"message":%q}}`, alias),
 		`{"timestamp":"2026-04-14T09:54:21Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"remember alpha"}]}}`,
 		`{"timestamp":"2026-04-14T09:54:22Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"remembered"}]}}`,
 	}, "\n") + "\n"
@@ -951,6 +1024,7 @@ func TestSessionHandleHistoryPersistsCodexResumeKeyForLaterRestart(t *testing.T)
 	}
 
 	handle, store, sp, _ := newTestSessionHandle(t, SessionSpec{
+		Alias:    alias,
 		Profile:  ProfileCodexTmuxCLI,
 		Template: "probe",
 		Title:    "Probe",
@@ -994,7 +1068,7 @@ func TestSessionHandleHistoryPersistsCodexResumeKeyForLaterRestart(t *testing.T)
 		t.Fatalf("Start(second): %v", err)
 	}
 
-	secondStart := lastCall(sp.Calls, "Start")
+	secondStart := lastCall(sp.Calls)
 	if secondStart == nil {
 		t.Fatalf("runtime calls = %#v, want second Start", sp.Calls)
 	}
@@ -1013,9 +1087,11 @@ func TestSessionHandleStatePersistsCodexResumeKeyWithoutPrimingHistoryCache(t *t
 
 	workDir := "/tmp/codex-project"
 	resumeID := "019d8afb-efe8-7280-abf9-5901fd92e0cd"
+	alias := "codex-probe-state"
 	transcriptPath := filepath.Join(dayDir, "rollout-2026-04-14T09-54-20-"+resumeID+".jsonl")
 	transcript := strings.Join([]string{
 		fmt.Sprintf(`{"timestamp":"2026-04-14T09:54:20Z","type":"session_meta","payload":{"cwd":%q}}`, workDir),
+		fmt.Sprintf(`{"timestamp":"2026-04-14T09:54:20Z","type":"event_msg","payload":{"message":%q}}`, alias),
 		`{"timestamp":"2026-04-14T09:54:21Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"remember alpha"}]}}`,
 		`{"timestamp":"2026-04-14T09:54:22Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"text":"remembered"}]}}`,
 	}, "\n") + "\n"
@@ -1024,6 +1100,7 @@ func TestSessionHandleStatePersistsCodexResumeKeyWithoutPrimingHistoryCache(t *t
 	}
 
 	handle, store, sp, _ := newTestSessionHandle(t, SessionSpec{
+		Alias:    alias,
 		Profile:  ProfileCodexTmuxCLI,
 		Template: "probe",
 		Title:    "Probe",
@@ -1067,13 +1144,124 @@ func TestSessionHandleStatePersistsCodexResumeKeyWithoutPrimingHistoryCache(t *t
 		t.Fatalf("Start(second): %v", err)
 	}
 
-	secondStart := lastCall(sp.Calls, "Start")
+	secondStart := lastCall(sp.Calls)
 	if secondStart == nil {
 		t.Fatalf("runtime calls = %#v, want second Start", sp.Calls)
 	}
 	wantResume := "codex resume " + resumeID
 	if !strings.Contains(secondStart.Config.Command, wantResume) {
 		t.Fatalf("second start command = %q, want %q", secondStart.Config.Command, wantResume)
+	}
+}
+
+func TestSessionHandleStartPersistsGeminiResumeKeyFromTranscript(t *testing.T) {
+	base := t.TempDir()
+	workDir := filepath.Join(base, "workspace")
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir workDir: %v", err)
+	}
+
+	searchRoot := filepath.Join(base, ".gemini", "tmp")
+	projectDir := filepath.Join(searchRoot, "project-a")
+	chatsDir := filepath.Join(projectDir, "chats")
+	for _, dir := range []string{searchRoot, projectDir, chatsDir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".project_root"), []byte(workDir), 0o644); err != nil {
+		t.Fatalf("write .project_root: %v", err)
+	}
+
+	sessionKey := "gemini-provider-session"
+	alias := "gemini-probe-start"
+	transcriptPath := filepath.Join(chatsDir, "session-2026-04-17T03-12.json")
+	writeGeminiHistoryFixtureWithIdentity(t, transcriptPath, sessionKey, alias, []string{
+		`{"id":"u1","timestamp":"2026-04-17T03:12:00Z","type":"user","content":"remember alpha"}`,
+		`{"id":"a1","timestamp":"2026-04-17T03:12:01Z","type":"gemini","content":"remembered alpha"}`,
+	})
+
+	handle, store, sp, _ := newTestSessionHandle(t, SessionSpec{
+		Alias:    alias,
+		Profile:  ProfileGeminiTmuxCLI,
+		Template: "probe",
+		Title:    "Probe",
+		Command:  "gemini",
+		WorkDir:  workDir,
+		Provider: "gemini",
+		Resume: sessionpkg.ProviderResume{
+			ResumeFlag:  "--resume",
+			ResumeStyle: "flag",
+		},
+	})
+	handle.adapter.SearchPaths = []string{searchRoot}
+
+	if err := handle.Start(context.Background()); err != nil {
+		t.Fatalf("Start(first): %v", err)
+	}
+
+	bead, err := store.Get(handle.sessionID)
+	if err != nil {
+		t.Fatalf("store.Get(%q): %v", handle.sessionID, err)
+	}
+	if bead.Metadata["session_key"] != sessionKey {
+		t.Fatalf("session_key = %q, want %q", bead.Metadata["session_key"], sessionKey)
+	}
+
+	if err := handle.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if err := handle.Start(context.Background()); err != nil {
+		t.Fatalf("Start(second): %v", err)
+	}
+
+	secondStart := lastCall(sp.Calls)
+	if secondStart == nil {
+		t.Fatalf("runtime calls = %#v, want second Start", sp.Calls)
+	}
+	wantResume := "gemini --resume " + sessionKey
+	if secondStart.Config.Command != wantResume {
+		t.Fatalf("second start command = %q, want %q", secondStart.Config.Command, wantResume)
+	}
+}
+
+func TestSessionHandleStartGeneratesMissingCreateSessionKey(t *testing.T) {
+	handle, store, sp, _ := newTestSessionHandle(t, SessionSpec{
+		Template: "probe",
+		Title:    "Probe",
+		Command:  "claude --dangerously-skip-permissions",
+		WorkDir:  t.TempDir(),
+		Provider: "claude",
+		Resume: sessionpkg.ProviderResume{
+			ResumeFlag:    "--resume",
+			ResumeStyle:   "flag",
+			SessionIDFlag: "--session-id",
+		},
+	})
+	info, err := handle.Create(context.Background(), CreateModeDeferred)
+	if err != nil {
+		t.Fatalf("Create(deferred): %v", err)
+	}
+	if err := store.SetMetadata(info.ID, "session_key", ""); err != nil {
+		t.Fatalf("clear session_key: %v", err)
+	}
+	if err := handle.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	bead, err := store.Get(info.ID)
+	if err != nil {
+		t.Fatalf("Get(%q): %v", info.ID, err)
+	}
+	sessionKey := bead.Metadata["session_key"]
+	if sessionKey == "" {
+		t.Fatal("session_key = empty, want generated key")
+	}
+	start := lastCall(sp.Calls)
+	if start == nil {
+		t.Fatalf("runtime calls = %#v, want Start", sp.Calls)
+	}
+	if !strings.Contains(start.Config.Command, "--session-id "+sessionKey) {
+		t.Fatalf("start command = %q, want generated --session-id %s", start.Config.Command, sessionKey)
 	}
 }
 
@@ -1211,8 +1399,8 @@ func TestRuntimeHandleExpandedWorkerSurface(t *testing.T) {
 	if err := handle.Attach(context.Background()); err != nil {
 		t.Fatalf("Attach: %v", err)
 	}
-	if err := handle.StartResolved(context.Background(), "/bin/echo", runtime.Config{}); err != nil {
-		t.Fatalf("StartResolved: %v", err)
+	if err := handle.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
 	pending, supported, err := handle.PendingStatus(context.Background())
 	if err != nil {
@@ -1318,7 +1506,7 @@ func TestRuntimeHandleLiveObservationUsesRuntimeMetadataAndLiveness(t *testing.T
 	}
 }
 
-func TestRuntimeHandleStartResolvedStartsLegacyRuntimeSession(t *testing.T) {
+func TestRuntimeHandleStartRejectsRuntimeOnlyLaunch(t *testing.T) {
 	sp := runtime.NewFake()
 
 	handle, err := NewRuntimeHandle(RuntimeHandleConfig{
@@ -1330,23 +1518,12 @@ func TestRuntimeHandleStartResolvedStartsLegacyRuntimeSession(t *testing.T) {
 		t.Fatalf("NewRuntimeHandle: %v", err)
 	}
 
-	if err := handle.StartResolved(context.Background(), "legacy --resume seeded", runtime.Config{
-		WorkDir: "/tmp/runtime-worker",
-	}); err != nil {
-		t.Fatalf("StartResolved: %v", err)
+	err = handle.Start(context.Background())
+	if !errors.Is(err, ErrOperationUnsupported) {
+		t.Fatalf("Start error = %v, want ErrOperationUnsupported", err)
 	}
-	if !sp.IsRunning("legacy-worker") {
-		t.Fatal("legacy-worker should be running after StartResolved")
-	}
-	start := firstCall(sp.Calls, "Start")
-	if start == nil {
-		t.Fatalf("runtime calls = %#v, want Start", sp.Calls)
-	}
-	if start.Config.Command != "legacy --resume seeded" {
-		t.Fatalf("start command = %q, want legacy --resume seeded", start.Config.Command)
-	}
-	if start.Config.WorkDir != "/tmp/runtime-worker" {
-		t.Fatalf("start workdir = %q, want /tmp/runtime-worker", start.Config.WorkDir)
+	if sp.IsRunning("legacy-worker") {
+		t.Fatal("legacy-worker should not be started by runtime-only handle")
 	}
 }
 
@@ -1640,17 +1817,19 @@ func TestSessionHandleHistoryStitchesGeminiRotatedTranscriptAcrossRestart(t *tes
 		t.Fatalf("write .project_root: %v", err)
 	}
 
+	alias := "gemini-probe-stitch"
 	firstTranscript := filepath.Join(chatsDir, "session-2026-04-17T03-12-before.json")
-	writeGeminiHistoryFixture(t, firstTranscript, "before-session", []string{
+	writeGeminiHistoryFixtureWithIdentity(t, firstTranscript, "before-session", alias, []string{
 		`{"id":"u1","timestamp":"2026-04-17T03:12:00Z","type":"user","content":"remember alpha"}`,
 		`{"id":"a1","timestamp":"2026-04-17T03:12:01Z","type":"gemini","content":"remembered alpha"}`,
 	})
-	firstTime := time.Now().Add(-2 * time.Minute)
+	firstTime := time.Now()
 	if err := os.Chtimes(firstTranscript, firstTime, firstTime); err != nil {
 		t.Fatalf("chtimes(first transcript): %v", err)
 	}
 
 	handle, _, _, _ := newTestSessionHandle(t, SessionSpec{
+		Alias:    alias,
 		Profile:  ProfileGeminiTmuxCLI,
 		Template: "probe",
 		Title:    "Probe",
@@ -1676,11 +1855,11 @@ func TestSessionHandleHistoryStitchesGeminiRotatedTranscriptAcrossRestart(t *tes
 	}
 
 	secondTranscript := filepath.Join(chatsDir, "session-2026-04-17T03-15-after.json")
-	writeGeminiHistoryFixture(t, secondTranscript, "after-session", []string{
+	writeGeminiHistoryFixtureWithIdentity(t, secondTranscript, "after-session", alias, []string{
 		`{"id":"u2","timestamp":"2026-04-17T03:15:00Z","type":"user","content":"recall the earlier phrase"}`,
 		`{"id":"a2","timestamp":"2026-04-17T03:15:01Z","type":"gemini","content":"alpha"}`,
 	})
-	secondTime := time.Now().Add(-1 * time.Minute)
+	secondTime := time.Now().Add(time.Minute)
 	if err := os.Chtimes(secondTranscript, secondTime, secondTime); err != nil {
 		t.Fatalf("chtimes(second transcript): %v", err)
 	}
@@ -1742,36 +1921,34 @@ func TestSessionHandleStartPassesSessionEnv(t *testing.T) {
 	}
 }
 
-func TestSessionHandleStartResolvedUsesProvidedRuntime(t *testing.T) {
+func TestSessionHandleStartUsesResolvedRuntimeFromSpec(t *testing.T) {
 	handle, _, sp, _ := newTestSessionHandle(t, SessionSpec{
 		Profile:  ProfileGeminiTmuxCLI,
 		Template: "probe",
 		Title:    "Probe",
-		Command:  "gemini",
+		Command:  "gemini --resume existing-session",
 		WorkDir:  t.TempDir(),
 		Provider: "gemini",
+		Hints: runtime.Config{
+			Env: map[string]string{
+				"GC_WORKER_BOUNDARY": "start",
+			},
+		},
 	})
 
-	resolved := runtime.Config{
-		Command: "gemini --resume existing-session",
-		WorkDir: t.TempDir(),
-		Env: map[string]string{
-			"GC_WORKER_BOUNDARY": "start_resolved",
-		},
-	}
-	if err := handle.StartResolved(context.Background(), resolved.Command, resolved); err != nil {
-		t.Fatalf("StartResolved: %v", err)
+	if err := handle.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
 	}
 
 	start := firstCall(sp.Calls, "Start")
 	if start == nil {
 		t.Fatalf("runtime calls = %#v, want Start call", sp.Calls)
 	}
-	if got := start.Config.Command; got != resolved.Command {
-		t.Fatalf("StartResolved command = %q, want %q", got, resolved.Command)
+	if got, want := start.Config.Command, "gemini --resume existing-session"; got != want {
+		t.Fatalf("Start command = %q, want %q", got, want)
 	}
-	if got := start.Config.Env["GC_WORKER_BOUNDARY"]; got != "start_resolved" {
-		t.Fatalf("StartResolved env GC_WORKER_BOUNDARY = %q, want start_resolved", got)
+	if got := start.Config.Env["GC_WORKER_BOUNDARY"]; got != "start" {
+		t.Fatalf("Start env GC_WORKER_BOUNDARY = %q, want start", got)
 	}
 }
 
@@ -1814,7 +1991,7 @@ func TestSessionHandleStartUsesSessionIDOnFirstStartAndResumeAfterSuspend(t *tes
 	if len(sp.Calls) < 3 {
 		t.Fatalf("runtime calls = %#v, want second Start after Stop", sp.Calls)
 	}
-	secondStart := lastCall(sp.Calls, "Start")
+	secondStart := lastCall(sp.Calls)
 	if secondStart == nil {
 		t.Fatalf("runtime calls = %#v, want second Start", sp.Calls)
 	}
@@ -1920,9 +2097,9 @@ func newTestSessionHandleWithRecorder(t *testing.T, spec SessionSpec, recorder e
 	return handle, store, sp, manager
 }
 
-func lastCall(calls []runtime.Call, method string) *runtime.Call {
+func lastCall(calls []runtime.Call) *runtime.Call {
 	for i := len(calls) - 1; i >= 0; i-- {
-		if calls[i].Method == method {
+		if calls[i].Method == "Start" {
 			return &calls[i]
 		}
 	}
@@ -1972,10 +2149,14 @@ func hasCall(calls []runtime.Call, method, message string) bool {
 	return false
 }
 
-func writeGeminiHistoryFixture(t *testing.T, path, sessionID string, messages []string) {
+func writeGeminiHistoryFixtureWithIdentity(t *testing.T, path, sessionID, identity string, messages []string) {
 	t.Helper()
 
-	body := fmt.Sprintf("{\n  \"sessionId\": %q,\n  \"messages\": [\n    %s\n  ]\n}\n", sessionID, strings.Join(messages, ",\n    "))
+	identityField := ""
+	if identity != "" {
+		identityField = fmt.Sprintf("  \"gcSessionName\": %q,\n", identity)
+	}
+	body := fmt.Sprintf("{\n  \"sessionId\": %q,\n%s  \"messages\": [\n    %s\n  ]\n}\n", sessionID, identityField, strings.Join(messages, ",\n    "))
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write gemini transcript %s: %v", path, err)
 	}

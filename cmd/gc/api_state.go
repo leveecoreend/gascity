@@ -139,19 +139,11 @@ func wrapWithCachingStore(ctx context.Context, store beads.Store, ep events.Prov
 	if ctx.Done() == nil {
 		return cs
 	}
-	// Full prime runs async — backfills remaining beads for List()
-	// callers (convergence reconcile, sweep, API handlers).
-	go func() {
-		log.Printf("caching-store: priming ...")
-		if err := cs.Prime(ctx); err != nil {
-			log.Printf("caching-store: prime FAILED: %v (reads will use bd subprocess)", err)
-			return
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		cs.StartReconciler(ctx)
-	}()
+	// Defer full scans to the watchdog interval. Launching a full Prime for
+	// every city/rig store at startup can saturate bd/dolt exactly when the
+	// controller needs fast ticks; PrimeActive already gives controller paths
+	// a complete active-bead read model.
+	cs.StartReconciler(ctx)
 	return cs
 }
 

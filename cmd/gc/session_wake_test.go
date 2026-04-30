@@ -95,6 +95,9 @@ func TestPreWakeCommit(t *testing.T) {
 	if got.Metadata["last_woke_at"] == "" {
 		t.Error("expected last_woke_at to be set")
 	}
+	if got.Metadata["start_in_flight"] != "true" {
+		t.Errorf("start_in_flight = %q, want true", got.Metadata["start_in_flight"])
+	}
 	if got.Metadata["sleep_reason"] != "" {
 		t.Error("expected sleep_reason to be cleared")
 	}
@@ -1019,6 +1022,54 @@ func TestAdvanceSessionDrains_DeferredInterrupt_CanceledBeforeSignal(t *testing.
 		if c.Method == "Interrupt" {
 			t.Error("Interrupt (Ctrl-C) should never be sent — use GC_DRAIN_ACK instead")
 		}
+	}
+}
+
+func TestAdvanceSessionDrains_OrphanedDrainCanceledByAssignedWork(t *testing.T) {
+	now := time.Date(2026, 4, 29, 19, 18, 0, 0, time.UTC)
+	clk := &clock.Fake{Time: now}
+	sp := runtime.NewFake()
+	store := beads.NewMemStore()
+	dt := newDrainTracker()
+
+	_ = sp.Start(context.Background(), "worker-mc-1", runtime.Config{})
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name":   "worker-mc-1",
+			"template":       "worker",
+			"session_origin": "ephemeral",
+			"pool_managed":   boolMetadata(true),
+			"generation":     "2",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beginSessionDrain(session, sp, dt, "orphaned", clk, 30*time.Second)
+
+	wakeEvals := map[string]wakeEvaluation{
+		session.ID: {
+			Reasons: []WakeReason{WakeWork},
+			Reason:  "assigned-work",
+		},
+	}
+	advanceSessionDrainsWithSessions(dt, sp, store, func(id string) *beads.Bead {
+		got, _ := store.Get(id)
+		return &got
+	}, []beads.Bead{session}, wakeEvals, &config.City{}, nil, nil, nil, clk)
+
+	if dt.get(session.ID) != nil {
+		t.Fatal("orphaned drain should be canceled when direct assigned work appears")
+	}
+	ack, _ := sp.GetMeta("worker-mc-1", "GC_DRAIN_ACK")
+	if ack != "" {
+		t.Fatalf("GC_DRAIN_ACK = %q, want unset after assigned-work cancel", ack)
+	}
+	if !sp.IsRunning("worker-mc-1") {
+		t.Fatal("session should remain running after assigned-work cancel")
 	}
 }
 

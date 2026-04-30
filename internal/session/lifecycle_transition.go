@@ -86,6 +86,7 @@ func PreWakePatch(input PreWakePatchInput) MetadataPatch {
 		"continuation_reset_pending": "",
 		"detached_at":                "",
 		"last_woke_at":               input.Now.UTC().Format(time.RFC3339),
+		"start_in_flight":            "true",
 		"sleep_reason":               input.SleepReason,
 		"sleep_intent":               "",
 		"generation":                 fmt.Sprintf("%d", input.Generation),
@@ -156,6 +157,7 @@ func ConfirmStartedPatch(now time.Time) MetadataPatch {
 		"state_reason":         "creation_complete",
 		"creation_complete_at": now.UTC().Format(time.RFC3339),
 		"pending_create_claim": "",
+		"start_in_flight":      "",
 		"sleep_reason":         "",
 	}
 }
@@ -210,6 +212,7 @@ func CommitStartedPatch(input CommitStartedPatchInput) MetadataPatch {
 	if input.ClearPendingCreateClaim {
 		patch["pending_create_claim"] = ""
 	}
+	patch["start_in_flight"] = ""
 	return patch
 }
 
@@ -229,6 +232,7 @@ func SleepPatch(now time.Time, reason string) MetadataPatch {
 		"sleep_reason":         reason,
 		"last_woke_at":         "",
 		"pending_create_claim": "",
+		"start_in_flight":      "",
 		"sleep_intent":         "",
 		"slept_at":             now.UTC().Format(time.RFC3339),
 	}
@@ -242,6 +246,7 @@ func AcknowledgeDrainPatch(freshWake bool) MetadataPatch {
 		"state":                string(StateDrained),
 		"last_woke_at":         "",
 		"pending_create_claim": "",
+		"start_in_flight":      "",
 	}
 	if freshWake {
 		patch["session_key"] = ""
@@ -275,6 +280,7 @@ func RestartRequestPatch(sessionKey string) MetadataPatch {
 		"continuation_reset_pending": "true",
 		"last_woke_at":               "",
 		"pending_create_claim":       "",
+		"start_in_flight":            "",
 	}
 	if sessionKey != "" {
 		patch["session_key"] = sessionKey
@@ -292,6 +298,7 @@ func ConfigDriftResetPatch(nextState State, sessionKey string) MetadataPatch {
 		"restart_requested":          "",
 		"continuation_reset_pending": "true",
 		"pending_create_claim":       "",
+		"start_in_flight":            "",
 	}
 	applyFreshWakeConversationReset(patch)
 	if nextState == StateCreating {
@@ -315,6 +322,7 @@ func ArchivePatch(now time.Time, reason string, continuityEligible bool) Metadat
 		"archived_at":          now.UTC().Format(time.RFC3339),
 		"continuity_eligible":  continuity,
 		"pending_create_claim": "",
+		"start_in_flight":      "",
 	}
 }
 
@@ -356,6 +364,7 @@ func QuarantinePatch(until time.Time, cycle int) MetadataPatch {
 		"quarantined_until": until.UTC().Format(time.RFC3339),
 		"quarantine_cycle":  fmt.Sprintf("%d", cycle),
 		"last_woke_at":      "",
+		"start_in_flight":   "",
 	}
 }
 
@@ -371,6 +380,7 @@ func ReactivatePatch(continuityEligible bool) MetadataPatch {
 		"state":                string(StateAsleep),
 		"state_reason":         "reactivated",
 		"pending_create_claim": "",
+		"start_in_flight":      "",
 		"continuity_eligible":  continuity,
 		"quarantined_until":    "",
 		"crash_count":          "0",

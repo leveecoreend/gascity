@@ -176,6 +176,48 @@ func TestOrderDispatchCooldownDue(t *testing.T) {
 	}
 }
 
+func TestOrderDispatchReturnsBusyWhileAsyncDispatchRuns(t *testing.T) {
+	store := beads.NewMemStore()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	execRun := func(ctx context.Context, _ string, _ string, _ []string) ([]byte, error) {
+		close(started)
+		select {
+		case <-release:
+			return nil, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	aa := []orders.Order{{
+		Name:     "slow-order",
+		Trigger:  "cooldown",
+		Interval: "1m",
+		Exec:     "slow-command",
+	}}
+	ad := buildOrderDispatcherFromListExec(aa, store, nil, execRun, events.Discard)
+	if ad == nil {
+		t.Fatal("expected non-nil dispatcher")
+	}
+
+	if busy := ad.dispatch(context.Background(), t.TempDir(), time.Now()); !busy {
+		t.Fatal("dispatch returned false, want busy after firing async order")
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for async order to start")
+	}
+	if busy := ad.dispatch(context.Background(), t.TempDir(), time.Now()); !busy {
+		t.Fatal("dispatch returned false while async order was still running")
+	}
+	all := trackingBeads(t, store, "order-run:slow-order")
+	if len(all) != 1 {
+		t.Fatalf("tracking beads while busy = %d, want 1", len(all))
+	}
+	close(release)
+}
+
 // TestOrderDispatchResolvesPackBindingForPool reproduces issue #1268: a
 // pack-imported agent has BindingName set, so its qualified name is
 // "binding.name". A city-level order with pool="<name>" must resolve to the

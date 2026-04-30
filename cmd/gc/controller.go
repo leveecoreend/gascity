@@ -712,14 +712,13 @@ func shouldIgnoreConfigWatchEvent(path string) bool {
 	if clean == "" || clean == "." {
 		return false
 	}
-	sepGC := string(filepath.Separator) + ".gc"
-	sepBeads := string(filepath.Separator) + ".beads"
-	return clean == ".gc" ||
-		clean == ".beads" ||
-		strings.HasSuffix(clean, sepGC) ||
-		strings.HasSuffix(clean, sepBeads) ||
-		strings.Contains(clean, sepGC+string(filepath.Separator)) ||
-		strings.Contains(clean, sepBeads+string(filepath.Separator))
+	for _, part := range strings.FieldsFunc(filepath.ToSlash(clean), func(r rune) bool { return r == '/' }) {
+		switch part {
+		case ".beads", ".cache", ".gc", ".git", "__pycache__", "state":
+			return true
+		}
+	}
+	return false
 }
 
 // reloadResult holds the result of a config reload attempt.

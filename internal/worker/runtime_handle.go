@@ -75,26 +75,6 @@ func (h *RuntimeHandle) Start(ctx context.Context) (err error) {
 	return err
 }
 
-// StartResolved starts a runtime-only handle using the provided resolved command.
-func (h *RuntimeHandle) StartResolved(ctx context.Context, startCommand string, cfg runtime.Config) (err error) {
-	event := h.beginOperationEvent(ctx, workerOperationStartResolved)
-	defer func() { event.finish(err) }()
-
-	if h.provider.IsRunning(h.sessionName) {
-		return nil
-	}
-	startCfg := cfg
-	if strings.TrimSpace(startCfg.Command) == "" {
-		startCfg.Command = strings.TrimSpace(startCommand)
-	}
-	if strings.TrimSpace(startCfg.Command) == "" {
-		err = fmt.Errorf("%w: start requires a runtime command", ErrOperationUnsupported)
-		return err
-	}
-	err = h.provider.Start(ctx, h.sessionName, startCfg)
-	return err
-}
-
 // Attach attaches to the live runtime session if it is currently running.
 func (h *RuntimeHandle) Attach(ctx context.Context) (err error) {
 	event := h.beginOperationEvent(ctx, workerOperationAttach)

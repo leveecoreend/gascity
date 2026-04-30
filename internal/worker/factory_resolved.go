@@ -22,6 +22,7 @@ type ResolvedRuntime struct {
 // ResolvedSessionConfig describes a new session-backed worker handle whose
 // runtime inputs have already been resolved by the caller.
 type ResolvedSessionConfig struct {
+	ID           string
 	Alias        string
 	ExplicitName string
 	Template     string
@@ -87,6 +88,7 @@ func SessionSpecForResolvedRuntime(cfg ResolvedSessionConfig) (SessionSpec, erro
 	}
 
 	return SessionSpec{
+		ID:           strings.TrimSpace(cfg.ID),
 		Alias:        cfg.Alias,
 		ExplicitName: cfg.ExplicitName,
 		Template:     cfg.Template,

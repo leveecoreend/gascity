@@ -22,6 +22,7 @@ func (c *CachingStore) Create(b Bead) (Bead, error) {
 	c.mu.Lock()
 	c.noteMutationLocked(created.ID)
 	c.beads[created.ID] = cloneBead(created)
+	c.deps[created.ID] = cloneDeps(created.Dependencies)
 	delete(c.dirty, created.ID)
 	delete(c.deletedSeq, created.ID)
 	c.markFreshLocked(time.Now())
@@ -52,6 +53,7 @@ func (c *CachingStore) Update(id string, opts UpdateOpts) error {
 	c.mu.Lock()
 	c.noteMutationLocked(id)
 	c.beads[id] = cloneBead(fresh)
+	c.deps[id] = cloneDeps(fresh.Dependencies)
 	delete(c.dirty, id)
 	delete(c.deletedSeq, id)
 	c.markFreshLocked(time.Now())
@@ -140,6 +142,7 @@ func (c *CachingStore) CloseAll(ids []string, metadata map[string]string) (int, 
 	for _, item := range refreshed {
 		previous, hadPrevious := c.beads[item.id]
 		c.beads[item.id] = cloneBead(item.bead)
+		c.deps[item.id] = cloneDeps(item.bead.Dependencies)
 		delete(c.dirty, item.id)
 		delete(c.deletedSeq, item.id)
 		if item.bead.Status == "closed" {

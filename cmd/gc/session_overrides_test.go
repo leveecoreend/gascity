@@ -28,9 +28,9 @@ func TestReplaceSchemaFlags_ClaudeModelOverride(t *testing.T) {
 	got := replaceSchemaFlags(
 		"claude --dangerously-skip-permissions",
 		claude.OptionsSchema,
-		[]string{"--dangerously-skip-permissions", "--model", "claude-opus-4-6"},
+		[]string{"--dangerously-skip-permissions", "--model", "claude-opus-4-7"},
 	)
-	want := "claude --dangerously-skip-permissions --model claude-opus-4-6"
+	want := "claude --dangerously-skip-permissions --model claude-opus-4-7"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

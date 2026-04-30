@@ -83,6 +83,9 @@ func isRetryableManagedDoltLifecycleError(err error) bool {
 // Called by gc start and controller config reload. Rigs must have absolute
 // paths before calling (resolve relative paths first).
 func startBeadsLifecycle(cityPath, _ string, cfg *config.City, _ io.Writer) error {
+	if err := recoverManagedLocalEndpointMirror(cityPath, cfg); err != nil {
+		return err
+	}
 	if err := validateCanonicalCompatDoltDrift(cityPath, cfg); err != nil {
 		return err
 	}
@@ -1076,6 +1079,57 @@ func syncConfiguredDoltPortFiles(cityPath string, cityDolt config.DoltConfig, ci
 		}
 	}
 	return nil
+}
+
+func recoverManagedLocalEndpointMirror(cityPath string, cfg *config.City) error {
+	if cfg == nil || !workspaceUsesManagedBdStoreContract(cityPath, cfg.Rigs) {
+		return nil
+	}
+	resolveRigPaths(cityPath, cfg.Rigs)
+	cityState := desiredCityDoltConfigState(cityPath, cfg.Dolt, config.EffectiveHQPrefix(cfg))
+	if scopeUsesManagedBdStoreContract(cityPath, cityPath) {
+		if err := recoverScopeManagedLocalEndpointMirror(cityPath, cityState); err != nil {
+			return fmt.Errorf("recovering managed city endpoint mirror: %w", err)
+		}
+	}
+	for i := range cfg.Rigs {
+		rig := normalizedRigConfig(cityPath, cfg.Rigs[i])
+		if strings.TrimSpace(rig.Path) == "" || !rigUsesManagedBdStoreContract(cityPath, rig) {
+			continue
+		}
+		rigState := desiredRigDoltConfigState(cityPath, rig, cityState)
+		if err := recoverScopeManagedLocalEndpointMirror(rig.Path, rigState); err != nil {
+			return fmt.Errorf("recovering managed rig endpoint mirror for %q: %w", cfg.Rigs[i].Name, err)
+		}
+	}
+	return nil
+}
+
+func recoverScopeManagedLocalEndpointMirror(scopePath string, desired contract.ConfigState) error {
+	switch desired.EndpointOrigin {
+	case contract.EndpointOriginManagedCity, contract.EndpointOriginInheritedCity:
+	default:
+		return nil
+	}
+	existing, ok, err := contract.ReadConfigState(fsys.OSFS{}, filepath.Join(scopePath, ".beads", "config.yaml"))
+	if err != nil || !ok {
+		return err
+	}
+	if existing.EndpointOrigin != desired.EndpointOrigin {
+		return nil
+	}
+	if strings.TrimSpace(existing.DoltUser) != "" {
+		return nil
+	}
+	host := strings.TrimSpace(existing.DoltHost)
+	port := strings.TrimSpace(existing.DoltPort)
+	if host == "" && port == "" {
+		return nil
+	}
+	if !managedLocalDoltHost(host) {
+		return nil
+	}
+	return normalizeScopeDoltConfig(scopePath, desired)
 }
 
 func syncDesiredCityDoltConfigState(cityPath string, cityDolt config.DoltConfig, cityPrefix string) (contract.ConfigState, error) {

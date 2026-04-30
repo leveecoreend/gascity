@@ -93,7 +93,7 @@ func TestDiscoverFallbackPathUsesNewestClaudeLatestSessionAcrossAliases(t *testi
 	}
 }
 
-func TestDiscoverPathCodexIgnoresGCSessionID(t *testing.T) {
+func TestDiscoverPathCodexUsesGCSessionID(t *testing.T) {
 	base := t.TempDir()
 	workDir := filepath.Join(t.TempDir(), "codex-project")
 
@@ -119,8 +119,19 @@ func TestDiscoverPathCodexIgnoresGCSessionID(t *testing.T) {
 	if err := os.MkdirAll(codexDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	codexPath := filepath.Join(codexDir, "session.jsonl")
+	codexPath := filepath.Join(codexDir, "rollout-2026-04-18T00-00-00-gc-123.jsonl")
 	if err := os.WriteFile(codexPath, append(payload, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newerOther := filepath.Join(codexDir, "rollout-2026-04-18T00-00-01-other.jsonl")
+	if err := os.WriteFile(newerOther, append(payload, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := os.Chtimes(codexPath, now.Add(-time.Minute), now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newerOther, now, now); err != nil {
 		t.Fatal(err)
 	}
 
@@ -164,8 +175,8 @@ func TestSupportsIDLookup(t *testing.T) {
 		want     bool
 	}{
 		{provider: "claude/tmux-cli", want: true},
-		{provider: "codex/tmux-cli", want: false},
-		{provider: "gemini/tmux-cli", want: false},
+		{provider: "codex/tmux-cli", want: true},
+		{provider: "gemini/tmux-cli", want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.provider, func(t *testing.T) {

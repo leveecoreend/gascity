@@ -56,6 +56,12 @@ type poolEvalWork struct {
 	newDemand bool
 }
 
+type defaultScaleCheckTarget struct {
+	template string
+	storeKey string
+	store    beads.Store
+}
+
 func evaluatePendingPools(
 	cfg *config.City,
 	pendingPools []poolEvalWork,
@@ -202,6 +208,7 @@ func buildDesiredStateWithSessionBeads(
 
 	desired := make(map[string]TemplateParams)
 	var pendingPools []poolEvalWork
+	var defaultScaleTargets []defaultScaleCheckTarget
 
 	for i := range cfg.Agents {
 		if cfg.Agents[i].Suspended {
@@ -229,9 +236,15 @@ func buildDesiredStateWithSessionBeads(
 				continue
 			}
 			// Named-session materialization is handled in the named-session pass,
-			// but generic scale_check/min demand for the backing template still
-			// creates ephemeral capacity through the pool pipeline.
+			// but explicit scale_check/min demand for the backing template still
+			// creates ephemeral capacity through the pool pipeline. The default
+			// routed-work scale_check is intentionally skipped here: routed
+			// metadata alone must not materialize an on-demand named session or
+			// a parallel generic worker for the same backing template.
 			poolDir := agentCommandDir(cityPath, &cfg.Agents[i], cfg.Rigs)
+			if store != nil && strings.TrimSpace(cfg.Agents[i].ScaleCheck) == "" {
+				continue
+			}
 			pendingPools = append(pendingPools, poolEvalWork{agentIdx: i, sp: sp, poolDir: poolDir, newDemand: store != nil})
 			continue
 		}
@@ -244,12 +257,12 @@ func buildDesiredStateWithSessionBeads(
 		// them as desired counts; bead-backed mode uses them as authoritative
 		// new unassigned demand while assigned work drives resume requests.
 		poolDir := agentCommandDir(cityPath, &cfg.Agents[i], cfg.Rigs)
+		if store != nil && strings.TrimSpace(cfg.Agents[i].ScaleCheck) == "" {
+			defaultScaleTargets = append(defaultScaleTargets, defaultScaleCheckTargetForAgent(cityPath, cfg, &cfg.Agents[i], store, rigStores))
+			continue
+		}
 		pendingPools = append(pendingPools, poolEvalWork{agentIdx: i, sp: sp, poolDir: poolDir, env: controllerQueryRuntimeEnv(cityPath, cfg, &cfg.Agents[i]), newDemand: store != nil})
 	}
-
-	// scale_check runs in parallel for all pool agents — the authoritative
-	// demand signal for new sessions. Computed once, returned in result.
-	scaleCheckCounts := evaluatePendingPoolsMap(cfg, pendingPools, stderr, trace)
 
 	// Collect work beads with assignees — used for both pool demand and
 	// named session on_demand wake. Hoisted out of the store block so
@@ -257,6 +270,7 @@ func buildDesiredStateWithSessionBeads(
 	var assignedWorkBeads []beads.Bead
 	var assignedWorkStores []beads.Store
 	var storePartial bool
+	var scaleCheckCounts map[string]int
 	if store != nil {
 		assignedWorkBeads, assignedWorkStores, storePartial = collectAssignedWorkBeadsWithStores(cfg, store, rigStores, suspendedRigPaths)
 		if storePartial {
@@ -269,6 +283,16 @@ func buildDesiredStateWithSessionBeads(
 			}
 		} else {
 			fmt.Fprintf(stderr, "assignedWorkBeads: 0 beads (rigStores=%d)\n", len(rigStores)) //nolint:errcheck
+		}
+		scaleCheckCounts = evaluatePendingPoolsMap(cfg, pendingPools, stderr, trace)
+		if len(defaultScaleTargets) > 0 {
+			defaultCounts, errs := defaultScaleCheckCounts(defaultScaleTargets)
+			for _, err := range errs {
+				fmt.Fprintf(stderr, "buildDesiredState: %v (using new demand=0)\n", err) //nolint:errcheck
+			}
+			for template, count := range defaultCounts {
+				scaleCheckCounts[template] = count
+			}
 		}
 		poolDesiredStates := ComputePoolDesiredStatesTraced(cfg, assignedWorkBeads, sessionBeads.Open(), scaleCheckCounts, trace)
 		for _, poolState := range poolDesiredStates {
@@ -283,6 +307,8 @@ func buildDesiredStateWithSessionBeads(
 			realizePoolDesiredSessions(bp, cfgAgent, poolState, desired, stderr)
 		}
 	} else {
+		// No store: scale_check is the only demand source.
+		scaleCheckCounts = evaluatePendingPoolsMap(cfg, pendingPools, stderr, trace)
 		// No store — use scale_check counts directly.
 		for _, pw := range pendingPools {
 			desiredCount := scaleCheckCounts[cfg.Agents[pw.agentIdx].QualifiedName()]
@@ -529,30 +555,158 @@ func collectAssignedWorkBeadsWithStores(
 		}
 	}
 
+	type storeAssignedWorkResult struct {
+		beads  []beads.Bead
+		stores []beads.Store
+		errs   []error
+	}
+	results := make([]storeAssignedWorkResult, len(stores))
+	var wg sync.WaitGroup
+	for idx, s := range stores {
+		idx, s := idx, s
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var result []beads.Bead
+			var resultStores []beads.Store
+			var errs []error
+			seen := make(map[string]struct{})
+			// In-progress beads with an assignee (active work), plus stranded
+			// unassigned pool work that needs to be reopened.
+			if inProgress, err := listForControllerDemand(s, beads.ListQuery{Status: "in_progress"}); err == nil {
+				appendInProgressWorkUnique(cfg, &result, &resultStores, inProgress, seen, s)
+			} else {
+				errs = append(errs, fmt.Errorf("List(in_progress): %w", err))
+			}
+			// Ready beads with an assignee (queued direct handoff work that is
+			// actually runnable, not merely open). This is a lifecycle gate, so
+			// bypass the cache when a CachingStore wrapper is present.
+			if ready, err := readyForControllerDemand(s); err == nil {
+				appendAssignedUnique(&result, &resultStores, ready, seen, s)
+			} else {
+				errs = append(errs, fmt.Errorf("Ready(): %w", err))
+			}
+			results[idx] = storeAssignedWorkResult{beads: result, stores: resultStores, errs: errs}
+		}()
+	}
+	wg.Wait()
+
 	var result []beads.Bead
 	var resultStores []beads.Store
 	var partial bool
-	for _, s := range stores {
-		seen := make(map[string]struct{})
-		// In-progress beads with an assignee (active work), plus stranded
-		// unassigned pool work that needs to be reopened.
-		if inProgress, err := s.List(beads.ListQuery{Status: "in_progress", Live: true}); err == nil {
-			appendInProgressWorkUnique(cfg, &result, &resultStores, inProgress, seen, s)
-		} else {
-			log.Printf("collectAssignedWorkBeads: List(in_progress) failed: %v", err)
-			partial = true
-		}
-		// Ready beads with an assignee (queued direct handoff work that is
-		// actually runnable, not merely open). This is a lifecycle gate, so
-		// bypass the cache when a CachingStore wrapper is present.
-		if ready, err := beads.ReadyLive(s); err == nil {
-			appendAssignedUnique(&result, &resultStores, ready, seen, s)
-		} else {
-			log.Printf("collectAssignedWorkBeads: Ready() failed: %v", err)
+	for _, r := range results {
+		result = append(result, r.beads...)
+		resultStores = append(resultStores, r.stores...)
+		for _, err := range r.errs {
+			log.Printf("collectAssignedWorkBeads: %v", err)
 			partial = true
 		}
 	}
 	return result, resultStores, partial
+}
+
+func defaultScaleCheckTargetForAgent(
+	cityPath string,
+	cfg *config.City,
+	agentCfg *config.Agent,
+	cityStore beads.Store,
+	rigStores map[string]beads.Store,
+) defaultScaleCheckTarget {
+	target := defaultScaleCheckTarget{
+		template: agentCfg.QualifiedName(),
+		storeKey: "city",
+		store:    cityStore,
+	}
+	rigName := configuredRigName(cityPath, agentCfg, cfg.Rigs)
+	if rigName == "" {
+		return target
+	}
+	target.storeKey = "rig:" + rigName
+	if rigStores != nil {
+		if rigStore := rigStores[rigName]; rigStore != nil {
+			target.store = rigStore
+		}
+	}
+	return target
+}
+
+func defaultScaleCheckCounts(targets []defaultScaleCheckTarget) (map[string]int, []error) {
+	counts := make(map[string]int, len(targets))
+	if len(targets) == 0 {
+		return counts, nil
+	}
+
+	type scaleStoreGroup struct {
+		store     beads.Store
+		templates map[string]struct{}
+	}
+	groups := make(map[string]*scaleStoreGroup)
+	var errs []error
+	for _, target := range targets {
+		template := strings.TrimSpace(target.template)
+		if template == "" {
+			continue
+		}
+		counts[template] = 0
+		if target.store == nil {
+			errs = append(errs, fmt.Errorf("default scale_check %s: store unavailable", template))
+			continue
+		}
+		key := strings.TrimSpace(target.storeKey)
+		if key == "" {
+			key = fmt.Sprintf("%p", target.store)
+		}
+		group := groups[key]
+		if group == nil {
+			group = &scaleStoreGroup{store: target.store, templates: make(map[string]struct{})}
+			groups[key] = group
+		}
+		group.templates[template] = struct{}{}
+	}
+
+	for key, group := range groups {
+		ready, err := readyForControllerDemand(group.store)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("default scale_check %s: Ready(): %w", key, err))
+		} else {
+			for _, b := range ready {
+				if strings.TrimSpace(b.Assignee) != "" {
+					continue
+				}
+				template := strings.TrimSpace(b.Metadata["gc.routed_to"])
+				if _, ok := group.templates[template]; ok {
+					counts[template]++
+				}
+			}
+		}
+	}
+	return counts, errs
+}
+
+func listForControllerDemand(store beads.Store, query beads.ListQuery) ([]beads.Bead, error) {
+	if cached, ok := store.(interface {
+		CachedList(beads.ListQuery) ([]beads.Bead, bool)
+	}); ok {
+		cachedQuery := query
+		cachedQuery.Live = false
+		if items, ok := cached.CachedList(cachedQuery); ok {
+			return items, nil
+		}
+	}
+	liveQuery := query
+	liveQuery.Live = true
+	return store.List(liveQuery)
+}
+
+func readyForControllerDemand(store beads.Store) ([]beads.Bead, error) {
+	if cached, ok := store.(interface {
+		CachedReady() ([]beads.Bead, bool)
+	}); ok {
+		if ready, ok := cached.CachedReady(); ok {
+			return ready, nil
+		}
+	}
+	return beads.ReadyLive(store)
 }
 
 // mergeNamedSessionDemand ensures that named-session assignee demand is
@@ -717,10 +871,11 @@ func discoverSessionBeadsWithRoots(
 			manualSession := isManualSessionBeadForAgent(b, cfgAgent)
 			creating := b.Metadata["state"] == "creating"
 			pendingCreate := isPendingPoolCreate(b)
-			if isPoolManagedSessionBead(b) && !manualSession && !isNamedSessionBead(b) && !creating && !pendingCreate {
+			poolDemanded := desiredHasTemplate(desired, template)
+			if isPoolManagedSessionBead(b) && !manualSession && !isNamedSessionBead(b) && !creating && (!pendingCreate || !poolDemanded) {
 				continue
 			}
-			if !manualSession && !desiredHasTemplate(desired, template) && !pendingCreate {
+			if !manualSession && !poolDemanded {
 				continue
 			}
 		}
@@ -944,7 +1099,8 @@ func realizePoolDesiredSessions(
 				prefer = &bead
 			}
 		}
-		sessionBead, err := selectOrCreatePoolSessionBead(bp, qualifiedName, prefer, used)
+		reuseRunning := request.Tier == "new"
+		sessionBead, err := selectOrCreatePoolSessionBead(bp, qualifiedName, prefer, used, reuseRunning)
 		if err != nil {
 			fmt.Fprintf(stderr, "buildDesiredState: pool %q request: %v (skipping)\n", qualifiedName, err) //nolint:errcheck
 			continue
@@ -1170,15 +1326,16 @@ func selectOrCreatePoolSessionBead(
 	template string,
 	preferred *beads.Bead,
 	used map[string]bool,
+	reuseRunning bool,
 ) (beads.Bead, error) {
 	cfgAgent := findAgentByTemplate(&config.City{Agents: bp.agents}, template)
 	// Resume tier: reuse the session that has in-progress work assigned.
 	if preferred != nil && preferred.ID != "" && !used[preferred.ID] {
 		return *preferred, nil
 	}
-	// Reuse an existing active/creating session bead. Skip drained, closed,
-	// and asleep — asleep ephemerals are not restarted; a fresh session is
-	// created instead. The reconciler closes orphaned asleep beads.
+	// Reuse an existing creating or running session bead for new demand. A
+	// just-started workflow lane must get a chance to run its startup hook and
+	// claim or drain before another empty worker is spawned for the same demand.
 	for _, bead := range bp.sessionBeads.Open() {
 		if bead.Status == "closed" {
 			continue
@@ -1186,8 +1343,18 @@ func selectOrCreatePoolSessionBead(
 		if isDrainedSessionBead(bead) {
 			continue
 		}
-		if bead.Metadata["state"] == "asleep" {
+		state := strings.TrimSpace(bead.Metadata["state"])
+		if state == "asleep" {
 			continue
+		}
+		if state == "active" || state == "awake" {
+			if !reuseRunning {
+				continue
+			}
+		} else if state != "creating" {
+			if !reuseRunning {
+				continue
+			}
 		}
 		if isManualSessionBeadForAgent(bead, cfgAgent) {
 			continue

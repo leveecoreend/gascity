@@ -752,6 +752,62 @@ func TestWatchConfigDirs_DetectsFileChangeAndSetsDirty(t *testing.T) {
 	}
 }
 
+func TestWatchConfigDirs_IgnoresRuntimeOutputInRecursivePack(t *testing.T) {
+	old := debounceDelay
+	debounceDelay = 5 * time.Millisecond
+	t.Cleanup(func() { debounceDelay = old })
+
+	dir := t.TempDir()
+	packDir := filepath.Join(dir, "packs", "randy")
+	stateDir := filepath.Join(packDir, "state", "triage")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(state): %v", err)
+	}
+	promptPath := filepath.Join(packDir, "prompts", "agent.md")
+	if err := os.MkdirAll(filepath.Dir(promptPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(prompts): %v", err)
+	}
+	if err := os.WriteFile(promptPath, []byte("prompt\n"), 0o644); err != nil {
+		t.Fatalf("seed prompt: %v", err)
+	}
+
+	var dirty atomic.Bool
+	pokeCh := make(chan struct{}, 4)
+	var stderr bytes.Buffer
+	cleanup := watchConfigTargets([]config.WatchTarget{{Path: packDir, Recursive: true}}, &dirty, pokeCh, &stderr)
+	defer cleanup()
+
+	select {
+	case <-pokeCh:
+	default:
+	}
+	dirty.Store(false)
+
+	if err := os.WriteFile(filepath.Join(stateDir, "audit.json"), []byte(`{"status":"running"}`), 0o644); err != nil {
+		t.Fatalf("write runtime state: %v", err)
+	}
+	select {
+	case <-pokeCh:
+		t.Fatalf("unexpected watcher poke after runtime state write; stderr=%q", stderr.String())
+	case <-time.After(250 * time.Millisecond):
+	}
+	if dirty.Load() {
+		t.Fatalf("dirty flag set after runtime state write; stderr=%q", stderr.String())
+	}
+
+	if err := os.WriteFile(promptPath, []byte("prompt v2\n"), 0o644); err != nil {
+		t.Fatalf("rewrite prompt: %v", err)
+	}
+	select {
+	case <-pokeCh:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for watcher poke after prompt rewrite; stderr=%q", stderr.String())
+	}
+	if !dirty.Load() {
+		t.Fatalf("dirty flag not set after prompt rewrite; stderr=%q", stderr.String())
+	}
+}
+
 func TestWatchConfigDirs_FileSeedStillWatchesFile(t *testing.T) {
 	old := debounceDelay
 	debounceDelay = 5 * time.Millisecond

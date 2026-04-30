@@ -40,6 +40,16 @@ func TestGCNonTestFilesStayOnWorkerBoundary(t *testing.T) {
 			"session.NewManagerWithCityPath(",
 			"session.NewManagerWithTransportResolverAndCityPath(",
 			"sp.Start(ctx,",
+			"sp.Stop(",
+			"sp.Attach(",
+			"sp.Nudge(",
+			"sp.NudgeNow(",
+			"sp.SendKeys(",
+			"sp.Interrupt(",
+			"sp.WaitForIdle(",
+			"sp.Pending(",
+			"sp.Respond(",
+			".StartResolved(",
 			"setBeadRestartRequested(",
 		} {
 			if strings.Contains(content, needle) {

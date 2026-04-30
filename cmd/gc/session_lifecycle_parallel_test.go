@@ -733,7 +733,154 @@ func TestExecutePlannedStarts_FreshWakeAfterDrainRetainsStartupContext(t *testin
 	}
 }
 
-func TestPrepareStartCandidate_GeneratesMissingSessionKeyBeforeWake(t *testing.T) {
+func TestPrepareStartCandidate_AssignedWorkWakeReplaysStartupPrompt(t *testing.T) {
+	store := beads.NewMemStore()
+	rawOverrides, err := json.Marshal(map[string]string{
+		"initial_message": "Do not replay this on assigned-work wake.",
+	})
+	if err != nil {
+		t.Fatalf("Marshal(template_overrides): %v", err)
+	}
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:worker"},
+		Metadata: map[string]string{
+			"session_name":        "worker-mc-test",
+			"template":            "worker",
+			"state":               "asleep",
+			"session_origin":      "ephemeral",
+			"pool_managed":        boolMetadata(true),
+			"session_key":         "existing-provider-session",
+			"started_config_hash": "previous-start",
+			"template_overrides":  string(rawOverrides),
+			"generation":          "1",
+			"continuation_epoch":  "1",
+			"instance_token":      "test-token",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create(session): %v", err)
+	}
+
+	prepared, err := prepareStartCandidate(startCandidate{
+		session:    &session,
+		wakeReason: "assigned-work",
+		tp: TemplateParams{
+			Command:      "codex",
+			SessionName:  "worker-mc-test",
+			TemplateName: "worker",
+			Prompt:       "BASE CLAIM PROMPT",
+			Hints: agent.StartupHints{
+				Nudge: "Check assigned work and act.",
+			},
+			ResolvedProvider: &config.ResolvedProvider{
+				Name:       "codex",
+				Command:    "codex",
+				PromptMode: "arg",
+			},
+		},
+		order: 0,
+	}, &config.City{}, store, &clock.Fake{Time: time.Date(2026, 4, 29, 19, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("prepareStartCandidate: %v", err)
+	}
+
+	if prepared.cfg.PromptSuffix == "" {
+		t.Fatal("PromptSuffix should be present for assigned-work wake of an ephemeral pool session")
+	}
+	parts := shellquote.Split(prepared.cfg.PromptSuffix)
+	if len(parts) != 1 {
+		t.Fatalf("PromptSuffix parsed parts = %#v, want single prompt payload", parts)
+	}
+	if got := parts[0]; got != "BASE CLAIM PROMPT" {
+		t.Fatalf("prompt payload = %q, want base startup prompt only", got)
+	}
+	if strings.Contains(parts[0], "Do not replay this") || strings.Contains(parts[0], "User message:") {
+		t.Fatalf("prompt payload replayed initial_message on assigned-work wake: %q", parts[0])
+	}
+	if got := prepared.cfg.Env[startupPromptDeliveredEnv]; got != "1" {
+		t.Fatalf("%s = %q, want 1", startupPromptDeliveredEnv, got)
+	}
+	if got := prepared.cfg.Nudge; got != "Check assigned work and act." {
+		t.Fatalf("Nudge = %q, want configured nudge preserved", got)
+	}
+	stored, err := store.Get(session.ID)
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if got := stored.Metadata["session_key"]; got != "existing-provider-session" {
+		t.Fatalf("stored session_key = %q, want preserved for assigned-work resume", got)
+	}
+	if got := stored.Metadata["started_config_hash"]; got != "previous-start" {
+		t.Fatalf("started_config_hash = %q, want assigned-work wake to preserve non-fresh start history", got)
+	}
+}
+
+func TestPrepareStartCandidate_NonAssignedResumeStripsStartupPrompt(t *testing.T) {
+	store := beads.NewMemStore()
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:worker"},
+		Metadata: map[string]string{
+			"session_name":        "worker-mc-test",
+			"template":            "worker",
+			"state":               "asleep",
+			"session_origin":      "ephemeral",
+			"pool_managed":        boolMetadata(true),
+			"session_key":         "existing-provider-session",
+			"started_config_hash": "previous-start",
+			"generation":          "1",
+			"continuation_epoch":  "1",
+			"instance_token":      "test-token",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create(session): %v", err)
+	}
+
+	prepared, err := prepareStartCandidate(startCandidate{
+		session: &session,
+		tp: TemplateParams{
+			Command:      "codex",
+			SessionName:  "worker-mc-test",
+			TemplateName: "worker",
+			Prompt:       "BASE CLAIM PROMPT",
+			Hints: agent.StartupHints{
+				Nudge: "Check assigned work and act.",
+			},
+			ResolvedProvider: &config.ResolvedProvider{
+				Name:       "codex",
+				Command:    "codex",
+				PromptMode: "arg",
+			},
+		},
+		order: 0,
+	}, &config.City{}, store, &clock.Fake{Time: time.Date(2026, 4, 29, 19, 0, 0, 0, time.UTC)})
+	if err != nil {
+		t.Fatalf("prepareStartCandidate: %v", err)
+	}
+
+	if prepared.cfg.PromptSuffix != "" {
+		t.Fatalf("PromptSuffix = %q, want stripped for ordinary resume", prepared.cfg.PromptSuffix)
+	}
+	if got := prepared.cfg.Env[startupPromptDeliveredEnv]; got != "" {
+		t.Fatalf("%s = %q, want unset for ordinary resume", startupPromptDeliveredEnv, got)
+	}
+	if got := prepared.cfg.Nudge; got != "Check assigned work and act." {
+		t.Fatalf("Nudge = %q, want configured nudge preserved", got)
+	}
+	stored, err := store.Get(session.ID)
+	if err != nil {
+		t.Fatalf("store.Get: %v", err)
+	}
+	if got := stored.Metadata["session_key"]; got != "existing-provider-session" {
+		t.Fatalf("stored session_key = %q, want preserved for ordinary resume", got)
+	}
+}
+
+func TestPrepareStartCandidate_DefersMissingSessionKeyToWorkerStart(t *testing.T) {
 	store := beads.NewMemStore()
 	session, err := store.Create(beads.Bead{
 		Title:  "wendy",
@@ -769,19 +916,19 @@ func TestPrepareStartCandidate_GeneratesMissingSessionKeyBeforeWake(t *testing.T
 	}
 
 	sessionKey := session.Metadata["session_key"]
-	if sessionKey == "" {
-		t.Fatal("session_key should be generated before wake")
+	if sessionKey != "" {
+		t.Fatalf("session_key = %q, want preparation to leave key generation to worker start", sessionKey)
 	}
-	if !strings.Contains(prepared.cfg.Command, "--session-id "+sessionKey) {
-		t.Fatalf("prepared.cfg.Command = %q, want --session-id %s", prepared.cfg.Command, sessionKey)
+	if strings.Contains(prepared.cfg.Command, "--session-id") {
+		t.Fatalf("prepared.cfg.Command = %q, want unresolved base command", prepared.cfg.Command)
 	}
 
 	stored, err := store.Get(session.ID)
 	if err != nil {
 		t.Fatalf("store.Get: %v", err)
 	}
-	if stored.Metadata["session_key"] != sessionKey {
-		t.Fatalf("stored session_key = %q, want %q", stored.Metadata["session_key"], sessionKey)
+	if stored.Metadata["session_key"] != "" {
+		t.Fatalf("stored session_key = %q, want empty before worker start", stored.Metadata["session_key"])
 	}
 }
 
@@ -1348,6 +1495,119 @@ func TestExecutePlannedStartsTraced_AsyncLimiterDeferredStartDoesNotRunAfterCanc
 	}
 }
 
+func TestReconcileSessionBeads_AsyncExistingWakeLeasePreventsDuplicateStart(t *testing.T) {
+	store := beads.NewMemStore()
+	clk := &clock.Fake{Time: time.Date(2026, 4, 26, 12, 1, 23, 0, time.UTC)}
+	sp := newGatedStartProvider()
+	dt := newDrainTracker()
+	cfg := &config.City{
+		Workspace:     config.Workspace{Name: "test-city"},
+		Agents:        []config.Agent{{Name: "worker"}},
+		NamedSessions: []config.NamedSession{{Template: "worker", Mode: "always"}},
+	}
+	sessionName := config.NamedSessionRuntimeName(cfg.Workspace.Name, cfg.Workspace, "worker")
+	t.Cleanup(func() { sp.release(sessionName) })
+	tp := TemplateParams{
+		Command:                 "worker",
+		SessionName:             sessionName,
+		TemplateName:            "worker",
+		ConfiguredNamedIdentity: "worker",
+		ConfiguredNamedMode:     "always",
+	}
+	desired := map[string]TemplateParams{sessionName: tp}
+	session, err := store.Create(beads.Bead{
+		ID:     "gc-worker",
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name":               sessionName,
+			"template":                   "worker",
+			"generation":                 "1",
+			"continuation_epoch":         "1",
+			"instance_token":             "tok-worker",
+			"state":                      "asleep",
+			namedSessionMetadataKey:      "true",
+			namedSessionIdentityMetadata: "worker",
+			namedSessionModeMetadata:     "always",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := reconcileSessionBeadsTraced(
+		context.Background(),
+		"",
+		[]beads.Bead{session},
+		desired,
+		configuredSessionNames(cfg, "", store),
+		cfg,
+		sp,
+		store,
+		nil,
+		nil,
+		nil,
+		nil,
+		dt,
+		map[string]int{"worker": 1},
+		false,
+		nil,
+		"test-city",
+		nil,
+		clk,
+		events.Discard,
+		time.Minute,
+		time.Minute,
+		ioDiscard{},
+		ioDiscard{},
+		nil,
+		withAsyncStartExecution(),
+	); got != 1 {
+		t.Fatalf("first reconcile woken = %d, want 1", got)
+	}
+	sp.waitForStarts(t, 1)
+	inFlight, err := store.Get(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inFlight.Metadata["start_in_flight"] != "true" {
+		t.Fatalf("start_in_flight = %q, want true", inFlight.Metadata["start_in_flight"])
+	}
+
+	if got := reconcileSessionBeadsTraced(
+		context.Background(),
+		"",
+		[]beads.Bead{inFlight},
+		desired,
+		configuredSessionNames(cfg, "", store),
+		cfg,
+		sp,
+		store,
+		nil,
+		nil,
+		nil,
+		nil,
+		dt,
+		map[string]int{"worker": 1},
+		false,
+		nil,
+		"test-city",
+		nil,
+		clk,
+		events.Discard,
+		time.Minute,
+		time.Minute,
+		ioDiscard{},
+		ioDiscard{},
+		nil,
+		withAsyncStartExecution(),
+	); got != 0 {
+		t.Fatalf("second reconcile woken = %d, want 0 while wake start is still in flight", got)
+	}
+	sp.ensureNoFurtherStart(t, 100*time.Millisecond)
+}
+
 func TestCityRuntimeShutdownWaitsForTrackedAsyncStartsBeforeStopSnapshot(t *testing.T) {
 	store := beads.NewMemStore()
 	clk := &clock.Fake{Time: time.Date(2026, 4, 26, 12, 1, 25, 0, time.UTC)}
@@ -1437,7 +1697,7 @@ func TestCityRuntimeShutdownWaitsForTrackedAsyncStartsBeforeStopSnapshot(t *test
 	}
 }
 
-func TestExecutePlannedStartsTraced_AsyncPrepareFailureClearsPreWakeLease(t *testing.T) {
+func TestExecutePlannedStartsTraced_AsyncStartFailureClearsPreWakeLease(t *testing.T) {
 	store := &failSetMetadataStore{MemStore: beads.NewMemStore(), failKey: "session_key"}
 	clk := &clock.Fake{Time: time.Date(2026, 4, 26, 12, 1, 27, 0, time.UTC)}
 	session, err := store.Create(beads.Bead{
@@ -1482,8 +1742,8 @@ func TestExecutePlannedStartsTraced_AsyncPrepareFailureClearsPreWakeLease(t *tes
 		ioDiscard{},
 		nil,
 		withAsyncStartExecution(),
-	); got != 0 {
-		t.Fatalf("woken = %d, want 0 when async preparation fails after preWake", got)
+	); got != 1 {
+		t.Fatalf("woken = %d, want 1 when async start is enqueued before worker start failure", got)
 	}
 	sp.ensureNoFurtherStart(t, 100*time.Millisecond)
 	updated, err := store.Get(session.ID)
@@ -1914,6 +2174,79 @@ func TestCommitAsyncStartResult_IgnoresStaleSessionSnapshot(t *testing.T) {
 	}
 	if got := updated.Metadata["instance_token"]; got != "tok-new" {
 		t.Fatalf("instance_token = %q, want tok-new", got)
+	}
+}
+
+func TestCommitAsyncStartResult_AcceptsWorkerBoundaryPendingCreateCommit(t *testing.T) {
+	store := beads.NewMemStore()
+	clk := &clock.Fake{Time: time.Date(2026, 4, 26, 12, 2, 15, 0, time.UTC)}
+	session, err := store.Create(beads.Bead{
+		ID:     "gc-worker",
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: creatingMeta(map[string]string{
+			"session_name":         "worker",
+			"template":             "worker",
+			"generation":           "2",
+			"continuation_epoch":   "1",
+			"instance_token":       "tok-worker",
+			"pending_create_claim": "true",
+			"start_in_flight":      "true",
+			"last_woke_at":         clk.Now().Format(time.RFC3339),
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetMetadataBatch(session.ID, map[string]string{
+		"state":                string(sessionpkg.StateActive),
+		"state_reason":         "creation_complete",
+		"creation_complete_at": clk.Now().Add(time.Second).Format(time.RFC3339),
+		"pending_create_claim": "",
+		"start_in_flight":      "",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := startResult{
+		prepared: preparedStart{
+			candidate: startCandidate{
+				session: &session,
+				tp: TemplateParams{
+					Command:      "worker",
+					SessionName:  "worker",
+					TemplateName: "worker",
+				},
+			},
+			coreHash: "core-hash",
+			liveHash: "live-hash",
+		},
+		outcome:  "success",
+		started:  clk.Now(),
+		finished: clk.Now(),
+	}
+
+	if !commitAsyncStartResultWithContext(context.Background(), result, nil, store, clk, events.Discard, 0, ioDiscard{}, ioDiscard{}, nil) {
+		t.Fatal("worker-boundary commit should still accept the async start result")
+	}
+	updated, err := store.Get(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := updated.Metadata["state"]; got != string(sessionpkg.StateActive) {
+		t.Fatalf("state = %q, want active", got)
+	}
+	if got := updated.Metadata["pending_create_claim"]; got != "" {
+		t.Fatalf("pending_create_claim = %q, want cleared", got)
+	}
+	if got := updated.Metadata["start_in_flight"]; got != "" {
+		t.Fatalf("start_in_flight = %q, want cleared", got)
+	}
+	if got := updated.Metadata["started_config_hash"]; got != "core-hash" {
+		t.Fatalf("started_config_hash = %q, want core-hash", got)
+	}
+	if got := updated.Metadata["started_live_hash"]; got != "live-hash" {
+		t.Fatalf("started_live_hash = %q, want live-hash", got)
 	}
 }
 
@@ -2674,7 +3007,7 @@ func TestRefreshConfiguredNamedStartCandidateAddsCurrentSkillFingerprint(t *test
 }
 
 func TestExecutePlannedStartsClearsLegacyDrainAckAfterProviderStartBeforeMetadataRetry(t *testing.T) {
-	store := &failNthMetadataBatchStore{MemStore: beads.NewMemStore(), failOn: 2}
+	store := &failNthMetadataBatchStore{MemStore: beads.NewMemStore(), failOn: 3}
 	sp := runtime.NewFake()
 	clk := &clock.Fake{Time: time.Date(2026, 3, 18, 12, 0, 0, 0, time.UTC)}
 	tp := TemplateParams{
@@ -3583,14 +3916,33 @@ func TestInterruptTargetsBounded_StopsPoolManagedSessions(t *testing.T) {
 }
 
 func TestExecutePreparedStartWave_PanicIncludesStackTrace(t *testing.T) {
+	store := beads.NewMemStore()
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name": "worker",
+			"template":     "worker",
+			"state":        "creating",
+			"command":      "panic-provider",
+			"work_dir":     t.TempDir(),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	results := executePreparedStartWave(
 		context.Background(),
 		[]preparedStart{{
-			candidate: startCandidate{session: &beads.Bead{Metadata: map[string]string{"session_name": "worker"}}},
-			cfg:       runtime.Config{Command: "panic-provider"},
+			candidate: startCandidate{
+				session: &session,
+				tp:      TemplateParams{TemplateName: "worker"},
+			},
+			cfg: runtime.Config{Command: "panic-provider", WorkDir: session.Metadata["work_dir"]},
 		}},
 		&panicStartProvider{Fake: runtime.NewFake()},
-		nil,
+		store,
 		time.Second,
 	)
 	if len(results) != 1 {
@@ -3830,16 +4182,28 @@ func (p *zombieAfterStartProvider) Start(ctx context.Context, name string, cfg r
 func TestExecutePreparedStartWave_StaleSessionKeyDetected(t *testing.T) {
 	skipSlowCmdGCTest(t, "waits through stale session-key detection; run make test-cmd-gc-process for full coverage")
 	sp := &dieAfterStartProvider{Fake: runtime.NewFake()}
+	store := beads.NewMemStore()
+	session, err := store.Create(beads.Bead{
+		ID:     "gc-99",
+		Title:  "test-agent",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name": "test-agent",
+			"session_key":  "stale-key-abc",
+			"resume_flag":  "--resume",
+			"template":     "worker",
+			"state":        "creating",
+			"command":      "claude",
+			"work_dir":     t.TempDir(),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	item := preparedStart{
 		candidate: startCandidate{
-			session: &beads.Bead{
-				ID: "gc-99",
-				Metadata: map[string]string{
-					"session_name": "test-agent",
-					"session_key":  "stale-key-abc",
-					"template":     "worker",
-				},
-			},
+			session: &session,
 			tp: TemplateParams{
 				Command:      "claude --resume stale-key-abc",
 				SessionName:  "test-agent",
@@ -3853,7 +4217,7 @@ func TestExecutePreparedStartWave_StaleSessionKeyDetected(t *testing.T) {
 		context.Background(),
 		[]preparedStart{item},
 		sp,
-		nil,
+		store,
 		10*time.Second,
 	)
 
@@ -3870,17 +4234,30 @@ func TestExecutePreparedStartWave_StaleSessionKeyDetected(t *testing.T) {
 }
 
 func TestExecutePreparedStartWave_StaleSessionKeyDetectedWhenPaneSurvives(t *testing.T) {
+	skipSlowCmdGCTest(t, "waits through worker and reconciler stale session-key detection")
 	sp := &zombieAfterStartProvider{Fake: runtime.NewFake()}
+	store := beads.NewMemStore()
+	session, err := store.Create(beads.Bead{
+		ID:     "gc-99",
+		Title:  "test-agent",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name": "test-agent",
+			"session_key":  "stale-key-abc",
+			"resume_flag":  "--resume",
+			"template":     "worker",
+			"state":        "creating",
+			"command":      "claude",
+			"work_dir":     t.TempDir(),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	item := preparedStart{
 		candidate: startCandidate{
-			session: &beads.Bead{
-				ID: "gc-99",
-				Metadata: map[string]string{
-					"session_name": "test-agent",
-					"session_key":  "stale-key-abc",
-					"template":     "worker",
-				},
-			},
+			session: &session,
 			tp: TemplateParams{
 				Command:      "claude --resume stale-key-abc",
 				SessionName:  "test-agent",
@@ -3897,7 +4274,7 @@ func TestExecutePreparedStartWave_StaleSessionKeyDetectedWhenPaneSurvives(t *tes
 		context.Background(),
 		[]preparedStart{item},
 		sp,
-		nil,
+		store,
 		10*time.Second,
 	)
 
@@ -3917,15 +4294,26 @@ func TestExecutePreparedStartWave_NoStaleCheckWithoutSessionKey(t *testing.T) {
 	// Session without a session_key should not trigger stale detection,
 	// even if the session dies after start.
 	sp := &dieAfterStartProvider{Fake: runtime.NewFake()}
+	store := beads.NewMemStore()
+	session, err := store.Create(beads.Bead{
+		ID:     "gc-99",
+		Title:  "test-agent",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name": "test-agent",
+			"template":     "worker",
+			"state":        "creating",
+			"command":      "claude",
+			"work_dir":     t.TempDir(),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	item := preparedStart{
 		candidate: startCandidate{
-			session: &beads.Bead{
-				ID: "gc-99",
-				Metadata: map[string]string{
-					"session_name": "test-agent",
-					"template":     "worker",
-				},
-			},
+			session: &session,
 			tp: TemplateParams{
 				Command:      "claude",
 				SessionName:  "test-agent",
@@ -3939,7 +4327,7 @@ func TestExecutePreparedStartWave_NoStaleCheckWithoutSessionKey(t *testing.T) {
 		context.Background(),
 		[]preparedStart{item},
 		sp,
-		nil,
+		store,
 		10*time.Second,
 	)
 

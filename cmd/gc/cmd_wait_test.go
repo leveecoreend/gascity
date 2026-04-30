@@ -437,7 +437,7 @@ func TestPrepareWaitWakeState_FinalizesFromNudge(t *testing.T) {
 	}
 }
 
-func TestPrepareWaitWakeState_SkipsMissingOpenSessionWithoutBackingGet(t *testing.T) {
+func TestPrepareWaitWakeState_UsesTargetedLookupForMissingSessionEpoch(t *testing.T) {
 	base := beads.NewMemStore()
 	store := &waitGetSpyStore{Store: base}
 	sessionBead, err := store.Create(beads.Bead{
@@ -456,7 +456,7 @@ func TestPrepareWaitWakeState_SkipsMissingOpenSessionWithoutBackingGet(t *testin
 	if err := store.Close(sessionBead.ID); err != nil {
 		t.Fatalf("close session bead: %v", err)
 	}
-	if _, err := store.Create(beads.Bead{
+	waitBead, err := store.Create(beads.Bead{
 		Type:   waitBeadType,
 		Labels: []string{waitBeadLabel, "session:" + sessionBead.ID},
 		Metadata: map[string]string{
@@ -465,6 +465,63 @@ func TestPrepareWaitWakeState_SkipsMissingOpenSessionWithoutBackingGet(t *testin
 			"kind":             "deps",
 			"state":            waitStateReady,
 			"registered_epoch": "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create wait bead: %v", err)
+	}
+
+	readyWaitSet, err := prepareWaitWakeState(store, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("prepareWaitWakeState: %v", err)
+	}
+	if len(readyWaitSet) != 0 {
+		t.Fatalf("readyWaitSet = %#v, want empty for non-open session", readyWaitSet)
+	}
+	if len(store.getIDs) < 1 || store.getIDs[0] != sessionBead.ID {
+		t.Fatalf("Get IDs = %v, want targeted lookup for %s", store.getIDs, sessionBead.ID)
+	}
+	updated, err := store.Get(waitBead.ID)
+	if err != nil {
+		t.Fatalf("store.Get(wait): %v", err)
+	}
+	if got := updated.Metadata["state"]; got != waitStateCanceled {
+		t.Fatalf("wait state = %q, want %q", got, waitStateCanceled)
+	}
+	if got := updated.Metadata["last_error"]; got != "session-closed" {
+		t.Fatalf("last_error = %q, want session-closed", got)
+	}
+	if updated.Status != "closed" {
+		t.Fatalf("wait status = %q, want closed", updated.Status)
+	}
+}
+
+func TestPrepareWaitWakeState_SkipsMissingOpenSessionWithoutEpochLookup(t *testing.T) {
+	base := beads.NewMemStore()
+	store := &waitGetSpyStore{Store: base}
+	sessionBead, err := store.Create(beads.Bead{
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name": "worker",
+			"agent_name":   "worker",
+			"state":        string(sessionpkg.StateActive),
+		},
+	})
+	if err != nil {
+		t.Fatalf("create session bead: %v", err)
+	}
+	if err := store.Close(sessionBead.ID); err != nil {
+		t.Fatalf("close session bead: %v", err)
+	}
+	if _, err := store.Create(beads.Bead{
+		Type:   waitBeadType,
+		Labels: []string{waitBeadLabel, "session:" + sessionBead.ID},
+		Metadata: map[string]string{
+			"session_id":   sessionBead.ID,
+			"session_name": "worker",
+			"kind":         "deps",
+			"state":        waitStateReady,
 		},
 	}); err != nil {
 		t.Fatalf("create wait bead: %v", err)
@@ -477,10 +534,8 @@ func TestPrepareWaitWakeState_SkipsMissingOpenSessionWithoutBackingGet(t *testin
 	if len(readyWaitSet) != 0 {
 		t.Fatalf("readyWaitSet = %#v, want empty for non-open session", readyWaitSet)
 	}
-	for _, id := range store.getIDs {
-		if id == sessionBead.ID {
-			t.Fatalf("prepare used Get for non-open session %s; getIDs=%v", sessionBead.ID, store.getIDs)
-		}
+	if len(store.getIDs) != 0 {
+		t.Fatalf("Get IDs = %v, want no closed-session lookup without an epoch", store.getIDs)
 	}
 }
 

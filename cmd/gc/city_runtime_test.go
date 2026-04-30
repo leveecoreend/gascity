@@ -132,6 +132,68 @@ func TestCityRuntimeRequestDeferredDrainFollowUpTick_PokesOnce(t *testing.T) {
 	}
 }
 
+type sessionLabelCountingStore struct {
+	beads.Store
+	sessionLabelLists int
+}
+
+func (s *sessionLabelCountingStore) List(query beads.ListQuery) ([]beads.Bead, error) {
+	if query.Label == sessionBeadLabel {
+		s.sessionLabelLists++
+	}
+	return s.Store.List(query)
+}
+
+func TestCityRuntimeBeadReconcileTick_ReusesSessionSnapshotForWaitDispatch(t *testing.T) {
+	base := beads.NewMemStore()
+	store := &sessionLabelCountingStore{Store: base}
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Status: "open",
+		Labels: []string{sessionBeadLabel, "agent:worker"},
+		Metadata: map[string]string{
+			"session_name":       "worker-mc-live",
+			"template":           "worker",
+			"agent_name":         "worker",
+			"state":              "awake",
+			"continuation_epoch": "1",
+			"generation":         "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create session bead: %v", err)
+	}
+
+	cr := &CityRuntime{
+		cityPath:            t.TempDir(),
+		cityName:            "maintainer-city",
+		cfg:                 &config.City{Agents: []config.Agent{{Name: "worker"}}},
+		sp:                  runtime.NewFake(),
+		standaloneCityStore: store,
+		sessionDrains:       newDrainTracker(),
+		rec:                 events.Discard,
+		stdout:              io.Discard,
+		stderr:              io.Discard,
+	}
+	result := DesiredStateResult{
+		State: map[string]TemplateParams{
+			"worker-mc-live": {
+				TemplateName: "worker",
+				SessionName:  "worker-mc-live",
+			},
+		},
+		ScaleCheckCounts:  map[string]int{"worker": 0},
+		PoolDesiredCounts: map[string]int{"worker": 0},
+	}
+
+	cr.beadReconcileTick(context.Background(), result, newSessionBeadSnapshot([]beads.Bead{session}), nil)
+
+	if store.sessionLabelLists != 0 {
+		t.Fatalf("session label list calls = %d, want 0 after caller supplied snapshot", store.sessionLabelLists)
+	}
+}
+
 func TestCityRuntimeShutdownMarksCityStopSleepReason(t *testing.T) {
 	store := beads.NewMemStore()
 	session, err := store.Create(beads.Bead{
@@ -234,12 +296,109 @@ func TestCityRuntimeDemandSnapshotReusesStablePatrolDemand(t *testing.T) {
 	}
 }
 
-type recordingOrderDispatcher struct {
-	called atomic.Bool
+func TestCityRuntimeDemandSnapshotReusesCachedStoreFingerprintWithoutEventProvider(t *testing.T) {
+	backing := beads.NewMemStore()
+	cache := beads.NewCachingStoreForTest(backing, nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+
+	buildCalls := 0
+	cr := &CityRuntime{
+		cityName: "test-city",
+		cityPath: t.TempDir(),
+		cfg: &config.City{
+			Workspace: config.Workspace{Name: "test-city"},
+		},
+		cs: &controllerState{
+			cityName:      "test-city",
+			cityBeadStore: cache,
+		},
+		stderr: io.Discard,
+	}
+	cr.buildFnWithSessionBeads = func(*config.City, runtime.Provider, beads.Store, map[string]beads.Store, *sessionBeadSnapshot, *sessionReconcilerTraceCycle) DesiredStateResult {
+		buildCalls++
+		return DesiredStateResult{State: map[string]TemplateParams{}}
+	}
+
+	sessionBeads := newSessionBeadSnapshot(nil)
+	_ = cr.loadDemandSnapshot(sessionBeads, nil, "patrol", false)
+	cr.demandSnapshot.createdAt = time.Now().Add(-2 * runtimeDemandSnapshotMaxAge)
+	_ = cr.loadDemandSnapshot(sessionBeads, nil, "patrol", false)
+	if buildCalls != 1 {
+		t.Fatalf("buildDesiredState call count = %d, want stable cached-store patrol reuse", buildCalls)
+	}
+	_ = cr.loadDemandSnapshot(sessionBeads, nil, "poke", false)
+	_ = cr.loadDemandSnapshot(sessionBeads, nil, "config_watch", false)
+	if buildCalls != 1 {
+		t.Fatalf("buildDesiredState call count after non-patrol cache hits = %d, want 1", buildCalls)
+	}
+	_ = cr.loadDemandSnapshot(sessionBeads, nil, "config_watch", true)
+	if buildCalls != 2 {
+		t.Fatalf("buildDesiredState call count after applied config change = %d, want 2", buildCalls)
+	}
+
+	work, err := cache.Create(beads.Bead{Title: "new work"})
+	if err != nil {
+		t.Fatalf("Create work: %v", err)
+	}
+	_ = work
+	_ = cr.loadDemandSnapshot(sessionBeads, nil, "patrol", false)
+	if buildCalls != 3 {
+		t.Fatalf("buildDesiredState call count = %d, want refresh after cached store mutation", buildCalls)
+	}
 }
 
-func (r *recordingOrderDispatcher) dispatch(context.Context, string, time.Time) {
+func TestCityRuntimeDemandSnapshotRefreshesAfterCachedWorkMutation(t *testing.T) {
+	backing := beads.NewMemStore()
+	work, err := backing.Create(beads.Bead{Title: "ready work"})
+	if err != nil {
+		t.Fatalf("Create work: %v", err)
+	}
+	cache := beads.NewCachingStoreForTest(backing, nil)
+	if err := cache.PrimeActive(); err != nil {
+		t.Fatalf("PrimeActive: %v", err)
+	}
+
+	buildCalls := 0
+	cr := &CityRuntime{
+		cityName: "test-city",
+		cityPath: t.TempDir(),
+		cfg: &config.City{
+			Workspace: config.Workspace{Name: "test-city"},
+		},
+		cs: &controllerState{
+			cityName:      "test-city",
+			cityBeadStore: cache,
+			eventProv:     events.NewFake(),
+		},
+		stderr: io.Discard,
+	}
+	cr.buildFnWithSessionBeads = func(*config.City, runtime.Provider, beads.Store, map[string]beads.Store, *sessionBeadSnapshot, *sessionReconcilerTraceCycle) DesiredStateResult {
+		buildCalls++
+		return DesiredStateResult{State: map[string]TemplateParams{}}
+	}
+
+	sessionBeads := newSessionBeadSnapshot(nil)
+	_ = cr.loadDemandSnapshot(sessionBeads, nil, "patrol", false)
+	if err := cache.SetMetadata(work.ID, "assignee", "worker-1"); err != nil {
+		t.Fatalf("SetMetadata: %v", err)
+	}
+	_ = cr.loadDemandSnapshot(sessionBeads, nil, "patrol", false)
+
+	if buildCalls != 2 {
+		t.Fatalf("buildDesiredState call count = %d, want 2 after cached work mutation", buildCalls)
+	}
+}
+
+type recordingOrderDispatcher struct {
+	called atomic.Bool
+	busy   bool
+}
+
+func (r *recordingOrderDispatcher) dispatch(context.Context, string, time.Time) bool {
 	r.called.Store(true)
+	return r.busy
 }
 
 func TestCityRuntimeTickDispatchesOrdersBeforeDemandSnapshot(t *testing.T) {
@@ -272,6 +431,34 @@ func TestCityRuntimeTickDispatchesOrdersBeforeDemandSnapshot(t *testing.T) {
 	}
 }
 
+func TestCityRuntimeTickSkipsDemandWhileOrderDispatchBusy(t *testing.T) {
+	store := beads.NewMemStore()
+	od := &recordingOrderDispatcher{busy: true}
+	cr := &CityRuntime{
+		cityName:            "test-city",
+		cityPath:            t.TempDir(),
+		cfg:                 &config.City{Workspace: config.Workspace{Name: "test-city"}},
+		sp:                  runtime.NewFake(),
+		standaloneCityStore: store,
+		od:                  od,
+		stdout:              io.Discard,
+		stderr:              io.Discard,
+	}
+	cr.buildFnWithSessionBeads = func(*config.City, runtime.Provider, beads.Store, map[string]beads.Store, *sessionBeadSnapshot, *sessionReconcilerTraceCycle) DesiredStateResult {
+		t.Fatal("demand snapshot build should wait until order dispatch finishes")
+		return DesiredStateResult{}
+	}
+
+	var dirty atomic.Bool
+	var lastProviderName string
+	var prevPoolRunning map[string]bool
+	cr.tick(context.Background(), &dirty, &lastProviderName, cr.cityPath, &prevPoolRunning, "patrol")
+
+	if !od.called.Load() {
+		t.Fatal("order dispatcher was not called")
+	}
+}
+
 func TestCityRuntimeDemandSnapshotRefreshesWhenDemandCommandsAreCustom(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -282,13 +469,6 @@ func TestCityRuntimeDemandSnapshotRefreshesWhenDemandCommandsAreCustom(t *testin
 			agent: config.Agent{
 				Name:       "worker",
 				ScaleCheck: "test -f external-queue && echo 1 || echo 0",
-			},
-		},
-		{
-			name: "custom work_query",
-			agent: config.Agent{
-				Name:      "worker",
-				WorkQuery: "gh issue list --json number --limit 1",
 			},
 		},
 	}
@@ -321,6 +501,37 @@ func TestCityRuntimeDemandSnapshotRefreshesWhenDemandCommandsAreCustom(t *testin
 				t.Fatalf("buildDesiredState call count = %d, want 2 when demand command is not event-backed", buildCalls)
 			}
 		})
+	}
+}
+
+func TestCityRuntimeDemandSnapshotIgnoresCustomWorkQueryForControllerDemand(t *testing.T) {
+	buildCalls := 0
+	cr := &CityRuntime{
+		cityName: "test-city",
+		cityPath: t.TempDir(),
+		cfg: &config.City{
+			Workspace: config.Workspace{Name: "test-city"},
+			Agents: []config.Agent{{
+				Name:      "worker",
+				WorkQuery: "gh issue list --json number --limit 1",
+			}},
+		},
+		cs: &controllerState{
+			eventProv: events.NewFake(),
+		},
+		stderr: io.Discard,
+	}
+	cr.buildFnWithSessionBeads = func(*config.City, runtime.Provider, beads.Store, map[string]beads.Store, *sessionBeadSnapshot, *sessionReconcilerTraceCycle) DesiredStateResult {
+		buildCalls++
+		return DesiredStateResult{State: map[string]TemplateParams{}}
+	}
+
+	sessionBeads := newSessionBeadSnapshot(nil)
+	_ = cr.loadDemandSnapshot(sessionBeads, nil, "patrol", false)
+	_ = cr.loadDemandSnapshot(sessionBeads, nil, "patrol", false)
+
+	if buildCalls != 1 {
+		t.Fatalf("buildDesiredState call count = %d, want cached patrol reuse for custom work_query", buildCalls)
 	}
 }
 
@@ -775,7 +986,7 @@ func TestSweepUndesiredPoolSessionBeads_SweepsCrashedActiveBead(t *testing.T) {
 	}
 }
 
-func TestSweepUndesiredPoolSessionBeads_SkipsPendingCreateClaim(t *testing.T) {
+func TestSweepUndesiredPoolSessionBeads_ClosesPendingCreateClaimWithoutDemand(t *testing.T) {
 	store := beads.NewMemStore()
 	bead, err := store.Create(beads.Bead{
 		Title:  "worker",
@@ -806,30 +1017,27 @@ func TestSweepUndesiredPoolSessionBeads_SkipsPendingCreateClaim(t *testing.T) {
 		runtime.NewFake(),
 		false,
 	)
-	if closed != 0 {
-		t.Fatalf("closed = %d, want 0 — pending_create_claim must be preserved", closed)
+	if closed != 1 {
+		t.Fatalf("closed = %d, want 1 — pending_create_claim without demand must not preserve pool sessions", closed)
 	}
 	got, err := store.Get(bead.ID)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Status == "closed" {
-		t.Fatalf("bead with pending_create_claim was swept closed: %+v", got)
+	if got.Status != "closed" {
+		t.Fatalf("bead with undesired pending_create_claim status = %q, want closed", got.Status)
 	}
 }
 
-// pending_create_claim is an authoritative ownership flag for the lifecycle
-// reconciler (sessionStartRequested in session_reconcile.go). The sweep must
-// honor that contract regardless of age — expiring it here would let the
-// sweep close a bead the reconciler still considers live.
-func TestSweepUndesiredPoolSessionBeads_SkipsStalePendingCreateClaim(t *testing.T) {
+func TestSweepUndesiredPoolSessionBeads_KeepsDesiredPendingCreateClaim(t *testing.T) {
 	store := beads.NewMemStore()
+	sessionName := "worker-bd-stale-claim"
 	bead, err := store.Create(beads.Bead{
 		Title:  "worker",
 		Type:   sessionBeadType,
 		Labels: []string{sessionBeadLabel, "agent:worker"},
 		Metadata: map[string]string{
-			"session_name":         "worker-bd-stale-claim",
+			"session_name":         sessionName,
 			"template":             "worker",
 			"agent_name":           "worker",
 			"pool_slot":            "1",
@@ -844,18 +1052,21 @@ func TestSweepUndesiredPoolSessionBeads_SkipsStalePendingCreateClaim(t *testing.
 	}
 	bead.CreatedAt = time.Now().Add(-2 * time.Minute)
 	sessionBeads := newSessionBeadSnapshot([]beads.Bead{bead})
+	desired := map[string]TemplateParams{
+		sessionName: {TemplateName: "worker", SessionName: sessionName},
+	}
 
 	closed := sweepUndesiredPoolSessionBeads(
 		store,
 		nil,
 		sessionBeads,
-		nil,
+		desired,
 		&config.City{Agents: []config.Agent{{Name: "worker", MinActiveSessions: intPtr(0), MaxActiveSessions: intPtr(2)}}},
 		runtime.NewFake(),
 		false,
 	)
 	if closed != 0 {
-		t.Fatalf("closed = %d, want 0 — pending_create_claim must remain authoritative regardless of age", closed)
+		t.Fatalf("closed = %d, want 0 — desired pending_create_claim must remain open", closed)
 	}
 }
 
@@ -1074,6 +1285,56 @@ func TestCityRuntimeBeadReconcileTick_TransientStoreQueryPartialKeepsRunningPool
 	}
 	if !sp.IsRunning("worker-bd-123") {
 		t.Fatal("recovered tick should keep the worker running")
+	}
+}
+
+func TestCityRuntimeBeadReconcileTick_StoreQueryPartialDoesNotReleaseAssignedWork(t *testing.T) {
+	store := beads.NewMemStore()
+	work, err := store.Create(beads.Bead{
+		ID:       "ga-live",
+		Title:    "live assigned work from partial snapshot",
+		Type:     "task",
+		Status:   "in_progress",
+		Assignee: "worker-session",
+		Metadata: map[string]string{
+			"gc.routed_to": "worker",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create work bead: %v", err)
+	}
+	inProgress := "in_progress"
+	if err := store.Update(work.ID, beads.UpdateOpts{Status: &inProgress}); err != nil {
+		t.Fatalf("mark work in_progress: %v", err)
+	}
+	work.Status = inProgress
+
+	cr := &CityRuntime{
+		cityPath:            t.TempDir(),
+		cityName:            "maintainer-city",
+		cfg:                 &config.City{Agents: []config.Agent{{Name: "worker", MinActiveSessions: intPtr(0), MaxActiveSessions: intPtr(5)}}},
+		sp:                  runtime.NewFake(),
+		standaloneCityStore: store,
+		sessionDrains:       newDrainTracker(),
+		rec:                 events.Discard,
+		stdout:              io.Discard,
+		stderr:              io.Discard,
+	}
+
+	cr.beadReconcileTick(context.Background(), DesiredStateResult{
+		State:              map[string]TemplateParams{},
+		ScaleCheckCounts:   map[string]int{"worker": 0},
+		AssignedWorkBeads:  []beads.Bead{work},
+		AssignedWorkStores: []beads.Store{store},
+		StoreQueryPartial:  true,
+	}, newSessionBeadSnapshot(nil), nil)
+
+	got, err := store.Get(work.ID)
+	if err != nil {
+		t.Fatalf("Get work after partial tick: %v", err)
+	}
+	if got.Status != "in_progress" || got.Assignee != "worker-session" {
+		t.Fatalf("partial assigned-work snapshot released work: status=%q assignee=%q", got.Status, got.Assignee)
 	}
 }
 

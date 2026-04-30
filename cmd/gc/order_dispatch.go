@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
@@ -31,7 +32,7 @@ const labelOrderTracking = "order-tracking"
 // order's dispatch action runs in its own goroutine. The tracking bead
 // is created before the goroutine launches to prevent re-fire on the next tick.
 type orderDispatcher interface {
-	dispatch(ctx context.Context, cityPath string, now time.Time)
+	dispatch(ctx context.Context, cityPath string, now time.Time) bool
 }
 
 // ExecRunner runs a shell command with context, working directory, and
@@ -81,6 +82,7 @@ type memoryOrderDispatcher struct {
 
 	cacheMu      sync.Mutex
 	lastRunCache map[string]time.Time
+	active       atomic.Int32
 }
 
 // buildOrderDispatcher scans formula layers for orders and returns a
@@ -132,13 +134,17 @@ func buildOrderDispatcher(cityPath string, cfg *config.City, rec events.Recorder
 	}
 }
 
-func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, now time.Time) {
+func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, now time.Time) bool {
 	// Skip all order dispatch when the city is suspended.
 	if m.cfg != nil && citySuspended(m.cfg) {
-		return
+		return false
+	}
+	if m.active.Load() > 0 {
+		return true
 	}
 
 	stores := make(map[string]beads.Store)
+	dispatched := false
 
 	for _, a := range m.aa {
 		// Skip orders targeting suspended rigs.
@@ -251,8 +257,14 @@ func (m *memoryOrderDispatcher) dispatch(ctx context.Context, cityPath string, n
 
 		// Fire and forget with timeout.
 		a := a // capture loop variable
-		go m.dispatchOne(ctx, store, target, a, cityPath, trackingBead.ID)
+		dispatched = true
+		m.active.Add(1)
+		go func() {
+			defer m.active.Add(-1)
+			m.dispatchOne(ctx, store, target, a, cityPath, trackingBead.ID)
+		}()
 	}
+	return dispatched
 }
 
 func (m *memoryOrderDispatcher) legacyCityStoreForTarget(cityPath string, target execStoreTarget, stores map[string]beads.Store) (beads.Store, bool) {

@@ -150,7 +150,8 @@ func pendingCreateSessionStillLeased(session beads.Bead, cfg *config.City, clk c
 }
 
 func pendingCreateStartInFlight(session beads.Bead, clk clock.Clock, startupTimeout time.Duration) bool {
-	if strings.TrimSpace(session.Metadata["pending_create_claim"]) != "true" {
+	if strings.TrimSpace(session.Metadata["pending_create_claim"]) != "true" &&
+		strings.TrimSpace(session.Metadata["start_in_flight"]) != "true" {
 		return false
 	}
 	lastWoke := strings.TrimSpace(session.Metadata["last_woke_at"])
@@ -382,7 +383,7 @@ func reconcileSessionBeadsTraced(
 						"degraded":       err != nil,
 					}, nil, "")
 				}
-			case pendingCreateSessionStillLeased(*session, cfg, clk):
+			case pendingCreateSessionStillLeased(*session, cfg, clk) && !isPoolManagedSessionBead(*session):
 				template := normalizedSessionTemplate(*session, cfg)
 				if template == "" {
 					template = session.Metadata["template"]
@@ -462,6 +463,25 @@ func reconcileSessionBeadsTraced(
 					reason := "orphaned"
 					if configuredNames[name] {
 						reason = "suspended"
+					}
+					hasAssignedWork, assignedErr := sessionHasOpenAssignedWork(store, rigStores, *session)
+					if assignedErr != nil {
+						fmt.Fprintf(stderr, "session reconciler: checking assigned work for %s %s: %v\n", reason, name, assignedErr) //nolint:errcheck
+						hasAssignedWork = true
+					}
+					if hasAssignedWork {
+						if trace != nil {
+							template := normalizedSessionTemplate(*session, cfg)
+							if template == "" {
+								template = session.Metadata["template"]
+							}
+							trace.recordDecision("reconciler.session.orphan_or_suspended", template, name, reason, "kept_open_assigned_work", traceRecordPayload{
+								"store_query_partial":  storeQueryPartial,
+								"provider_alive":       providerAlive,
+								"assigned_query_error": assignedErr != nil,
+							}, nil, "")
+						}
+						continue
 					}
 					if beginSessionDrain(*session, sp, dt, reason, clk, defaultDrainTimeout) {
 						if trace != nil {
@@ -1036,12 +1056,14 @@ func reconcileSessionBeadsTraced(
 			if trace != nil {
 				trace.recordDecision("reconciler.session.wake", target.tp.TemplateName, name, "wake", "start_candidate", traceRecordPayload{
 					"should_wake": shouldWake,
+					"wake_reason": decision.Reason,
 				}, nil, "")
 			}
 			startCandidates = append(startCandidates, startCandidate{
-				session: target.session,
-				tp:      target.tp,
-				order:   len(startCandidates),
+				session:    target.session,
+				tp:         target.tp,
+				wakeReason: decision.Reason,
+				order:      len(startCandidates),
 			})
 		}
 
@@ -1607,39 +1629,4 @@ func resolveTaskWorkDir(store beads.Store, assignees ...string) string {
 		}
 	}
 	return ""
-}
-
-// resolveSessionCommand returns the command to use when starting a session.
-// On a fresh provider start (first boot or wake_mode=fresh), it uses
-// SessionIDFlag to create a new provider conversation with the given key as
-// its ID. Otherwise it resumes the existing conversation.
-func resolveSessionCommand(command, sessionKey string, rp *config.ResolvedProvider, firstStart, forceFresh bool) string {
-	if (firstStart || forceFresh) && rp.SessionIDFlag != "" {
-		return command + " " + rp.SessionIDFlag + " " + sessionKey
-	}
-	return resolveResumeCommand(command, sessionKey, rp)
-}
-
-// resolveResumeCommand returns the command to use when resuming a session.
-// Priority: explicit resume_command (with {{.SessionKey}} expansion) >
-// ResumeFlag/ResumeStyle auto-construction > original command unchanged.
-func resolveResumeCommand(command, sessionKey string, rp *config.ResolvedProvider) string {
-	// Explicit resume_command takes precedence.
-	if rp.ResumeCommand != "" {
-		return strings.ReplaceAll(rp.ResumeCommand, "{{.SessionKey}}", sessionKey)
-	}
-	// Fall back to ResumeFlag/ResumeStyle auto-construction.
-	if rp.ResumeFlag == "" {
-		return command
-	}
-	switch rp.ResumeStyle {
-	case "subcommand":
-		parts := strings.SplitN(command, " ", 2)
-		if len(parts) == 2 {
-			return parts[0] + " " + rp.ResumeFlag + " " + sessionKey + " " + parts[1]
-		}
-		return command + " " + rp.ResumeFlag + " " + sessionKey
-	default: // "flag"
-		return command + " " + rp.ResumeFlag + " " + sessionKey
-	}
 }

@@ -1798,6 +1798,33 @@ func TestReconcileSessionBeads_PendingCreateLeasePreventsOrphanClose(t *testing.
 	}
 }
 
+func TestReconcileSessionBeads_UndesiredPoolPendingCreateClosesOrphan(t *testing.T) {
+	env := newReconcilerTestEnv()
+	env.cfg = &config.City{Agents: []config.Agent{{Name: "worker", MinActiveSessions: intPtr(0), MaxActiveSessions: intPtr(2)}}}
+	session := env.createSessionBead("worker-mc-stale", "worker")
+	env.setSessionMetadata(&session, map[string]string{
+		"state":                "creating",
+		"pool_slot":            "1",
+		poolManagedMetadataKey: boolMetadata(true),
+		"pending_create_claim": "true",
+	})
+
+	woken := env.reconcile([]beads.Bead{session})
+	if woken != 0 {
+		t.Fatalf("woken = %d, want 0 without desired-state membership", woken)
+	}
+	got, err := env.store.Get(session.ID)
+	if err != nil {
+		t.Fatalf("Get session: %v", err)
+	}
+	if got.Status != "closed" {
+		t.Fatalf("undesired pool pending-create session status = %q, want closed", got.Status)
+	}
+	if got.Metadata["close_reason"] != "orphaned" {
+		t.Fatalf("close_reason = %q, want orphaned", got.Metadata["close_reason"])
+	}
+}
+
 func TestReconcileSessionBeads_DependencyOrdering_DepDeadBlocksWake(t *testing.T) {
 	env := newReconcilerTestEnv()
 	env.cfg = &config.City{
@@ -1905,6 +1932,40 @@ func TestReconcileSessionBeads_OrphanSessionDrained(t *testing.T) {
 	}
 	if ds.reason != "orphaned" {
 		t.Errorf("drain reason = %q, want %q", ds.reason, "orphaned")
+	}
+}
+
+func TestReconcileSessionBeads_RunningOrphanWithAssignedWorkNotDrained(t *testing.T) {
+	env := newReconcilerTestEnv()
+	env.cfg = &config.City{Agents: []config.Agent{{Name: "other"}}}
+	if err := env.sp.Start(context.Background(), "orphan", runtime.Config{}); err != nil {
+		t.Fatalf("Start(orphan): %v", err)
+	}
+	session := env.createSessionBead("orphan", "orphan")
+	env.markSessionActive(&session)
+	if _, err := env.store.Create(beads.Bead{
+		Title:    "claimed work",
+		Type:     "task",
+		Status:   "in_progress",
+		Assignee: "orphan",
+	}); err != nil {
+		t.Fatalf("Create(claimed work): %v", err)
+	}
+
+	env.reconcile([]beads.Bead{session})
+
+	if ds := env.dt.get(session.ID); ds != nil {
+		t.Fatalf("unexpected drain for session with assigned work: %+v", ds)
+	}
+	if got := env.stdout.String(); strings.Contains(got, "Draining session 'orphan'") {
+		t.Fatalf("stdout contains unexpected drain log:\n%s", got)
+	}
+	got, err := env.store.Get(session.ID)
+	if err != nil {
+		t.Fatalf("Get(%s): %v", session.ID, err)
+	}
+	if got.Status == "closed" {
+		t.Fatalf("session bead closed unexpectedly: metadata=%v", got.Metadata)
 	}
 }
 
@@ -3891,112 +3952,6 @@ func TestResolvePoolSlot_NamepoolThemedName(t *testing.T) {
 	if tp.PoolSlot == 0 {
 		t.Fatal("TemplateParams.PoolSlot should carry the slot from buildDesiredState")
 	}
-}
-
-func TestResolveResumeCommand(t *testing.T) {
-	tests := []struct {
-		name       string
-		command    string
-		sessionKey string
-		provider   *config.ResolvedProvider
-		want       string
-	}{
-		{
-			name:       "no resume flag → unchanged",
-			command:    "claude --dangerously-skip-permissions",
-			sessionKey: "abc-123",
-			provider:   &config.ResolvedProvider{},
-			want:       "claude --dangerously-skip-permissions",
-		},
-		{
-			name:       "flag style",
-			command:    "claude --dangerously-skip-permissions",
-			sessionKey: "abc-123",
-			provider:   &config.ResolvedProvider{ResumeFlag: "--resume"},
-			want:       "claude --dangerously-skip-permissions --resume abc-123",
-		},
-		{
-			name:       "subcommand style",
-			command:    "codex --model o3",
-			sessionKey: "def-456",
-			provider:   &config.ResolvedProvider{ResumeFlag: "resume", ResumeStyle: "subcommand"},
-			want:       "codex resume def-456 --model o3",
-		},
-		{
-			name:       "subcommand style no args",
-			command:    "codex",
-			sessionKey: "def-456",
-			provider:   &config.ResolvedProvider{ResumeFlag: "resume", ResumeStyle: "subcommand"},
-			want:       "codex resume def-456",
-		},
-		{
-			name:       "explicit resume_command takes precedence",
-			command:    "claude --dangerously-skip-permissions",
-			sessionKey: "abc-123",
-			provider: &config.ResolvedProvider{
-				ResumeFlag:    "--resume",
-				ResumeCommand: "claude --resume {{.SessionKey}} --dangerously-skip-permissions",
-			},
-			want: "claude --resume abc-123 --dangerously-skip-permissions",
-		},
-		{
-			name:       "resume_command without SessionKey placeholder",
-			command:    "my-agent",
-			sessionKey: "xyz",
-			provider: &config.ResolvedProvider{
-				ResumeCommand: "my-agent --continue",
-			},
-			want: "my-agent --continue",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := resolveResumeCommand(tt.command, tt.sessionKey, tt.provider)
-			if got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestResolveSessionCommand(t *testing.T) {
-	claude := &config.ResolvedProvider{
-		ResumeFlag:    "--resume",
-		SessionIDFlag: "--session-id",
-	}
-
-	t.Run("first start uses --session-id", func(t *testing.T) {
-		got := resolveSessionCommand("claude --dangerously-skip-permissions", "abc-123", claude, true, false)
-		want := "claude --dangerously-skip-permissions --session-id abc-123"
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
-
-	t.Run("resume uses --resume", func(t *testing.T) {
-		got := resolveSessionCommand("claude --dangerously-skip-permissions", "abc-123", claude, false, false)
-		want := "claude --dangerously-skip-permissions --resume abc-123"
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
-
-	t.Run("fresh wake uses --session-id", func(t *testing.T) {
-		got := resolveSessionCommand("claude --dangerously-skip-permissions", "abc-123", claude, false, true)
-		want := "claude --dangerously-skip-permissions --session-id abc-123"
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
-
-	t.Run("first start without SessionIDFlag falls back to resume", func(t *testing.T) {
-		noSessionID := &config.ResolvedProvider{ResumeFlag: "--resume"}
-		got := resolveSessionCommand("agent run", "key-1", noSessionID, true, false)
-		want := "agent run --resume key-1"
-		if got != want {
-			t.Errorf("got %q, want %q", got, want)
-		}
-	})
 }
 
 func TestDrainedIsKnownState(t *testing.T) {

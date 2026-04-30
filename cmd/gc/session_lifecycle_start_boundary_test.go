@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -50,22 +51,22 @@ func TestExecutePreparedStartWaveUsesWorkerBoundaryForKnownSession(t *testing.T)
 	if err != nil {
 		t.Fatalf("Get session: %v", err)
 	}
-	if got.State != sessionpkg.StateCreating {
-		t.Fatalf("state = %q, want %q before commit", got.State, sessionpkg.StateCreating)
+	if got.State != sessionpkg.StateActive {
+		t.Fatalf("state = %q, want %q after worker start", got.State, sessionpkg.StateActive)
 	}
 	updatedBead, err := store.Get(info.ID)
 	if err != nil {
 		t.Fatalf("Get updated bead: %v", err)
 	}
-	if updatedBead.Metadata["pending_create_claim"] != "true" {
-		t.Fatalf("pending_create_claim = %q, want preserved before commit", updatedBead.Metadata["pending_create_claim"])
+	if updatedBead.Metadata["pending_create_claim"] != "" {
+		t.Fatalf("pending_create_claim = %q, want worker start to clear claim", updatedBead.Metadata["pending_create_claim"])
 	}
 	if !sp.IsRunning(info.SessionName) {
 		t.Fatal("session should be running after prepared start")
 	}
 }
 
-func TestStartPreparedStartCandidateUsesWorkerBoundaryForRuntimeOnlyTarget(t *testing.T) {
+func TestStartPreparedStartCandidateRejectsRuntimeOnlyTarget(t *testing.T) {
 	sp := runtime.NewFake()
 	sessionBead := &beads.Bead{
 		Metadata: map[string]string{
@@ -91,30 +92,13 @@ func TestStartPreparedStartCandidateUsesWorkerBoundaryForRuntimeOnlyTarget(t *te
 		nil,
 	)
 	if err != nil {
-		t.Fatalf("startPreparedStartCandidate: %v", err)
-	}
-	if !usedWorker {
-		t.Fatal("usedWorker = false, want true")
-	}
-	if !sp.IsRunning("legacy-runtime-only") {
-		t.Fatal("legacy-runtime-only should be running after prepared start")
-	}
-	var start runtime.Call
-	foundStart := false
-	for _, call := range sp.Calls {
-		if call.Method == "Start" {
-			start = call
-			foundStart = true
-			break
+		if usedWorker {
+			t.Fatal("usedWorker = true, want false for runtime-only start rejection")
 		}
+		if !strings.Contains(err.Error(), "start requires a bead-backed session") {
+			t.Fatalf("err = %v, want bead-backed session rejection", err)
+		}
+		return
 	}
-	if !foundStart {
-		t.Fatalf("runtime calls = %#v, want Start", sp.Calls)
-	}
-	if start.Name != "legacy-runtime-only" {
-		t.Fatalf("start name = %q, want legacy-runtime-only", start.Name)
-	}
-	if start.Config.Command != "claude --resume seeded" {
-		t.Fatalf("start command = %q, want claude --resume seeded", start.Config.Command)
-	}
+	t.Fatal("startPreparedStartCandidate succeeded for runtime-only target")
 }

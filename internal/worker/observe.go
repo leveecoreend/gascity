@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	sessionpkg "github.com/gastownhall/gascity/internal/session"
@@ -32,7 +33,7 @@ func ObserveHandle(ctx context.Context, h LiveObservationHandle) (LiveObservatio
 
 // LiveObservation reports runtime presence and attachment metadata for a
 // bead-backed session handle.
-func (h *SessionHandle) LiveObservation(_ context.Context) (LiveObservation, error) {
+func (h *SessionHandle) LiveObservation(ctx context.Context) (LiveObservation, error) {
 	id := h.currentSessionID()
 	if id == "" {
 		return LiveObservation{}, nil
@@ -44,6 +45,9 @@ func (h *SessionHandle) LiveObservation(_ context.Context) (LiveObservation, err
 	runtimeObs, err := h.manager.ObserveRuntime(id, h.runtimeHints().ProcessNames)
 	if err != nil {
 		return LiveObservation{}, err
+	}
+	if runtimeObs.Running && strings.TrimSpace(info.SessionKey) == "" {
+		h.tryPersistDerivedSessionKey(ctx, id)
 	}
 	obs := LiveObservation{
 		Running:          runtimeObs.Running,

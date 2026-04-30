@@ -90,6 +90,33 @@ func TestComputePoolDesiredStates_ResumeBeatsNew(t *testing.T) {
 	}
 }
 
+func TestComputePoolDesiredStates_ResumeAndUnassignedDemandAddUp(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("codex-min", "gascity", intPtr(5), 0)},
+	}
+	work := []beads.Bead{
+		workBead("ga-preflight", "gascity/codex-min", "mc-claimed", "in_progress", 5),
+	}
+	sessions := []beads.Bead{sessionBead("mc-claimed", "open")}
+	scaleCheck := map[string]int{"gascity/codex-min": 1}
+
+	result := ComputePoolDesiredStates(cfg, work, sessions, scaleCheck)
+
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want 1", len(result))
+	}
+	reqs := result[0].Requests
+	if len(reqs) != 2 {
+		t.Fatalf("len(requests) = %d, want one assigned resume request plus one new request", len(reqs))
+	}
+	if reqs[0].Tier != "resume" || reqs[0].SessionBeadID != "mc-claimed" {
+		t.Fatalf("request = %+v, want resume for mc-claimed", reqs[0])
+	}
+	if reqs[1].Tier != "new" {
+		t.Fatalf("second request tier = %q, want new", reqs[1].Tier)
+	}
+}
+
 func TestComputePoolDesiredStates_MaxCapsTotal(t *testing.T) {
 	cfg := &config.City{
 		Agents: []config.Agent{poolAgent("claude", "rig", intPtr(2), 0)},

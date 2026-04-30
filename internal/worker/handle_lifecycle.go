@@ -22,35 +22,11 @@ func (h *SessionHandle) Start(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
-	err = h.manager.Start(ctx, id, startCommand, h.runtimeHints())
-	return err
-}
-
-// StartResolved starts or resumes the worker using a caller-supplied runtime
-// command and hints. This is a migration bridge for higher layers that already
-// materialize provider-specific runtime config but should still delegate the
-// provider-specific runtime bring-up through the worker boundary.
-func (h *SessionHandle) StartResolved(ctx context.Context, startCommand string, hints runtime.Config) (err error) {
-	event := h.beginOperationEvent(ctx, workerOperationStartResolved)
-	defer func() { event.finish(err) }()
-
-	id, err := h.ensureSessionID()
-	if err != nil {
+	if err = h.manager.Start(ctx, id, startCommand, h.runtimeHints()); err != nil {
 		return err
 	}
-	command := strings.TrimSpace(startCommand)
-	if command == "" {
-		command, err = h.startCommand(id)
-		if err != nil {
-			return err
-		}
-	}
-	startHints := hints
-	if strings.TrimSpace(startHints.Command) == "" {
-		startHints = h.runtimeHints()
-	}
-	err = h.manager.StartRuntimeOnly(ctx, id, command, startHints)
-	return err
+	h.tryPersistDerivedSessionKey(ctx, id)
+	return nil
 }
 
 // Attach ensures the worker runtime is live and then attaches the caller's
@@ -423,7 +399,15 @@ func (h *SessionHandle) startCommand(id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if info.State == sessionpkg.StateCreating && h.session.Resume.SessionIDFlag != "" && strings.TrimSpace(info.SessionKey) != "" {
+	if info.State == sessionpkg.StateCreating && h.session.Resume.SessionIDFlag != "" {
+		sessionKey := strings.TrimSpace(info.SessionKey)
+		if sessionKey == "" {
+			generatedKey, genErr := h.manager.EnsureSessionKey(id)
+			if genErr != nil {
+				return "", genErr
+			}
+			sessionKey = generatedKey
+		}
 		command := strings.TrimSpace(info.Command)
 		if command == "" {
 			command = strings.TrimSpace(h.session.Command)
@@ -437,7 +421,7 @@ func (h *SessionHandle) startCommand(id string) (string, error) {
 		if command == "" {
 			return "", fmt.Errorf("%w: command is required for first start", ErrHandleConfig)
 		}
-		return command + " " + h.session.Resume.SessionIDFlag + " " + info.SessionKey, nil
+		return command + " " + h.session.Resume.SessionIDFlag + " " + sessionKey, nil
 	}
 	resumeInfo := info
 	if command := strings.TrimSpace(h.session.Command); command != "" {
@@ -456,6 +440,20 @@ func (h *SessionHandle) startCommand(id string) (string, error) {
 		resumeInfo.ResumeCommand = resumeCommand
 	}
 	return sessionpkg.BuildResumeCommand(resumeInfo), nil
+}
+
+func (h *SessionHandle) tryPersistDerivedSessionKey(ctx context.Context, id string) {
+	info, err := h.manager.Get(id)
+	if err != nil || strings.TrimSpace(info.SessionKey) != "" {
+		return
+	}
+	if !canDeriveResumeSessionKey(h.historyProvider(info)) {
+		return
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return
+	}
+	_, _ = h.historyWithRequest(HistoryRequest{TailCompactions: 1})
 }
 
 func (h *SessionHandle) providerLabel() string {

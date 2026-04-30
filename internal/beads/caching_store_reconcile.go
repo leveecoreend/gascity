@@ -85,10 +85,11 @@ func (c *CachingStore) runReconciliation() {
 		freshByID[b.ID] = cloneBead(b)
 	}
 
-	depMap, depErr := c.fetchDepsForIDs(beadIDs(freshByID))
+	depMap, depsComplete, depErr := c.fetchDepsForIDs(beadIDs(freshByID))
 	if depErr != nil {
 		c.recordProblem("refresh dep cache during reconcile", depErr)
 	}
+	useFreshDeps := depsComplete && depErr == nil
 
 	c.mu.Lock()
 	if c.mutationSeq != startSeq {
@@ -114,7 +115,7 @@ func (c *CachingStore) runReconciliation() {
 					eventType: "bead.updated",
 					bead:      cloneBead(freshBead),
 				})
-			case depErr == nil && depsChanged(c.deps[id], depMap[id]):
+			case useFreshDeps && depsChanged(c.deps[id], depMap[id]):
 				updates++
 				notifications = append(notifications, cacheNotification{
 					eventType: "bead.updated",
@@ -123,8 +124,10 @@ func (c *CachingStore) runReconciliation() {
 			}
 
 			c.beads[id] = cloneBead(freshBead)
-			if depErr == nil {
+			if useFreshDeps {
 				c.deps[id] = cloneDeps(depMap[id])
+			} else {
+				c.deps[id] = cloneDeps(freshBead.Dependencies)
 			}
 			delete(c.dirty, id)
 			delete(c.deletedSeq, id)
@@ -155,6 +158,7 @@ func (c *CachingStore) runReconciliation() {
 		}
 
 		c.syncFailures = 0
+		c.depsComplete = c.depsComplete && useFreshDeps
 		if c.state == cacheDegraded {
 			c.state = cacheLive
 		}
@@ -177,10 +181,10 @@ func (c *CachingStore) runReconciliation() {
 	nextDeps := make(map[string][]Dep, len(freshByID))
 
 	for id, freshBead := range freshByID {
-		if depErr == nil {
+		if useFreshDeps {
 			nextDeps[id] = cloneDeps(depMap[id])
-		} else if deps, ok := c.deps[id]; ok {
-			nextDeps[id] = cloneDeps(deps)
+		} else {
+			nextDeps[id] = cloneDeps(freshBead.Dependencies)
 		}
 
 		old, exists := c.beads[id]
@@ -197,7 +201,7 @@ func (c *CachingStore) runReconciliation() {
 				eventType: "bead.updated",
 				bead:      cloneBead(freshBead),
 			})
-		case depErr == nil && depsChanged(c.deps[id], depMap[id]):
+		case useFreshDeps && depsChanged(c.deps[id], depMap[id]):
 			updates++
 			notifications = append(notifications, cacheNotification{
 				eventType: "bead.updated",
@@ -223,6 +227,7 @@ func (c *CachingStore) runReconciliation() {
 
 	c.beads = freshByID
 	c.deps = nextDeps
+	c.depsComplete = useFreshDeps
 	c.dirty = make(map[string]struct{})
 	c.beadSeq = make(map[string]uint64)
 	c.deletedSeq = make(map[string]uint64)

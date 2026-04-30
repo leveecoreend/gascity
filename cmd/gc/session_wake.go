@@ -232,6 +232,12 @@ func cancelSessionDrainForPending(session beads.Bead, sp runtime.Provider, dt *d
 	return cancelSessionDrainIf(session, sp, dt, pendingDrainReasonCancelable)
 }
 
+func cancelOrphanedSessionDrainForAssignedWork(session beads.Bead, sp runtime.Provider, dt *drainTracker) bool {
+	return cancelSessionDrainIf(session, sp, dt, func(reason string) bool {
+		return reason == "orphaned"
+	})
+}
+
 func cancelSessionDrainIf(session beads.Bead, sp runtime.Provider, dt *drainTracker, canCancel func(string) bool) bool {
 	ds := dt.get(session.ID)
 	if ds == nil {
@@ -449,6 +455,18 @@ func advanceSessionDrainsWithSessionsTraced(
 			}
 		}
 
+		if eval, ok := wakeEvals[session.ID]; ok &&
+			eval.Reason == "assigned-work" &&
+			containsWakeReason(eval.Reasons, WakeWork) &&
+			ds.reason == "orphaned" {
+			if cancelOrphanedSessionDrainForAssignedWork(*session, sp, dt) {
+				if trace != nil {
+					trace.recordDecision("reconciler.drain.cancel", normalizedSessionTemplate(*session, cfg), name, ds.reason, "cancel_assigned_work", nil, nil, "")
+				}
+				continue
+			}
+		}
+
 		// Cancelation check: if wake reasons reappeared, cancel the in-memory
 		// drain. Orphaned, suspended, and ordinary config-drift drains are not
 		// canceled here.
@@ -476,8 +494,9 @@ func advanceSessionDrainsWithSessionsTraced(
 		//
 		// Uses the same GC_DRAIN_ACK env var that agents set via
 		// `gc runtime drain-ack`. The reconciler's Phase 1 drain-ack check
-		// sees it on the next tick and calls sp.Stop() for a clean
-		// SIGTERM/SIGKILL — no Ctrl-C keystroke injection into the pane.
+		// sees it on the next tick and routes the stop through the worker
+		// boundary for a clean SIGTERM/SIGKILL — no Ctrl-C keystroke injection
+		// into the pane.
 		if !ds.ackSet {
 			if os.Getenv("GC_TMUX_TRACE") == "1" {
 				log.Printf("[DRAIN-TRACE] advanceSessionDrains: setting GC_DRAIN_ACK session=%s reason=%s", name, ds.reason)

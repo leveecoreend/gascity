@@ -1911,6 +1911,56 @@ func TestSendResumesSuspendedSession(t *testing.T) {
 	}
 }
 
+func TestStartClearsInFlightLeaseAndPendingCreate(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManager(store, sp)
+
+	bead, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   BeadType,
+		Labels: []string{LabelSession},
+		Metadata: map[string]string{
+			"template":             "worker",
+			"session_name":         "worker",
+			"state":                string(StateCreating),
+			"pending_create_claim": "true",
+			"start_in_flight":      "true",
+			"sleep_reason":         "idle-timeout",
+			"generation":           "1",
+			"continuation_epoch":   "1",
+			"instance_token":       NewInstanceToken(),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := mgr.Start(context.Background(), bead.ID, "worker", runtime.Config{}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	got, err := store.Get(bead.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata["state"] != string(StateActive) {
+		t.Fatalf("state = %q, want active", got.Metadata["state"])
+	}
+	if got.Metadata["pending_create_claim"] != "" {
+		t.Fatalf("pending_create_claim = %q, want cleared", got.Metadata["pending_create_claim"])
+	}
+	if got.Metadata["start_in_flight"] != "" {
+		t.Fatalf("start_in_flight = %q, want cleared", got.Metadata["start_in_flight"])
+	}
+	if got.Metadata["sleep_reason"] != "" {
+		t.Fatalf("sleep_reason = %q, want cleared", got.Metadata["sleep_reason"])
+	}
+	if got.Metadata["creation_complete_at"] == "" {
+		t.Fatal("creation_complete_at is empty")
+	}
+}
+
 func TestSendImmediateUsesImmediateNudge(t *testing.T) {
 	store := beads.NewMemStore()
 	sp := runtime.NewFake()
@@ -2849,6 +2899,193 @@ func TestTranscriptPathSkipsAmbiguousWorkDirFallback(t *testing.T) {
 	}
 }
 
+type noFullScanTranscriptStore struct {
+	*beads.MemStore
+}
+
+func (s *noFullScanTranscriptStore) List(_ beads.ListQuery) ([]beads.Bead, error) {
+	return nil, errors.New("unexpected full session scan")
+}
+
+func TestTranscriptPathFallbackUsesTargetedWorkDirLookup(t *testing.T) {
+	store := &noFullScanTranscriptStore{MemStore: beads.NewMemStore()}
+	sp := runtime.NewFake()
+	mgr := NewManager(store, sp)
+
+	workDir := t.TempDir()
+	info, err := mgr.Create(context.Background(), "helper", "codex", "codex", workDir, "codex", nil, ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	searchBase := t.TempDir()
+	dayDir := filepath.Join(searchBase, "2026", "03", "27")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	fallbackPath := filepath.Join(dayDir, "rollout-current.jsonl")
+	meta := `{"type":"session_meta","payload":{"cwd":"` + workDir + `"}}`
+	identity := `{"type":"event_msg","payload":{"message":"` + info.SessionName + `"}}`
+	if err := os.WriteFile(fallbackPath, []byte(meta+"\n"+identity+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	path, err := mgr.TranscriptPath(info.ID, []string{searchBase})
+	if err != nil {
+		t.Fatalf("TranscriptPath: %v", err)
+	}
+	if path != fallbackPath {
+		t.Errorf("TranscriptPath = %q, want %q", path, fallbackPath)
+	}
+}
+
+func TestTranscriptPathKeylessCodexFallbackRequiresSessionIdentity(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManager(store, sp)
+
+	workDir := t.TempDir()
+	info, err := mgr.Create(context.Background(), "helper", "codex", "codex", workDir, "codex", nil, ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	searchBase := t.TempDir()
+	dayDir := filepath.Join(searchBase, "2026", "03", "27")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	wrongPath := filepath.Join(dayDir, "rollout-wrong.jsonl")
+	meta := `{"type":"session_meta","payload":{"cwd":"` + workDir + `"}}`
+	wrongIdentity := `{"type":"event_msg","payload":{"message":"other-session"}}`
+	if err := os.WriteFile(wrongPath, []byte(meta+"\n"+wrongIdentity+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	path, err := mgr.TranscriptPath(info.ID, []string{searchBase})
+	if err != nil {
+		t.Fatalf("TranscriptPath: %v", err)
+	}
+	if path != "" {
+		t.Errorf("TranscriptPath = %q, want empty for keyless Codex transcript without session identity", path)
+	}
+}
+
+func TestTranscriptPathFallbackIgnoresAsleepSameWorkDirSessions(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManager(store, sp)
+
+	workDir := t.TempDir()
+	old, err := mgr.Create(context.Background(), "helper", "old", "codex", workDir, "codex", nil, ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create old: %v", err)
+	}
+	if err := mgr.Suspend(old.ID); err != nil {
+		t.Fatalf("Suspend old: %v", err)
+	}
+	info, err := mgr.Create(context.Background(), "helper", "new", "codex", workDir, "codex", nil, ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create new: %v", err)
+	}
+
+	searchBase := t.TempDir()
+	dayDir := filepath.Join(searchBase, "2026", "03", "27")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	fallbackPath := filepath.Join(dayDir, "rollout-current.jsonl")
+	meta := `{"type":"session_meta","payload":{"cwd":"` + workDir + `"}}`
+	identity := `{"type":"event_msg","payload":{"message":"` + info.SessionName + `"}}`
+	if err := os.WriteFile(fallbackPath, []byte(meta+"\n"+identity+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	path, err := mgr.TranscriptPath(info.ID, []string{searchBase})
+	if err != nil {
+		t.Fatalf("TranscriptPath: %v", err)
+	}
+	if path != fallbackPath {
+		t.Errorf("TranscriptPath = %q, want %q", path, fallbackPath)
+	}
+}
+
+func TestTranscriptPathClosedSessionWithoutKeySkipsActiveSameWorkDirFallback(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManager(store, sp)
+
+	workDir := t.TempDir()
+	closed, err := mgr.Create(context.Background(), "helper", "old", "codex", workDir, "codex", nil, ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create old: %v", err)
+	}
+	if err := mgr.Close(closed.ID); err != nil {
+		t.Fatalf("Close old: %v", err)
+	}
+	if _, err := mgr.Create(context.Background(), "helper", "new", "codex", workDir, "codex", nil, ProviderResume{}, runtime.Config{}); err != nil {
+		t.Fatalf("Create new: %v", err)
+	}
+
+	searchBase := t.TempDir()
+	dayDir := filepath.Join(searchBase, "2026", "03", "27")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	fallbackPath := filepath.Join(dayDir, "rollout-current.jsonl")
+	meta := `{"type":"session_meta","payload":{"cwd":"` + workDir + `"}}`
+	if err := os.WriteFile(fallbackPath, []byte(meta+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	path, err := mgr.TranscriptPath(closed.ID, []string{searchBase})
+	if err != nil {
+		t.Fatalf("TranscriptPath: %v", err)
+	}
+	if path != "" {
+		t.Errorf("TranscriptPath = %q, want empty for closed keyless session sharing an active workdir", path)
+	}
+}
+
+func TestTranscriptPathSkipsFallbackOlderThanSession(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	mgr := NewManager(store, sp)
+
+	workDir := t.TempDir()
+	info, err := mgr.Create(context.Background(), "helper", "fresh", "codex", workDir, "codex", nil, ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	bead, err := store.Get(info.ID)
+	if err != nil {
+		t.Fatalf("Get session bead: %v", err)
+	}
+
+	searchBase := t.TempDir()
+	dayDir := filepath.Join(searchBase, "2026", "03", "27")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	fallbackPath := filepath.Join(dayDir, "rollout-old.jsonl")
+	meta := `{"type":"session_meta","payload":{"cwd":"` + workDir + `"}}`
+	if err := os.WriteFile(fallbackPath, []byte(meta+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	old := bead.CreatedAt.Add(-time.Hour)
+	if err := os.Chtimes(fallbackPath, old, old); err != nil {
+		t.Fatalf("Chtimes: %v", err)
+	}
+
+	path, err := mgr.TranscriptPath(info.ID, []string{searchBase})
+	if err != nil {
+		t.Fatalf("TranscriptPath: %v", err)
+	}
+	if path != "" {
+		t.Errorf("TranscriptPath = %q, want empty when only fallback transcript predates session", path)
+	}
+}
+
 func TestTranscriptPathSameWorkDirDifferentProvidersUsesProviderSpecificFallback(t *testing.T) {
 	store := beads.NewMemStore()
 	sp := runtime.NewFake()
@@ -2870,7 +3107,8 @@ func TestTranscriptPathSameWorkDirDifferentProvidersUsesProviderSpecificFallback
 	}
 	codexPath := filepath.Join(dayDir, "rollout-current.jsonl")
 	meta := `{"type":"session_meta","payload":{"cwd":"` + workDir + `"}}`
-	if err := os.WriteFile(codexPath, []byte(meta+"\n"), 0o644); err != nil {
+	identity := `{"type":"event_msg","payload":{"message":"` + info.SessionName + `"}}`
+	if err := os.WriteFile(codexPath, []byte(meta+"\n"+identity+"\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 

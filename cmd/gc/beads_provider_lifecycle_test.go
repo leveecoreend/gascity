@@ -7970,6 +7970,71 @@ dolt.port: 3307
 	}
 }
 
+func TestRecoverManagedLocalEndpointMirrorClearsManagedCityPortMirror(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityPath, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, ".beads", "config.yaml"), []byte(`issue_prefix: gc
+issue-prefix: gc
+dolt.auto-start: false
+gc.endpoint_origin: managed_city
+gc.endpoint_status: verified
+dolt.port: 21792
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.City{Workspace: config.Workspace{Name: "test-city"}}
+	if err := recoverManagedLocalEndpointMirror(cityPath, cfg); err != nil {
+		t.Fatalf("recoverManagedLocalEndpointMirror: %v", err)
+	}
+
+	data := mustReadFile(t, filepath.Join(cityPath, ".beads", "config.yaml"))
+	text := string(data)
+	for _, want := range []string{
+		"gc.endpoint_origin: managed_city",
+		"gc.endpoint_status: verified",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("recovered config missing %q:\n%s", want, text)
+		}
+	}
+	for _, forbidden := range []string{"dolt.host:", "dolt.port:", "dolt.user:"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("recovered config still contains %q:\n%s", forbidden, text)
+		}
+	}
+}
+
+func TestRecoverManagedLocalEndpointMirrorDoesNotHideExternalManagedDrift(t *testing.T) {
+	cityPath := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cityPath, ".beads"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityPath, ".beads", "config.yaml"), []byte(`issue_prefix: gc
+gc.endpoint_origin: managed_city
+gc.endpoint_status: verified
+dolt.auto-start: false
+dolt.host: stale-db.example.com
+dolt.port: 3307
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.City{Workspace: config.Workspace{Name: "test-city"}}
+	if err := recoverManagedLocalEndpointMirror(cityPath, cfg); err != nil {
+		t.Fatalf("recoverManagedLocalEndpointMirror: %v", err)
+	}
+	data := mustReadFile(t, filepath.Join(cityPath, ".beads", "config.yaml"))
+	if !strings.Contains(string(data), "dolt.host: stale-db.example.com") {
+		t.Fatalf("external drift was unexpectedly rewritten:\n%s", data)
+	}
+	if err := validateCanonicalCompatDoltDrift(cityPath, cfg); err == nil || !strings.Contains(err.Error(), "invalid canonical city endpoint state") {
+		t.Fatalf("validateCanonicalCompatDoltDrift() error = %v, want invalid canonical city endpoint state", err)
+	}
+}
+
 func TestConfiguredCityDoltTargetDoesNotFallbackToCompatRegistrationWhenManagedCanonicalTracksEndpoint(t *testing.T) {
 	t.Setenv("GC_DOLT_HOST", "env-db.example.com")
 	t.Setenv("GC_DOLT_PORT", "5510")

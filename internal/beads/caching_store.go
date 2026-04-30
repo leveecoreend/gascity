@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,17 +23,19 @@ import (
 //
 // Only wraps BdStore because the event hook path requires dolt/bd.
 type CachingStore struct {
-	backing Store // runtime: always *BdStore; tests may use MemStore
+	backing  Store // runtime: always *BdStore; tests may use MemStore
+	idPrefix string
 
-	mu          sync.RWMutex
-	beads       map[string]Bead
-	deps        map[string][]Dep
-	dirty       map[string]struct{}
-	beadSeq     map[string]uint64
-	deletedSeq  map[string]uint64
-	state       cacheState
-	lastFreshAt time.Time
-	mutationSeq uint64
+	mu           sync.RWMutex
+	beads        map[string]Bead
+	deps         map[string][]Dep
+	depsComplete bool
+	dirty        map[string]struct{}
+	beadSeq      map[string]uint64
+	deletedSeq   map[string]uint64
+	state        cacheState
+	lastFreshAt  time.Time
+	mutationSeq  uint64
 
 	reconciling  atomic.Bool
 	syncFailures int
@@ -84,18 +87,29 @@ const (
 // Only BdStore is supported because the event hook path (bd hooks ->
 // gc event emit -> event bus -> ApplyEvent) requires dolt infrastructure.
 func NewCachingStore(backing *BdStore, onChange func(eventType, beadID string, payload json.RawMessage)) *CachingStore {
-	return newCachingStore(backing, onChange)
+	prefix := ""
+	if backing != nil {
+		prefix = backing.IDPrefix()
+	}
+	return newCachingStore(backing, prefix, onChange)
 }
 
 // NewCachingStoreForTest wraps any Store for testing. Production code
 // must use NewCachingStore with a *BdStore.
 func NewCachingStoreForTest(backing Store, onChange func(eventType, beadID string, payload json.RawMessage)) *CachingStore {
-	return newCachingStore(backing, onChange)
+	return newCachingStore(backing, "", onChange)
 }
 
-func newCachingStore(backing Store, onChange func(eventType, beadID string, payload json.RawMessage)) *CachingStore {
+// NewCachingStoreForTestWithPrefix wraps any Store for tests that need
+// production-style bead ID ownership filtering.
+func NewCachingStoreForTestWithPrefix(backing Store, idPrefix string, onChange func(eventType, beadID string, payload json.RawMessage)) *CachingStore {
+	return newCachingStore(backing, idPrefix, onChange)
+}
+
+func newCachingStore(backing Store, idPrefix string, onChange func(eventType, beadID string, payload json.RawMessage)) *CachingStore {
 	return &CachingStore{
 		backing:    backing,
+		idPrefix:   normalizeIDPrefix(idPrefix),
 		beads:      make(map[string]Bead),
 		deps:       make(map[string][]Dep),
 		dirty:      make(map[string]struct{}),
@@ -106,6 +120,18 @@ func newCachingStore(backing Store, onChange func(eventType, beadID string, payl
 			log.Printf("beads cache: %s", msg)
 		},
 	}
+}
+
+func normalizeIDPrefix(prefix string) string {
+	return strings.Trim(strings.ToLower(strings.TrimSpace(prefix)), "-")
+}
+
+func (c *CachingStore) ownsBeadID(id string) bool {
+	if c.idPrefix == "" {
+		return true
+	}
+	id = strings.ToLower(strings.TrimSpace(id))
+	return strings.HasPrefix(id, c.idPrefix+"-")
 }
 
 func (c *CachingStore) noteMutationLocked(ids ...string) uint64 {
@@ -151,6 +177,7 @@ func (c *CachingStore) PrimeActive() error {
 			}
 		}
 		c.beads[b.ID] = cloneBead(b)
+		c.deps[b.ID] = cloneDeps(b.Dependencies)
 		delete(c.deletedSeq, b.ID)
 	}
 	if c.state == cacheUninitialized {
@@ -190,7 +217,7 @@ func (c *CachingStore) Prime(_ context.Context) error {
 		beadMap[b.ID] = cloneBead(b)
 	}
 
-	depMap, depErr := c.fetchDepsForIDs(beadIDs(beadMap))
+	depMap, depsComplete, depErr := c.fetchDepsForIDs(beadIDs(beadMap))
 	if depErr != nil {
 		c.recordProblem("prime dep cache", depErr)
 	}
@@ -200,7 +227,8 @@ func (c *CachingStore) Prime(_ context.Context) error {
 	defer c.mu.Unlock()
 	if c.mutationSeq == startSeq {
 		c.beads = beadMap
-		c.deps = depMap
+		c.deps = depsFromBeads(beadMap, depMap, depsComplete && depErr == nil)
+		c.depsComplete = depsComplete && depErr == nil
 		c.dirty = make(map[string]struct{})
 		c.beadSeq = make(map[string]uint64)
 		c.deletedSeq = make(map[string]uint64)
@@ -215,10 +243,13 @@ func (c *CachingStore) Prime(_ context.Context) error {
 			c.beads[id] = b
 			delete(c.deletedSeq, id)
 			delete(c.beadSeq, id)
-			if deps, ok := depMap[id]; ok {
-				c.deps[id] = deps
+			if depsComplete && depErr == nil {
+				c.deps[id] = cloneDeps(depMap[id])
+			} else {
+				c.deps[id] = cloneDeps(b.Dependencies)
 			}
 		}
+		c.depsComplete = false
 	}
 	c.state = cacheLive
 	c.syncFailures = 0
@@ -259,6 +290,13 @@ func (c *CachingStore) Stats() CacheStats {
 		s.State = "uninitialized"
 	}
 	return s
+}
+
+// MutationSeq returns the in-memory cache mutation sequence.
+func (c *CachingStore) MutationSeq() uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.mutationSeq
 }
 
 // IsLive reports whether reads are served from the cache.
@@ -316,31 +354,36 @@ func beadIDs(beadMap map[string]Bead) []string {
 	return ids
 }
 
-func (c *CachingStore) fetchDepsForIDs(ids []string) (map[string][]Dep, error) {
+func (c *CachingStore) fetchDepsForIDs(ids []string) (map[string][]Dep, bool, error) {
 	depMap := make(map[string][]Dep)
 	if len(ids) == 0 {
-		return depMap, nil
+		return depMap, true, nil
 	}
 
-	if bdStore, ok := c.backing.(*BdStore); ok {
-		batchDeps, err := bdStore.DepListBatch(ids)
-		if err != nil {
-			return depMap, err
-		}
-		for id, deps := range batchDeps {
-			depMap[id] = cloneDeps(deps)
-		}
-		return depMap, nil
+	if _, ok := c.backing.(*BdStore); ok {
+		return depMap, false, nil
 	}
 
 	for _, id := range ids {
 		deps, err := c.backing.DepList(id, "down")
 		if err != nil {
-			return depMap, fmt.Errorf("listing deps for %s: %w", id, err)
+			return depMap, false, fmt.Errorf("listing deps for %s: %w", id, err)
 		}
 		depMap[id] = cloneDeps(deps)
 	}
-	return depMap, nil
+	return depMap, true, nil
+}
+
+func depsFromBeads(beadMap map[string]Bead, depMap map[string][]Dep, useDepMap bool) map[string][]Dep {
+	deps := make(map[string][]Dep, len(beadMap))
+	for id, b := range beadMap {
+		if useDepMap {
+			deps[id] = cloneDeps(depMap[id])
+			continue
+		}
+		deps[id] = cloneDeps(b.Dependencies)
+	}
+	return deps
 }
 
 func cloneDeps(deps []Dep) []Dep {

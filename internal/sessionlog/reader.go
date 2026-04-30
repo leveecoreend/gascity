@@ -463,6 +463,19 @@ func FindSessionFileByID(searchPaths []string, workDir, sessionID string) string
 	return findSessionFileByIDForCandidates(searchPaths, claudeProjectSlugCandidates(workDir), fileName)
 }
 
+// FindSessionFileByIDForProvider resolves a provider-native transcript path
+// from a known provider session identifier.
+func FindSessionFileByIDForProvider(searchPaths []string, provider, workDir, sessionID string) string {
+	switch providerFamily(provider) {
+	case "codex":
+		return FindCodexSessionFileByID(searchPaths, workDir, sessionID)
+	case "gemini":
+		return FindGeminiSessionFileByID(searchPaths, workDir, sessionID)
+	default:
+		return FindSessionFileByID(searchPaths, workDir, sessionID)
+	}
+}
+
 func findSessionFileByIDForCandidates(searchPaths, slugs []string, fileName string) string {
 	for _, base := range searchPaths {
 		var bestPath string
@@ -522,6 +535,18 @@ func safeSessionLogFileName(sessionID string) string {
 		return ""
 	}
 	return filepath.Base(sessionID) + ".jsonl"
+}
+
+func safeSessionJSONFileName(sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || strings.Contains(sessionID, "..") || strings.ContainsAny(sessionID, `/\`) {
+		return ""
+	}
+	base := filepath.Base(sessionID)
+	if strings.HasSuffix(base, ".json") {
+		return base
+	}
+	return base + ".json"
 }
 
 // findSlugSessionFile searches slug-organized search paths for the most
@@ -590,6 +615,36 @@ func FindCodexSessionFile(searchPaths []string, workDir string) string {
 	return bestPath
 }
 
+// FindCodexSessionFileByID searches Codex's date-organized session directory
+// for a transcript whose filename contains the known provider session id and
+// whose embedded cwd matches workDir.
+func FindCodexSessionFileByID(searchPaths []string, workDir, sessionID string) string {
+	if workDir == "" {
+		return ""
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || strings.Contains(sessionID, "..") || strings.ContainsAny(sessionID, `/\`) {
+		return ""
+	}
+	var bestPath string
+	var bestTime int64
+	for _, root := range mergeCodexSearchPaths(searchPaths) {
+		path := findCodexSessionFileByIDIn(root, workDir, sessionID)
+		if path == "" {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if mt := info.ModTime().UnixNano(); mt > bestTime {
+			bestTime = mt
+			bestPath = path
+		}
+	}
+	return bestPath
+}
+
 // findCodexSessionFileIn searches a Codex sessions directory for the most
 // recent session matching workDir. Scans date directories in reverse
 // chronological order for efficiency. Also recurses into symlinked
@@ -637,6 +692,43 @@ func findCodexSessionFileIn(sessDir, workDir string) string {
 	return ""
 }
 
+func findCodexSessionFileByIDIn(sessDir, workDir, sessionID string) string {
+	entries, err := os.ReadDir(sessDir)
+	if err != nil {
+		return ""
+	}
+
+	var yearDirs []string
+	var extraRoots []string
+	for _, e := range entries {
+		if !e.IsDir() && e.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		name := e.Name()
+		if len(name) == 4 && name >= "2000" && name <= "2099" {
+			yearDirs = append(yearDirs, name)
+		} else if e.Type()&os.ModeSymlink != 0 {
+			extraRoots = append(extraRoots, name)
+		}
+	}
+
+	sort.Sort(sort.Reverse(sort.StringSlice(yearDirs)))
+	if path := scanYearDirsForCodexID(sessDir, yearDirs, workDir, sessionID); path != "" {
+		return path
+	}
+
+	for _, root := range extraRoots {
+		resolved, err := filepath.EvalSymlinks(filepath.Join(sessDir, root))
+		if err != nil {
+			continue
+		}
+		if path := findCodexSessionFileByIDIn(resolved, workDir, sessionID); path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
 // scanYearDirs scans YYYY/MM/DD date tree for matching Codex sessions.
 func scanYearDirs(base string, years []string, workDir string) string {
 	for _, year := range years {
@@ -648,6 +740,24 @@ func scanYearDirs(base string, years []string, workDir string) string {
 			for _, day := range days {
 				dayDir := filepath.Join(monthDir, day)
 				if path := findCodexSessionInDir(dayDir, workDir); path != "" {
+					return path
+				}
+			}
+		}
+	}
+	return ""
+}
+
+func scanYearDirsForCodexID(base string, years []string, workDir, sessionID string) string {
+	for _, year := range years {
+		yearDir := filepath.Join(base, year)
+		months := listDirsReverse(yearDir)
+		for _, month := range months {
+			monthDir := filepath.Join(yearDir, month)
+			days := listDirsReverse(monthDir)
+			for _, day := range days {
+				dayDir := filepath.Join(monthDir, day)
+				if path := findCodexSessionIDInDir(dayDir, workDir, sessionID); path != "" {
 					return path
 				}
 			}
@@ -687,6 +797,41 @@ func findCodexSessionInDir(dir, workDir string) string {
 		return files[i].modTime > files[j].modTime
 	})
 
+	for _, f := range files {
+		if codexSessionCWD(f.path) == workDir {
+			return f.path
+		}
+	}
+	return ""
+}
+
+func findCodexSessionIDInDir(dir, workDir, sessionID string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+
+	type fileInfo struct {
+		path    string
+		modTime int64
+	}
+	var files []fileInfo
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".jsonl") || !strings.Contains(e.Name(), sessionID) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, fileInfo{
+			path:    filepath.Join(dir, e.Name()),
+			modTime: info.ModTime().UnixNano(),
+		})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].modTime > files[j].modTime
+	})
 	for _, f := range files {
 		if codexSessionCWD(f.path) == workDir {
 			return f.path

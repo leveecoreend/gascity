@@ -537,6 +537,36 @@ func runtimeSessionMatchesBead(sp runtime.Provider, sessionName, beadID, instanc
 	return strings.TrimSpace(liveToken) == instanceToken
 }
 
+func runtimeSessionOwnershipConflict(sp runtime.Provider, sessionName, beadID, instanceToken string) bool {
+	if sp == nil {
+		return false
+	}
+	if liveID, err := sp.GetMeta(sessionName, "GC_SESSION_ID"); err == nil {
+		liveID = strings.TrimSpace(liveID)
+		if liveID != "" {
+			return liveID != beadID
+		}
+	}
+	instanceToken = strings.TrimSpace(instanceToken)
+	if instanceToken == "" {
+		return false
+	}
+	liveToken, err := sp.GetMeta(sessionName, "GC_INSTANCE_TOKEN")
+	if err != nil {
+		return false
+	}
+	liveToken = strings.TrimSpace(liveToken)
+	return liveToken != "" && liveToken != instanceToken
+}
+
+func strictRuntimeOwnershipRequired(b beads.Bead) bool {
+	if strings.TrimSpace(b.Metadata["session_name_explicit"]) != "true" {
+		return false
+	}
+	return State(strings.TrimSpace(b.Metadata["state"])) == StateCreating ||
+		strings.TrimSpace(b.Metadata["pending_create_claim"]) != ""
+}
+
 // CreateBeadOnly creates a session bead without starting the runtime process.
 // The bead is created with state "creating" — the controller's reconciler
 // will detect it in buildDesiredState and start the process on its next tick.
@@ -1290,6 +1320,36 @@ func (m *Manager) PersistSessionKey(id, sessionKey string) error {
 		}
 		return nil
 	})
+}
+
+// EnsureSessionKey returns the existing provider resume key for a session, or
+// generates and persists one when the session does not have a key yet.
+func (m *Manager) EnsureSessionKey(id string) (string, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "", nil
+	}
+	var sessionKey string
+	err := withSessionMutationLock(id, func() error {
+		b, _, err := m.sessionBead(id)
+		if err != nil {
+			return err
+		}
+		if existing := strings.TrimSpace(b.Metadata["session_key"]); existing != "" {
+			sessionKey = existing
+			return nil
+		}
+		generatedKey, genErr := GenerateSessionKey()
+		if genErr != nil {
+			return fmt.Errorf("generating session key: %w", genErr)
+		}
+		if err := m.store.SetMetadata(id, "session_key", generatedKey); err != nil {
+			return fmt.Errorf("storing session key: %w", err)
+		}
+		sessionKey = generatedKey
+		return nil
+	})
+	return sessionKey, err
 }
 
 // sessionNameFor derives the tmux session name from a bead ID.

@@ -1341,6 +1341,29 @@ func TestFindCodexSessionFileIn(t *testing.T) {
 	}
 }
 
+func TestFindCodexSessionFileByID(t *testing.T) {
+	sessDir := t.TempDir()
+	workDir := "/data/projects/myproject"
+	dayDir := filepath.Join(sessDir, "2026", "01", "25")
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	meta := fmt.Sprintf(`{"type":"session_meta","payload":{"cwd":"%s"}}`, workDir)
+	matchFile := filepath.Join(dayDir, "rollout-2026-01-25T07-00-00-abc123.jsonl")
+	if err := os.WriteFile(matchFile, []byte(meta+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	otherFile := filepath.Join(dayDir, "rollout-2026-01-25T07-00-01-other.jsonl")
+	if err := os.WriteFile(otherFile, []byte(meta+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := FindCodexSessionFileByID([]string{sessDir}, workDir, "abc123")
+	if got != matchFile {
+		t.Errorf("got %q, want %q", got, matchFile)
+	}
+}
+
 func TestFindCodexSessionFileInNoMatch(t *testing.T) {
 	sessDir := t.TempDir()
 
@@ -1478,6 +1501,47 @@ func TestFindGeminiSessionFileUsesObservedRoots(t *testing.T) {
 	}
 
 	got := FindGeminiSessionFile([]string{root}, workDir)
+	if got != sessionFile {
+		t.Errorf("got %q, want %q", got, sessionFile)
+	}
+}
+
+func TestFindGeminiSessionFileByID(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "tmp")
+	workDir := "/data/projects/myproject"
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	projects := map[string]any{
+		"projects": map[string]string{
+			workDir: "myproject",
+		},
+	}
+	data, err := json.Marshal(projects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "projects.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projectDir := filepath.Join(root, "myproject")
+	if err := os.MkdirAll(filepath.Join(projectDir, "chats"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectDir, ".project_root"), []byte(workDir), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessionFile := filepath.Join(projectDir, "chats", "session-abc123.json")
+	if err := os.WriteFile(sessionFile, []byte(`{"messages":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	otherFile := filepath.Join(projectDir, "chats", "session-other.json")
+	if err := os.WriteFile(otherFile, []byte(`{"messages":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := FindGeminiSessionFileByID([]string{root}, workDir, "session-abc123")
 	if got != sessionFile {
 		t.Errorf("got %q, want %q", got, sessionFile)
 	}

@@ -1,9 +1,11 @@
 package session
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -197,6 +199,13 @@ func (m *Manager) ensureRunning(ctx context.Context, id string, b beads.Bead, se
 	transport, transportVerified := m.transportForBead(b, sessName)
 	unroute := m.routeACPIfNeeded(b.Metadata["provider"], transport, sessName)
 	if State(b.Metadata["state"]) != StateSuspended && m.sp.IsRunning(sessName) {
+		if runtimeSessionOwnershipConflict(m.sp, sessName, id, b.Metadata["instance_token"]) ||
+			(strictRuntimeOwnershipRequired(b) && !runtimeSessionMatchesBead(m.sp, sessName, id, b.Metadata["instance_token"])) {
+			if unroute != nil {
+				unroute()
+			}
+			return fmt.Errorf("%w: %q already active in runtime", ErrSessionNameExists, sessName)
+		}
 		if b.Metadata["transport"] == "" && transportVerified {
 			m.persistTransport(id, b.Metadata["provider"], transport)
 		}
@@ -249,16 +258,25 @@ func (m *Manager) ensureRunning(ctx context.Context, id string, b beads.Bead, se
 	cfg = runtime.SyncWorkDirEnv(cfg)
 	started := false
 	if err := m.sp.Start(ctx, sessName, cfg); err != nil {
-		if errors.Is(err, runtime.ErrSessionDiedDuringStartup) && b.Metadata["session_key"] != "" {
+		switch {
+		case errors.Is(err, runtime.ErrSessionDiedDuringStartup) && b.Metadata["session_key"] != "":
 			retried, err := m.retryFreshStartAfterStaleKey(ctx, id, &b, sessName, resumeCommand, cfg, unroute)
 			if err != nil {
 				return err
 			}
 			started = retried
-		} else if !errors.Is(err, runtime.ErrSessionExists) || !m.sp.IsRunning(sessName) {
-			// Another caller may have resumed the same session after we loaded the
-			// bead but before we reached Start. If the runtime is already up, treat
+		case errors.Is(err, runtime.ErrSessionExists) && m.sp.IsRunning(sessName):
+			if runtimeSessionOwnershipConflict(m.sp, sessName, id, b.Metadata["instance_token"]) ||
+				(strictRuntimeOwnershipRequired(b) && !runtimeSessionMatchesBead(m.sp, sessName, id, b.Metadata["instance_token"])) {
+				if unroute != nil {
+					unroute()
+				}
+				return fmt.Errorf("%w: %q already active in runtime", ErrSessionNameExists, sessName)
+			}
+			// Another caller may have resumed the same bead after we loaded it but
+			// before we reached Start. If runtime metadata proves ownership, treat
 			// the resume as converged and only persist active state below.
+		default:
 			if unroute != nil {
 				unroute()
 			}
@@ -307,104 +325,22 @@ func (m *Manager) ensureRunning(ctx context.Context, id string, b beads.Bead, se
 	return nil
 }
 
-func (m *Manager) ensureRunningRuntimeOnly(ctx context.Context, id string, b beads.Bead, sessName, resumeCommand string, hints runtime.Config) error {
-	transport, _ := m.transportForBead(b, sessName)
-	unroute := m.routeACPIfNeeded(b.Metadata["provider"], transport, sessName)
-	if m.sp.IsRunning(sessName) {
-		return nil
-	}
-	if resumeCommand == "" {
-		return fmt.Errorf("%w: %s", ErrResumeRequired, id)
-	}
-
-	cfg := hints
-	cfg.Command = resumeCommand
-	if cfg.WorkDir == "" {
-		cfg.WorkDir = b.Metadata["work_dir"]
-	}
-	generation, err := strconv.Atoi(b.Metadata["generation"])
-	if err != nil || generation <= 0 {
-		generation = DefaultGeneration
-	}
-	continuationEpoch, err := strconv.Atoi(b.Metadata["continuation_epoch"])
-	if err != nil || continuationEpoch <= 0 {
-		continuationEpoch = DefaultContinuationEpoch
-	}
-	instanceToken := b.Metadata["instance_token"]
-	if instanceToken == "" {
-		instanceToken = NewInstanceToken()
-		if err := m.store.SetMetadata(id, "instance_token", instanceToken); err != nil {
-			return fmt.Errorf("storing instance token: %w", err)
-		}
-		if b.Metadata == nil {
-			b.Metadata = make(map[string]string)
-		}
-		b.Metadata["instance_token"] = instanceToken
-	}
-	cfg.Env = mergeEnv(cfg.Env, RuntimeEnvWithSessionContext(
-		id,
-		sessName,
-		strings.TrimSpace(b.Metadata["alias"]),
-		strings.TrimSpace(b.Metadata["template"]),
-		strings.TrimSpace(b.Metadata["session_origin"]),
-		generation,
-		continuationEpoch,
-		instanceToken,
-	))
-	if gcProvider := strings.TrimSpace(b.Metadata["provider_kind"]); gcProvider != "" {
-		cfg.Env = mergeEnv(cfg.Env, map[string]string{"GC_PROVIDER": gcProvider})
-	} else if provider := strings.TrimSpace(b.Metadata["provider"]); provider != "" {
-		cfg.Env = mergeEnv(cfg.Env, map[string]string{"GC_PROVIDER": provider})
-	}
-	cfg = runtime.SyncWorkDirEnv(cfg)
-	started := false
-	if err := m.sp.Start(ctx, sessName, cfg); err != nil {
-		switch {
-		case errors.Is(err, runtime.ErrSessionDiedDuringStartup) && b.Metadata["session_key"] != "":
-			retried, err := m.retryFreshStartAfterStaleKey(ctx, id, &b, sessName, resumeCommand, cfg, unroute)
-			if err != nil {
-				return err
-			}
-			started = retried
-		case errors.Is(err, runtime.ErrSessionExists) && m.sp.IsRunning(sessName):
-			return err
-		default:
-			if unroute != nil {
-				unroute()
-			}
-			return fmt.Errorf("resuming session: %w", err)
-		}
-	} else {
-		started = true
-	}
-	if started && b.Metadata["session_key"] != "" {
-		if err := sleepWithContext(ctx, staleKeyDetectDelay); err != nil {
-			if unroute != nil {
-				unroute()
-			}
-			return err
-		}
-		if !m.sp.IsRunning(sessName) {
-			if _, err := m.retryFreshStartAfterStaleKey(ctx, id, &b, sessName, resumeCommand, cfg, unroute); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
 func (m *Manager) confirmLiveSessionState(id string, b *beads.Bead) error {
 	if b == nil {
 		return nil
 	}
 	batch := make(map[string]string)
-	switch State(b.Metadata["state"]) {
+	state := State(strings.TrimSpace(b.Metadata["state"]))
+	needsTransition := false
+	switch state {
 	case "", StateCreating, StateAsleep, StateSuspended:
-		batch["state"] = string(StateActive)
-		batch["state_reason"] = "creation_complete"
+		needsTransition = true
 	}
-	if strings.TrimSpace(b.Metadata["pending_create_claim"]) != "" {
-		batch["pending_create_claim"] = ""
+	needsCleanup := strings.TrimSpace(b.Metadata["pending_create_claim"]) != "" ||
+		strings.TrimSpace(b.Metadata["start_in_flight"]) != "" ||
+		strings.TrimSpace(b.Metadata["sleep_reason"]) != ""
+	if needsTransition || ((state == StateActive || state == StateAwake) && needsCleanup) {
+		batch = ConfirmStartedPatch(time.Now())
 	}
 	if len(batch) == 0 {
 		return nil
@@ -630,20 +566,6 @@ func (m *Manager) Start(ctx context.Context, id, resumeCommand string, hints run
 	})
 }
 
-// StartRuntimeOnly brings the runtime live for a bead-backed session without
-// mutating persisted lifecycle metadata. Legacy reconciler callers use this
-// bridge while they still own commit/rollback bookkeeping above the worker
-// boundary.
-func (m *Manager) StartRuntimeOnly(ctx context.Context, id, resumeCommand string, hints runtime.Config) error {
-	return withSessionMutationLock(id, func() error {
-		b, sessName, err := m.sessionBead(id)
-		if err != nil {
-			return err
-		}
-		return m.ensureRunningRuntimeOnly(ctx, id, b, sessName, resumeCommand, hints)
-	})
-}
-
 // Send resumes a suspended session if needed, then nudges the runtime with a
 // new user message.
 func (m *Manager) Send(ctx context.Context, id, message, resumeCommand string, hints runtime.Config) error {
@@ -807,27 +729,49 @@ func (m *Manager) TranscriptPath(id string, searchPaths []string) (string, error
 	if len(searchPaths) == 0 {
 		searchPaths = sessionlog.DefaultSearchPaths()
 	}
-	if path := workertranscript.DiscoverKeyedPath(searchPaths, provider, workDir, b.Metadata["session_key"]); path != "" {
+	if path := workertranscript.DiscoverKeyedPath(searchPaths, provider, workDir, b.Metadata["session_key"]); transcriptPathFreshEnoughForProvider(path, b.CreatedAt, provider) {
 		return path, nil
 	}
 
-	all, err := m.store.List(beads.ListQuery{
-		Label: LabelSession,
-	})
-	if err != nil {
-		return "", fmt.Errorf("listing sessions: %w", err)
+	candidates := make(map[string]beads.Bead)
+	addCandidates := func(filters map[string]string) error {
+		found, listErr := m.store.ListByMetadata(filters, 0)
+		if listErr != nil {
+			return listErr
+		}
+		for _, candidate := range found {
+			candidates[candidate.ID] = candidate
+		}
+		return nil
 	}
-	matches := 0
-	for _, other := range all {
+	if provider == "" {
+		err = addCandidates(map[string]string{"work_dir": workDir})
+	} else {
+		err = addCandidates(map[string]string{"work_dir": workDir, "provider": provider})
+		if err == nil {
+			err = addCandidates(map[string]string{"work_dir": workDir, "provider_kind": provider})
+		}
+	}
+	if err != nil {
+		return "", fmt.Errorf("listing sessions by work_dir: %w", err)
+	}
+	targetLive := m.transcriptFallbackCandidateLive(b)
+	matches := 1
+	for _, other := range candidates {
 		if !IsSessionBeadOrRepairable(other) {
 			continue
 		}
-		// Only count active sessions — closed historical sessions should not
-		// make the lookup ambiguous for the one live session.
-		if other.Status == "closed" {
+		if other.ID == b.ID {
 			continue
 		}
-		if provider != "" && strings.TrimSpace(other.Metadata["provider"]) != provider {
+		if targetLive && !m.transcriptFallbackCandidateLive(other) {
+			continue
+		}
+		otherProvider := strings.TrimSpace(other.Metadata["provider_kind"])
+		if otherProvider == "" {
+			otherProvider = strings.TrimSpace(other.Metadata["provider"])
+		}
+		if provider != "" && otherProvider != provider {
 			continue
 		}
 		if other.Metadata["work_dir"] == workDir {
@@ -839,5 +783,108 @@ func (m *Manager) TranscriptPath(id string, searchPaths []string) (string, error
 			}
 		}
 	}
-	return workertranscript.DiscoverPath(searchPaths, provider, workDir, ""), nil
+	path := workertranscript.DiscoverPath(searchPaths, provider, workDir, "")
+	if !transcriptPathFreshEnoughForProvider(path, b.CreatedAt, provider) {
+		return "", nil
+	}
+	if strings.TrimSpace(b.Metadata["session_key"]) == "" &&
+		providerRequiresIdentityForKeylessFallback(provider) &&
+		!transcriptContainsSessionIdentity(path, b) {
+		return "", nil
+	}
+	return path, nil
+}
+
+func (m *Manager) transcriptFallbackCandidateLive(b beads.Bead) bool {
+	if b.Status == "closed" {
+		return false
+	}
+	state := State(strings.TrimSpace(b.Metadata["state"]))
+	switch state {
+	case StateActive, StateAwake, StateCreating, StateDraining:
+	default:
+		return false
+	}
+	if m.sp == nil {
+		return true
+	}
+	return m.sp.IsRunning(sessionName(b.ID, b))
+}
+
+func transcriptPathFreshEnough(path string, sessionCreatedAt time.Time) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	if sessionCreatedAt.IsZero() {
+		return true
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return !info.ModTime().Before(sessionCreatedAt.Add(-2 * time.Second))
+}
+
+func transcriptPathFreshEnoughForProvider(path string, sessionCreatedAt time.Time, provider string) bool {
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	if !providerRequiresFreshTranscript(provider) {
+		return true
+	}
+	return transcriptPathFreshEnough(path, sessionCreatedAt)
+}
+
+func providerRequiresFreshTranscript(provider string) bool {
+	lower := strings.ToLower(strings.TrimSpace(provider))
+	return strings.Contains(lower, "codex")
+}
+
+func providerRequiresIdentityForKeylessFallback(provider string) bool {
+	lower := strings.ToLower(strings.TrimSpace(provider))
+	return strings.Contains(lower, "codex")
+}
+
+func transcriptContainsSessionIdentity(path string, b beads.Bead) bool {
+	needles := sessionTranscriptIdentityNeedles(b)
+	if len(needles) == 0 {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close() //nolint:errcheck // read-only
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	const maxLines = 64
+	for lineNo := 0; lineNo < maxLines && scanner.Scan(); lineNo++ {
+		line := scanner.Text()
+		for _, needle := range needles {
+			if strings.Contains(line, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sessionTranscriptIdentityNeedles(b beads.Bead) []string {
+	candidates := []string{
+		strings.TrimSpace(b.Metadata["session_name"]),
+		strings.TrimSpace(b.Metadata["alias"]),
+		strings.TrimSpace(b.Metadata["agent_name"]),
+		strings.TrimSpace(b.ID),
+	}
+	seen := make(map[string]bool, len(candidates))
+	var needles []string
+	for _, candidate := range candidates {
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		needles = append(needles, candidate)
+	}
+	return needles
 }
