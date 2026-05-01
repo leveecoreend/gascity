@@ -513,6 +513,7 @@ func TestRuntimeRequestRestartNamedOnDemandReturnsWithoutBlocking(t *testing.T) 
 		t.Fatalf("write city.toml: %v", err)
 	}
 	t.Setenv("GC_BEADS", "file")
+	t.Setenv("GC_BEADS_SCOPE_ROOT", "")
 	t.Setenv("GC_CITY", cityDir)
 	t.Setenv("GC_CITY_PATH", cityDir)
 	t.Setenv("GC_ALIAS", "mayor")
@@ -617,7 +618,7 @@ func (p *removeMetaErrorProvider) RemoveMeta(_, _ string) error {
 	return p.err
 }
 
-func TestProviderDrainOpsClearRestartRequestedIgnoresGoneSession(t *testing.T) {
+func TestProviderDrainOpsClearRestartRequestedTreatsSessionGoneAsBenign(t *testing.T) {
 	dops := newDrainOps(&removeMetaErrorProvider{
 		Fake: runtime.NewFake(),
 		err:  errors.New("no tmux server running"),
