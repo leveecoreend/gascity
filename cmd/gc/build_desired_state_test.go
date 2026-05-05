@@ -739,6 +739,85 @@ func TestCollectAssignedWorkBeads_SkipsCityReadyProbeForRigInProgressAssignee(t 
 	}
 }
 
+func TestCollectAssignedWorkBeads_ReadyProbeStillRunsForOtherAssignees(t *testing.T) {
+	store := &readyQueryRecordingStore{MemStore: beads.NewMemStore()}
+	activeSession, err := store.Create(beads.Bead{
+		Title:  "active worker session",
+		Type:   sessionBeadType,
+		Status: "open",
+		Metadata: map[string]string{
+			"session_name": "worker-active",
+			"template":     "worker",
+			"state":        "asleep",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create active session bead: %v", err)
+	}
+	readySession, err := store.Create(beads.Bead{
+		Title:  "ready worker session",
+		Type:   sessionBeadType,
+		Status: "open",
+		Metadata: map[string]string{
+			"session_name": "worker-ready",
+			"template":     "worker",
+			"state":        "asleep",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create ready session bead: %v", err)
+	}
+	activeWork, err := store.Create(beads.Bead{
+		Title:    "active work",
+		Type:     "task",
+		Assignee: "worker-active",
+	})
+	if err != nil {
+		t.Fatalf("create active work bead: %v", err)
+	}
+	if err := store.Update(activeWork.ID, beads.UpdateOpts{Status: stringPtr("in_progress")}); err != nil {
+		t.Fatalf("mark active work in_progress: %v", err)
+	}
+	activeWork, err = store.Get(activeWork.ID)
+	if err != nil {
+		t.Fatalf("reload active work: %v", err)
+	}
+	readyWork, err := store.Create(beads.Bead{
+		Title:    "ready work",
+		Type:     "task",
+		Status:   "open",
+		Assignee: "worker-ready",
+	})
+	if err != nil {
+		t.Fatalf("create ready work bead: %v", err)
+	}
+	snapshot := newSessionBeadSnapshot([]beads.Bead{activeSession, readySession})
+
+	got, _, _, partial := collectAssignedWorkBeadsWithStores(&config.City{}, store, nil, nil, snapshot)
+	if partial {
+		t.Fatal("collectAssignedWorkBeadsWithStores reported partial results")
+	}
+	gotIDs := make(map[string]bool)
+	for _, bead := range got {
+		gotIDs[bead.ID] = true
+	}
+	for _, want := range []string{activeWork.ID, readyWork.ID} {
+		if !gotIDs[want] {
+			t.Fatalf("collected work IDs = %#v, want %s", gotIDs, want)
+		}
+	}
+	queried := make(map[string]bool)
+	for _, query := range store.readyQueries {
+		queried[query.Assignee] = true
+	}
+	if queried["worker-active"] || queried[activeSession.ID] {
+		t.Fatalf("Ready queries = %#v, want no probe for active assignee", store.readyQueries)
+	}
+	if !queried["worker-ready"] {
+		t.Fatalf("Ready queries = %#v, want probe for worker-ready", store.readyQueries)
+	}
+}
+
 func TestReadyAssignedWorkAssigneesExcludeBroadIdentities(t *testing.T) {
 	got := readyAssignedWorkAssignees(&config.City{
 		Agents: []config.Agent{{

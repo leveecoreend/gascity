@@ -585,12 +585,12 @@ func collectAssignedWorkBeadsWithStores(
 	}
 	skipReadyAssignees := assignedWorkAssigneeSet(result)
 	expandSkipAssigneesWithSessionIdentities(skipReadyAssignees, sessionBeads)
-	if len(skipReadyAssignees) > 0 {
+	assignees := readyAssignedWorkAssignees(cfg, sessionBeads, skipReadyAssignees)
+	if len(skipReadyAssignees) > 0 && len(assignees) == 0 {
 		return result, resultStores, resultStoreRefs, partial
 	}
 
 	readyResults := make([]storeAssignedWorkResult, len(stores))
-	assignees := readyAssignedWorkAssignees(cfg, sessionBeads, skipReadyAssignees)
 	for idx, source := range stores {
 		idx, source := idx, source
 		wg.Add(1)
