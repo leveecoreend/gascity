@@ -66,7 +66,30 @@ scrub_exported_issues() {
 }
 
 validate_exported_issues() {
-    jq -c '.'
+    jq -e -c '
+        if (type == "object") and ((.rows? | type) == "array") then
+            .
+        else
+            error("issues export must be a JSON object with a rows array")
+        end
+    '
+}
+
+normalize_pending_spike_alert_state() {
+    jq -c '
+        (.pending_spike_alerts //= {}) |
+        if (.pending_spike_alert? | type) == "object" and ((.pending_spike_alert.database // "") != "") then
+            .pending_spike_alerts[.pending_spike_alert.database] = (.pending_spike_alerts[.pending_spike_alert.database] // .pending_spike_alert)
+        else
+            .
+        end |
+        del(.pending_spike_alert) |
+        if .pending_spike_alerts == {} then
+            del(.pending_spike_alerts)
+        else
+            .
+        end
+    '
 }
 
 read_state_json() {
@@ -82,12 +105,17 @@ read_state_json() {
 write_state_json() {
     local tmpfile
 
-    tmpfile=$(mktemp "${STATE_FILE}.tmp.XXXXXX")
+    if ! tmpfile=$(mktemp "${STATE_FILE}.tmp.XXXXXX"); then
+        echo "jsonl-export: creating temporary state file failed" >&2
+        return 1
+    fi
     if ! printf '%s\n' "$1" > "$tmpfile"; then
+        echo "jsonl-export: writing temporary state file failed" >&2
         rm -f "$tmpfile"
         return 1
     fi
     if ! mv -f "$tmpfile" "$STATE_FILE"; then
+        echo "jsonl-export: replacing state file failed" >&2
         rm -f "$tmpfile"
         return 1
     fi
@@ -98,6 +126,18 @@ set_consecutive_push_failures() {
     write_state_json "$(read_state_json | jq -c --argjson count "$count" '.consecutive_push_failures = $count')"
 }
 
+set_pending_archive_push() {
+    write_state_json "$(read_state_json | jq -c '.pending_archive_push = true')"
+}
+
+clear_pending_archive_push() {
+    write_state_json "$(read_state_json | jq -c 'del(.pending_archive_push)')"
+}
+
+has_pending_archive_push() {
+    [ "$(read_state_json | jq -r '.pending_archive_push // false')" = "true" ]
+}
+
 set_pending_spike_alert() {
     local db="$1"
     local prev_count="$2"
@@ -106,13 +146,15 @@ set_pending_spike_alert() {
     local threshold="$5"
 
     write_state_json "$(
-        read_state_json | jq -c \
+        read_state_json \
+            | normalize_pending_spike_alert_state \
+            | jq -c \
             --arg db "$db" \
             --argjson prev_count "$prev_count" \
             --argjson current_count "$current_count" \
             --argjson delta "$delta" \
             --argjson threshold "$threshold" \
-            '.pending_spike_alert = {
+            '.pending_spike_alerts[$db] = {
                 database: $db,
                 prev_count: $prev_count,
                 current_count: $current_count,
@@ -123,7 +165,25 @@ set_pending_spike_alert() {
 }
 
 clear_pending_spike_alert() {
-    write_state_json "$(read_state_json | jq -c 'del(.pending_spike_alert)')"
+    local db="${1:-}"
+
+    if [ -z "$db" ]; then
+        write_state_json "$(read_state_json | jq -c 'del(.pending_spike_alert, .pending_spike_alerts)')"
+        return
+    fi
+
+    write_state_json "$(
+        read_state_json \
+            | normalize_pending_spike_alert_state \
+            | jq -c --arg db "$db" '
+                del(.pending_spike_alerts[$db]) |
+                if (.pending_spike_alerts // {}) == {} then
+                    del(.pending_spike_alerts)
+                else
+                    .
+                end
+            '
+    )"
 }
 
 send_spike_alert() {
@@ -140,27 +200,80 @@ send_spike_alert() {
 
 retry_pending_spike_alert() {
     local state_json
+    local updated_state_json
+    local state_changed=0
+    local alert_json
+    local pending_alerts=()
     local db
     local prev_count
     local current_count
     local delta
     local threshold
 
-    state_json=$(read_state_json)
-    db=$(printf '%s\n' "$state_json" | jq -r '.pending_spike_alert.database // empty')
-    if [ -z "$db" ]; then
+    state_json=$(read_state_json | normalize_pending_spike_alert_state)
+    updated_state_json="$state_json"
+    mapfile -t pending_alerts < <(
+        printf '%s\n' "$state_json" \
+            | jq -c '.pending_spike_alerts // {} | to_entries | sort_by(.key) | .[].value'
+    )
+    if [ "${#pending_alerts[@]}" -eq 0 ]; then
         return
     fi
-    prev_count=$(printf '%s\n' "$state_json" | jq -r '.pending_spike_alert.prev_count // 0')
-    current_count=$(printf '%s\n' "$state_json" | jq -r '.pending_spike_alert.current_count // 0')
-    delta=$(printf '%s\n' "$state_json" | jq -r '.pending_spike_alert.delta // 0')
-    threshold=$(printf '%s\n' "$state_json" | jq -r '.pending_spike_alert.threshold // 0')
 
-    if send_spike_alert "$db" "$prev_count" "$current_count" "$delta" "$threshold"; then
-        clear_pending_spike_alert
-        return
+    for alert_json in "${pending_alerts[@]}"; do
+        db=$(printf '%s\n' "$alert_json" | jq -r '.database // empty')
+        if [ -z "$db" ]; then
+            continue
+        fi
+        prev_count=$(printf '%s\n' "$alert_json" | jq -r '.prev_count // 0')
+        current_count=$(printf '%s\n' "$alert_json" | jq -r '.current_count // 0')
+        delta=$(printf '%s\n' "$alert_json" | jq -r '.delta // 0')
+        threshold=$(printf '%s\n' "$alert_json" | jq -r '.threshold // 0')
+
+        if send_spike_alert "$db" "$prev_count" "$current_count" "$delta" "$threshold"; then
+            updated_state_json=$(
+                printf '%s\n' "$updated_state_json" \
+                    | jq -c --arg db "$db" '
+                        del(.pending_spike_alerts[$db]) |
+                        if (.pending_spike_alerts // {}) == {} then
+                            del(.pending_spike_alerts)
+                        else
+                            .
+                        end
+                    '
+            )
+            state_changed=1
+            continue
+        fi
+        echo "jsonl-export: pending spike alert delivery failed for $db" >&2
+    done
+
+    if [ "$state_changed" -eq 1 ]; then
+        write_state_json "$updated_state_json"
     fi
-    echo "jsonl-export: pending spike alert delivery failed" >&2
+}
+
+push_archive_main() {
+    local consecutive
+
+    if git push origin main -q 2>/dev/null; then
+        set_consecutive_push_failures "0"
+        clear_pending_archive_push
+        return 0
+    fi
+
+    consecutive=$(read_state_json | jq -r '.consecutive_push_failures // 0' || echo "0")
+    consecutive=$((consecutive + 1))
+    set_consecutive_push_failures "$consecutive"
+    set_pending_archive_push
+
+    if [ "$consecutive" -ge "$MAX_PUSH_FAILURES" ]; then
+        gc mail send mayor/ -s "ESCALATION: JSONL push failed [HIGH]" \
+            -m "Consecutive failures: $consecutive (threshold: $MAX_PUSH_FAILURES)" \
+            2>/dev/null || true
+    fi
+
+    return 1
 }
 
 commit_archive_snapshot() {
@@ -289,6 +402,19 @@ for DB in $DATABASES; do
         FAILED_DBS="${FAILED_DBS}$DB "
         continue
     fi
+    if [ ! -s "$TMPFILE" ]; then
+        echo "jsonl-export: issues export for $DB was empty" >&2
+        rm -f "$TMPFILE"
+        discard_failed_db_outputs "$DB"
+        FAILED_DBS="${FAILED_DBS}$DB "
+        continue
+    fi
+    if ! validate_exported_issues < "$TMPFILE" >/dev/null; then
+        rm -f "$TMPFILE"
+        discard_failed_db_outputs "$DB"
+        FAILED_DBS="${FAILED_DBS}$DB "
+        continue
+    fi
     mv -f "$TMPFILE" "$DB_DIR/issues.jsonl"
 
     # Legacy flat file mirrors the scrubbed per-db export. Keep the two output
@@ -358,10 +484,11 @@ if [ "$HALTED" -eq 1 ]; then
             discard_staged_archive_outputs
             exit 1
         }
+        set_pending_archive_push
     fi
     set_pending_spike_alert "$HALT_DB" "$HALT_PREV_COUNT" "$HALT_CURRENT_COUNT" "$HALT_DELTA" "$SPIKE_THRESHOLD"
     if send_spike_alert "$HALT_DB" "$HALT_PREV_COUNT" "$HALT_CURRENT_COUNT" "$HALT_DELTA" "$SPIKE_THRESHOLD"; then
-        clear_pending_spike_alert
+        clear_pending_spike_alert "$HALT_DB"
     else
         echo "jsonl-export: spike alert delivery failed; will retry from state" >&2
     fi
@@ -370,6 +497,21 @@ if [ "$HALTED" -eq 1 ]; then
 fi
 
 if git diff --cached --quiet 2>/dev/null; then
+    if has_pending_archive_push; then
+        PUSH_STATUS="ok"
+        if ! push_archive_main; then
+            PUSH_STATUS="failed"
+        fi
+        if [ -n "$FAILED_DBS" ]; then
+            EXPORTED_DBS=$((TOTAL_DBS - $(echo "$FAILED_DBS" | wc -w)))
+            SUMMARY="jsonl — exported $EXPORTED_DBS/$TOTAL_DBS, records: $TOTAL_EXPORTED, push: $PUSH_STATUS, failed: $FAILED_DBS"
+        else
+            SUMMARY="jsonl — no changes, push: $PUSH_STATUS"
+        fi
+        gc session nudge deacon/ "DOG_DONE: $SUMMARY" 2>/dev/null || true
+        echo "jsonl-export: $SUMMARY"
+        exit 0
+    fi
     if [ -n "$FAILED_DBS" ]; then
         EXPORTED_DBS=$((TOTAL_DBS - $(echo "$FAILED_DBS" | wc -w)))
         SUMMARY="jsonl — exported $EXPORTED_DBS/$TOTAL_DBS, records: $TOTAL_EXPORTED, push: skipped, failed: $FAILED_DBS"
@@ -389,27 +531,11 @@ commit_archive_snapshot \
     discard_staged_archive_outputs
     exit 1
 }
+set_pending_archive_push
 
 PUSH_STATUS="ok"
-if ! git push origin main -q 2>/dev/null; then
+if ! push_archive_main; then
     PUSH_STATUS="failed"
-
-    # Track consecutive failures.
-    CONSECUTIVE=0
-    if [ -f "$STATE_FILE" ]; then
-        CONSECUTIVE=$(read_state_json | jq -r '.consecutive_push_failures // 0' || echo "0")
-    fi
-    CONSECUTIVE=$((CONSECUTIVE + 1))
-    set_consecutive_push_failures "$CONSECUTIVE"
-
-    if [ "$CONSECUTIVE" -ge "$MAX_PUSH_FAILURES" ]; then
-        gc mail send mayor/ -s "ESCALATION: JSONL push failed [HIGH]" \
-            -m "Consecutive failures: $CONSECUTIVE (threshold: $MAX_PUSH_FAILURES)" \
-            2>/dev/null || true
-    fi
-else
-    # Reset failure counter on success.
-    set_consecutive_push_failures "0"
 fi
 
 SUMMARY="jsonl — exported $EXPORTED_DBS/$TOTAL_DBS, records: $TOTAL_EXPORTED, push: $PUSH_STATUS"

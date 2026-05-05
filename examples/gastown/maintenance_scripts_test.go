@@ -1435,6 +1435,23 @@ exit 0
 `)
 }
 
+func writeEmptyIssuesPayloadDoltStub(t *testing.T, binDir string) {
+	t.Helper()
+	body := "#!/bin/sh\n" +
+		"case \"$*\" in\n" +
+		"  *\"SHOW DATABASES\"*)\n" +
+		"    printf 'Database\\nbeads\\n'\n" +
+		"    ;;\n" +
+		"  *\"FROM \\`beads\\`.issues\"*)\n" +
+		"    ;;\n" +
+		"  *\"SELECT *\"*)\n" +
+		"    printf '{\"rows\":[]}\\n'\n" +
+		"    ;;\n" +
+		"esac\n" +
+		"exit 0\n"
+	writeExecutable(t, filepath.Join(binDir, "dolt"), body)
+}
+
 func writeGitSubcommandFailureStub(t *testing.T, binDir, realGit, subcommand string) {
 	t.Helper()
 	writeExecutable(t, filepath.Join(binDir, "git"), fmt.Sprintf(`#!/bin/sh
@@ -1489,6 +1506,51 @@ func initSeedArchiveWithoutLocalIdentity(t *testing.T, archiveRepo string, prevC
 		t.Fatalf("git rev-parse: %v\n%s", err, out)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func initSeedArchiveWithRemote(t *testing.T, archiveRepo string, prevCount int) (string, string) {
+	t.Helper()
+	remoteRepo := filepath.Join(t.TempDir(), "archive-remote.git")
+	if out, err := exec.Command("git", "init", "--bare", "-q", remoteRepo).CombinedOutput(); err != nil {
+		t.Fatalf("git init --bare: %v\n%s", err, out)
+	}
+	if out, err := exec.Command("git", "clone", "-q", remoteRepo, archiveRepo).CombinedOutput(); err != nil {
+		t.Fatalf("git clone: %v\n%s", err, out)
+	}
+
+	dbDir := filepath.Join(archiveRepo, "beads")
+	if err := os.MkdirAll(dbDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rows := make([]string, 0, prevCount)
+	for i := 0; i < prevCount; i++ {
+		rows = append(rows, fmt.Sprintf(`{"id":"p%d","title":"prev-%d"}`, i, i))
+	}
+	body := `{"rows":[` + strings.Join(rows, ",") + `]}` + "\n"
+	if err := os.WriteFile(filepath.Join(dbDir, "issues.jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	steps := [][]string{
+		{"checkout", "-q", "-b", "main"},
+		{"config", "user.email", "test@example.invalid"},
+		{"config", "user.name", "test"},
+		{"add", "-A"},
+		{"commit", "-q", "-m", "seed"},
+		{"push", "-q", "-u", "origin", "main"},
+	}
+	for _, args := range steps {
+		full := append([]string{"-C", archiveRepo}, args...)
+		if out, err := exec.Command("git", full...).CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	headOut, err := exec.Command("git", "--git-dir", remoteRepo, "rev-parse", "refs/heads/main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse remote main: %v\n%s", err, headOut)
+	}
+	return remoteRepo, strings.TrimSpace(string(headOut))
 }
 
 func TestJsonlExportCountsRecordsViaJq(t *testing.T) {
@@ -1983,8 +2045,16 @@ func TestJsonlExportHaltMailFailurePersistsPendingAlertAndRetriesNextRun(t *test
 	if err != nil {
 		t.Fatalf("ReadFile(state file): %v", err)
 	}
-	if !strings.Contains(string(stateData), `"pending_spike_alert"`) {
-		t.Fatalf("expected pending spike alert after mail failure, got:\n%s", stateData)
+	var state map[string]any
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		t.Fatalf("Unmarshal(state file): %v\n%s", err, stateData)
+	}
+	pendingAlerts, ok := state["pending_spike_alerts"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected pending_spike_alerts after mail failure, got:\n%s", stateData)
+	}
+	if _, ok := pendingAlerts["beads"]; !ok {
+		t.Fatalf("expected beads pending alert after mail failure, got:\n%s", stateData)
 	}
 
 	mailData, err := os.ReadFile(mailLog)
@@ -2014,6 +2084,109 @@ func TestJsonlExportHaltMailFailurePersistsPendingAlertAndRetriesNextRun(t *test
 	}
 	if got := strings.Count(string(mailData), "ESCALATION: JSONL spike"); got != 2 {
 		t.Fatalf("expected one failed attempt and one retry delivery, got %d entries:\n%s", got, mailData)
+	}
+}
+
+func TestJsonlExportNoChangePushesPendingArchiveCommitAfterHalt(t *testing.T) {
+	cityDir := t.TempDir()
+	binDir := t.TempDir()
+	stateDir := t.TempDir()
+	gcLog := filepath.Join(t.TempDir(), "gc.log")
+	mailLog := filepath.Join(t.TempDir(), "gc-mail.log")
+	archiveRepo := filepath.Join(cityDir, "archive")
+	stateFile := filepath.Join(stateDir, "jsonl-export-state.json")
+
+	remoteRepo, remoteHead := initSeedArchiveWithRemote(t, archiveRepo, 100)
+	writeMultiRecordDoltStub(t, binDir, 10)
+	writeJsonlExportGCStub(t, binDir)
+
+	env := jsonlExportEnv(t, cityDir, binDir, stateDir, archiveRepo, gcLog, mailLog)
+
+	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "jsonl-export.sh"), env)
+
+	localHead, err := exec.Command("git", "-C", archiveRepo, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse local HEAD: %v\n%s", err, localHead)
+	}
+	localHaltHead := strings.TrimSpace(string(localHead))
+
+	remoteHeadOut, err := exec.Command("git", "--git-dir", remoteRepo, "rev-parse", "refs/heads/main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse remote main after halt: %v\n%s", err, remoteHeadOut)
+	}
+	if got := strings.TrimSpace(string(remoteHeadOut)); got != remoteHead {
+		t.Fatalf("HALT run must not push remote main: got %s want %s", got, remoteHead)
+	}
+	if localHaltHead == remoteHead {
+		t.Fatalf("HALT run must create a local-only commit")
+	}
+
+	stateData, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("ReadFile(state file): %v", err)
+	}
+	if !strings.Contains(string(stateData), `"pending_archive_push":true`) {
+		t.Fatalf("expected pending_archive_push after HALT, got:\n%s", stateData)
+	}
+
+	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "jsonl-export.sh"), env)
+
+	remoteHeadOut, err = exec.Command("git", "--git-dir", remoteRepo, "rev-parse", "refs/heads/main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse remote main after retry: %v\n%s", err, remoteHeadOut)
+	}
+	if got := strings.TrimSpace(string(remoteHeadOut)); got != localHaltHead {
+		t.Fatalf("expected no-change run to push pending local commit: got %s want %s", got, localHaltHead)
+	}
+
+	stateData, err = os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("ReadFile(state file): %v", err)
+	}
+	if strings.Contains(string(stateData), `"pending_archive_push":true`) {
+		t.Fatalf("expected pending_archive_push to clear after push, got:\n%s", stateData)
+	}
+}
+
+func TestJsonlExportEmptyIssuesPayloadDoesNotCommitBrokenOutputs(t *testing.T) {
+	cityDir := t.TempDir()
+	binDir := t.TempDir()
+	stateDir := t.TempDir()
+	gcLog := filepath.Join(t.TempDir(), "gc.log")
+	mailLog := filepath.Join(t.TempDir(), "gc-mail.log")
+	archiveRepo := filepath.Join(cityDir, "archive")
+
+	prevHead := initSeedArchive(t, archiveRepo, 3)
+	writeEmptyIssuesPayloadDoltStub(t, binDir)
+	writeJsonlExportGCStub(t, binDir)
+
+	env := jsonlExportEnv(t, cityDir, binDir, stateDir, archiveRepo, gcLog, mailLog)
+	env["GC_JSONL_SCRUB"] = "false"
+
+	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "jsonl-export.sh"), env)
+
+	revOut, err := exec.Command("git", "-C", archiveRepo, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse: %v\n%s", err, revOut)
+	}
+	if newHead := strings.TrimSpace(string(revOut)); newHead != prevHead {
+		t.Fatalf("empty payload must not advance HEAD: got %s want %s", newHead, prevHead)
+	}
+
+	statusOut, err := exec.Command("git", "-C", archiveRepo, "status", "--short").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status: %v\n%s", err, statusOut)
+	}
+	if strings.TrimSpace(string(statusOut)) != "" {
+		t.Fatalf("empty payload must leave the archive worktree clean, got:\n%s", statusOut)
+	}
+
+	gcData, err := os.ReadFile(gcLog)
+	if err != nil {
+		t.Fatalf("ReadFile(gc log): %v", err)
+	}
+	if !strings.Contains(string(gcData), "failed: beads ") {
+		t.Fatalf("expected empty payload to report failed dbs, got:\n%s", gcData)
 	}
 }
 
@@ -2076,13 +2249,17 @@ func TestJsonlExportHaltMailFailureRecoversFromMalformedState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(state file): %v", err)
 	}
-	var state map[string]any
+	state := map[string]any{}
 	if err := json.Unmarshal(stateData, &state); err != nil {
 		t.Fatalf("Unmarshal(state file): %v\n%s", err, stateData)
 	}
-	pending, ok := state["pending_spike_alert"].(map[string]any)
+	pendingAlerts, ok := state["pending_spike_alerts"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected pending_spike_alert object, got: %s", stateData)
+		t.Fatalf("expected pending_spike_alerts map, got: %s", stateData)
+	}
+	pending, ok := pendingAlerts["beads"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected beads pending alert entry, got: %s", stateData)
 	}
 	if got := pending["database"]; got != "beads" {
 		t.Fatalf("pending_spike_alert.database = %v, want beads\nstate: %s", got, stateData)
@@ -2123,5 +2300,46 @@ func TestJsonlExportRetriesPendingAlertWithoutUserDatabases(t *testing.T) {
 	}
 	if strings.Contains(string(stateData), `"pending_spike_alert"`) {
 		t.Fatalf("expected pending spike alert to clear after retry, got:\n%s", stateData)
+	}
+}
+
+func TestJsonlExportHaltMailFailurePreservesExistingPendingAlerts(t *testing.T) {
+	cityDir := t.TempDir()
+	binDir := t.TempDir()
+	stateDir := t.TempDir()
+	gcLog := filepath.Join(t.TempDir(), "gc.log")
+	mailLog := filepath.Join(t.TempDir(), "gc-mail.log")
+	archiveRepo := filepath.Join(cityDir, "archive")
+	stateFile := filepath.Join(stateDir, "jsonl-export-state.json")
+
+	initSeedArchive(t, archiveRepo, 100)
+	writeMultiRecordDoltStub(t, binDir, 10)
+	writeJsonlExportGCStubWithMailExitCode(t, binDir, 1)
+
+	if err := os.WriteFile(stateFile, []byte(`{"pending_spike_alert":{"database":"oldbeads","prev_count":90,"current_count":45,"delta":50,"threshold":20}}`+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(state file): %v", err)
+	}
+
+	env := jsonlExportEnv(t, cityDir, binDir, stateDir, archiveRepo, gcLog, mailLog)
+
+	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "jsonl-export.sh"), env)
+
+	stateData, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("ReadFile(state file): %v", err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(stateData, &state); err != nil {
+		t.Fatalf("Unmarshal(state file): %v\n%s", err, stateData)
+	}
+	pendingAlerts, ok := state["pending_spike_alerts"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected pending_spike_alerts map, got:\n%s", stateData)
+	}
+	if _, ok := pendingAlerts["oldbeads"]; !ok {
+		t.Fatalf("expected existing pending alert to survive, got:\n%s", stateData)
+	}
+	if _, ok := pendingAlerts["beads"]; !ok {
+		t.Fatalf("expected new pending alert to be added, got:\n%s", stateData)
 	}
 }
