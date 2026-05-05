@@ -1846,6 +1846,111 @@ func TestReconcileSessionBeads_OnDemandNamedSessionDoesNotWakeFromDesiredStatePr
 	}
 }
 
+func TestReconcileSessionBeads_OnDemandNamedSessionWakesFromRoutedIdentityDemand(t *testing.T) {
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:              "mayor",
+			StartCommand:      "true",
+			MaxActiveSessions: intPtr(1),
+			WorkQuery:         "printf ''",
+		}},
+		NamedSessions: []config.NamedSession{{Template: "mayor", Mode: "on_demand"}},
+	}
+	sessionName := config.NamedSessionRuntimeName(cfg.EffectiveCityName(), cfg.Workspace, "mayor")
+
+	woken, running := reconcileExistingAsleepNamedSessionWithRoutedWork(t, cfg, sessionName, "mayor", "mayor")
+	if woken != 1 {
+		t.Fatalf("woken = %d, want 1", woken)
+	}
+	if !running {
+		t.Fatalf("on-demand named session %q was not started from routed identity demand", sessionName)
+	}
+}
+
+func TestReconcileSessionBeads_OnDemandNamedSessionWakesFromRoutedSingletonTemplateDemand(t *testing.T) {
+	cfg := &config.City{
+		Workspace: config.Workspace{Name: "test-city"},
+		Agents: []config.Agent{{
+			Name:              "worker",
+			StartCommand:      "true",
+			MaxActiveSessions: intPtr(1),
+			WorkQuery:         "printf ''",
+		}},
+		NamedSessions: []config.NamedSession{{Name: "primary", Template: "worker", Mode: "on_demand"}},
+	}
+
+	woken, running := reconcileExistingAsleepNamedSessionWithRoutedWork(t, cfg, "primary", "primary", "worker")
+	if woken != 1 {
+		t.Fatalf("woken = %d, want 1", woken)
+	}
+	if !running {
+		t.Fatal("on-demand named session primary was not started from routed singleton-template demand")
+	}
+}
+
+func reconcileExistingAsleepNamedSessionWithRoutedWork(t *testing.T, cfg *config.City, sessionName, identity, routedTo string) (int, bool) {
+	t.Helper()
+
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	clk := &clock.Fake{Time: time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC)}
+	sp := runtime.NewFake()
+	if _, err := store.Create(beads.Bead{
+		Title:  "queued named work",
+		Type:   "task",
+		Status: "open",
+		Metadata: map[string]string{
+			"gc.routed_to": routedTo,
+		},
+	}); err != nil {
+		t.Fatalf("Create(work): %v", err)
+	}
+	if _, err := store.Create(beads.Bead{
+		Title:  sessionName,
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: map[string]string{
+			"session_name":               sessionName,
+			"alias":                      identity,
+			"template":                   cfg.NamedSessions[0].Template,
+			"state":                      "asleep",
+			"generation":                 "1",
+			"instance_token":             "canonical-token",
+			namedSessionMetadataKey:      "true",
+			namedSessionIdentityMetadata: identity,
+			namedSessionModeMetadata:     "on_demand",
+		},
+	}); err != nil {
+		t.Fatalf("Create(session): %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	dsResult := buildDesiredState(cfg.EffectiveCityName(), cityPath, clk.Now().UTC(), cfg, sp, store, &stderr)
+	if !dsResult.NamedSessionDemand[identity] {
+		t.Fatalf("NamedSessionDemand[%s] = false for routed_to=%s; stderr:\n%s", identity, routedTo, stderr.String())
+	}
+	cfgNames := configuredSessionNames(cfg, cfg.EffectiveCityName(), store)
+	syncSessionBeads(cityPath, store, dsResult.State, sp, cfgNames, cfg, clk, &stderr, true)
+	sessions, err := loadSessionBeads(store)
+	if err != nil {
+		t.Fatalf("loadSessionBeads: %v", err)
+	}
+	poolDesired := PoolDesiredCounts(ComputePoolDesiredStates(cfg, dsResult.AssignedWorkBeads, sessions, dsResult.ScaleCheckCounts))
+	if poolDesired == nil {
+		poolDesired = make(map[string]int)
+	}
+	mergeNamedSessionDemand(poolDesired, dsResult.NamedSessionDemand, cfg)
+
+	woken := reconcileSessionBeadsAtPathWithNamedDemand(
+		context.Background(), cityPath, sessions, dsResult.State, cfgNames, cfg, sp,
+		store, nil, dsResult.AssignedWorkBeads, nil, nil, newDrainTracker(), poolDesired,
+		dsResult.NamedSessionDemand, dsResult.StoreQueryPartial, nil, cfg.EffectiveCityName(),
+		nil, clk, events.Discard, 0, 0, &stdout, &stderr,
+	)
+	return woken, sp.IsRunning(sessionName)
+}
+
 func TestReconcileSessionBeads_SyncsGCDirWithWorkDirOverride(t *testing.T) {
 	env := newReconcilerTestEnv()
 	env.cfg = &config.City{Agents: []config.Agent{{Name: "worker"}}}
@@ -2420,13 +2525,15 @@ func TestReconcileSessionBeads_FreshPendingCreateSurvivesStaleConfigSnapshot(t *
 func TestReconcileSessionBeads_PendingCreateWithoutDesiredStateUsesNeverStartedLease(t *testing.T) {
 	env := newReconcilerTestEnv()
 	session := env.createSessionBead("s-gc-late", "worker")
+	startedAt := env.clk.Now().Add(-(pendingCreateNeverStartedTimeout - time.Minute))
 	env.setSessionMetadata(&session, map[string]string{
-		"state":                "creating",
-		"pending_create_claim": "true",
+		"state":                     "creating",
+		"pending_create_claim":      "true",
+		"pending_create_started_at": pendingCreateStartedAtNow(startedAt),
 		// last_woke_at deliberately empty: preWakeCommit never fired before
 		// this pending create left desired state.
 	})
-	session.CreatedAt = env.clk.Now().Add(-(pendingCreateNeverStartedTimeout - time.Minute))
+	session.CreatedAt = env.clk.Now().Add(-24 * time.Hour)
 
 	woken := env.reconcile([]beads.Bead{session})
 	if woken != 0 {
@@ -2447,17 +2554,17 @@ func TestReconcileSessionBeads_PendingCreateWithoutDesiredStateUsesNeverStartedL
 func TestReconcileSessionBeads_ConfiguredPendingCreateWithoutDemandUsesNeverStartedLease(t *testing.T) {
 	tests := []struct {
 		name       string
-		createdAt  time.Time
+		startedAt  time.Time
 		wantClosed bool
 	}{
 		{
 			name:       "before lease expires",
-			createdAt:  time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC).Add(-(pendingCreateNeverStartedTimeout - time.Minute)),
+			startedAt:  time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC).Add(-(pendingCreateNeverStartedTimeout - time.Minute)),
 			wantClosed: false,
 		},
 		{
 			name:       "after lease expires",
-			createdAt:  time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC).Add(-(pendingCreateNeverStartedTimeout + time.Second)),
+			startedAt:  time.Date(2026, 3, 8, 12, 0, 0, 0, time.UTC).Add(-(pendingCreateNeverStartedTimeout + time.Second)),
 			wantClosed: true,
 		},
 	}
@@ -2468,12 +2575,13 @@ func TestReconcileSessionBeads_ConfiguredPendingCreateWithoutDemandUsesNeverStar
 			env.cfg = &config.City{Agents: []config.Agent{{Name: "worker"}}}
 			session := env.createSessionBead("s-gc-late", "worker")
 			env.setSessionMetadata(&session, map[string]string{
-				"state":                "creating",
-				"pending_create_claim": "true",
+				"state":                     "creating",
+				"pending_create_claim":      "true",
+				"pending_create_started_at": pendingCreateStartedAtNow(tt.startedAt),
 				// last_woke_at deliberately empty: preWakeCommit never fired before
 				// this configured template lost pool demand.
 			})
-			session.CreatedAt = tt.createdAt
+			session.CreatedAt = env.clk.Now().Add(-24 * time.Hour)
 
 			woken := env.reconcile([]beads.Bead{session})
 			if woken != 0 {
@@ -3381,21 +3489,22 @@ func TestReconcileSessionBeads_PreservesNeverStartedPendingCreateBeforeLeaseExpi
 		Type:   sessionBeadType,
 		Labels: []string{sessionBeadLabel, "template:helper"},
 		Metadata: map[string]string{
-			"session_name":          "helper",
-			"session_name_explicit": "true",
-			"pending_create_claim":  "true",
-			"template":              "helper",
-			"state":                 "creating",
-			"generation":            "1",
-			"continuation_epoch":    "1",
-			"instance_token":        "test-token",
+			"session_name":              "helper",
+			"session_name_explicit":     "true",
+			"pending_create_claim":      "true",
+			"pending_create_started_at": pendingCreateStartedAtNow(clk.Now().Add(-(pendingCreateNeverStartedTimeout - time.Minute))),
+			"template":                  "helper",
+			"state":                     "creating",
+			"generation":                "1",
+			"continuation_epoch":        "1",
+			"instance_token":            "test-token",
 			// last_woke_at deliberately empty — preWakeCommit never fired.
 		},
 	})
 	if err != nil {
 		t.Fatalf("Create(bead): %v", err)
 	}
-	bead.CreatedAt = clk.Now().Add(-(pendingCreateNeverStartedTimeout - time.Minute))
+	bead.CreatedAt = clk.Now().Add(-24 * time.Hour)
 
 	var stdout, stderr bytes.Buffer
 	cfgNames := configuredSessionNames(cfg, "", store)
@@ -3441,24 +3550,24 @@ func TestReconcileSessionBeads_RollsBackPendingCreateWhenLeaseExpiredAndNoRuntim
 		Type:   sessionBeadType,
 		Labels: []string{sessionBeadLabel, "template:helper"},
 		Metadata: map[string]string{
-			"session_name":          "helper",
-			"session_name_explicit": "true",
-			"pending_create_claim":  "true",
-			"template":              "helper",
-			"state":                 "creating",
-			"generation":            "1",
-			"continuation_epoch":    "1",
-			"instance_token":        "test-token",
+			"session_name":              "helper",
+			"session_name_explicit":     "true",
+			"pending_create_claim":      "true",
+			"pending_create_started_at": pendingCreateStartedAtNow(clk.Now().Add(-(pendingCreateNeverStartedTimeout + time.Second))),
+			"template":                  "helper",
+			"state":                     "creating",
+			"generation":                "1",
+			"continuation_epoch":        "1",
+			"instance_token":            "test-token",
 			// last_woke_at deliberately empty — preWakeCommit never fired.
 		},
 	})
 	if err != nil {
 		t.Fatalf("Create(bead): %v", err)
 	}
-	// Force CreatedAt past the never-started pending-create window. The
-	// reconciler reads CreatedAt from the passed bead slice, so modifying the
-	// local copy is sufficient.
-	bead.CreatedAt = clk.Now().Add(-(pendingCreateNeverStartedTimeout + time.Second))
+	// Keep CreatedAt fresh to prove production pending_create_started_at anchors
+	// the never-started pending-create lease for desired sessions.
+	bead.CreatedAt = clk.Now().Add(-time.Minute)
 
 	var stdout, stderr bytes.Buffer
 	cfgNames := configuredSessionNames(cfg, "", store)
@@ -3683,6 +3792,7 @@ func TestPendingCreateNeverStartedExpiredEdges(t *testing.T) {
 	tests := []struct {
 		name      string
 		createdAt time.Time
+		startedAt string
 		want      bool
 	}{
 		{
@@ -3705,11 +3815,30 @@ func TestPendingCreateNeverStartedExpiredEdges(t *testing.T) {
 			createdAt: time.Time{},
 			want:      true,
 		},
+		{
+			name:      "started at overrides older created at before boundary",
+			createdAt: clk.Now().Add(-24 * time.Hour),
+			startedAt: pendingCreateStartedAtNow(clk.Now().Add(-(pendingCreateNeverStartedTimeout - time.Second))),
+			want:      false,
+		},
+		{
+			name:      "started at overrides fresh created at after boundary",
+			createdAt: clk.Now().Add(-time.Minute),
+			startedAt: pendingCreateStartedAtNow(clk.Now().Add(-(pendingCreateNeverStartedTimeout + time.Second))),
+			want:      true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			bead := base
+			if tt.startedAt != "" {
+				bead.Metadata = map[string]string{
+					"pending_create_claim":      "true",
+					"pending_create_started_at": tt.startedAt,
+					"state":                     "creating",
+				}
+			}
 			bead.CreatedAt = tt.createdAt
 			if got := pendingCreateNeverStartedExpired(bead, clk); got != tt.want {
 				t.Fatalf("pendingCreateNeverStartedExpired() = %v, want %v", got, tt.want)
@@ -3889,13 +4018,13 @@ func TestReconcileSessionBeads_RollbackBudgetDefersExcessStaleNoRuntimeCreatesAn
 	env.cfg = &config.City{Agents: []config.Agent{{Name: "helper"}}}
 
 	var sessions []beads.Bead
-	staleStartedAt := pendingCreateStartedAtNow(env.clk.Now().Add(-2 * time.Minute))
+	staleStartedAt := pendingCreateStartedAtNow(env.clk.Now().Add(-(pendingCreateNeverStartedTimeout + time.Second)))
 	for i := 0; i < 6; i++ {
 		name := fmt.Sprintf("sky-%d", i)
 		env.addDesired(name, "helper", false)
 		session := env.createSessionBead(name, "helper")
 		env.markSessionCreating(&session)
-		session.CreatedAt = env.clk.Now().Add(-2 * time.Minute)
+		session.CreatedAt = env.clk.Now().Add(-24 * time.Hour)
 		env.setSessionMetadata(&session, map[string]string{
 			"pending_create_claim":      "true",
 			"pending_create_started_at": staleStartedAt,

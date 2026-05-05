@@ -175,7 +175,7 @@ elif [ "$ORPHAN_DBS" -gt "{{max_orphans_for_sql}}" ]; then
   run_or_warn "emit max-orphan escalation" gc event emit mol-dog-stale-db.escalate \
     --message "$ORPHAN_DBS stale databases > max_orphans_for_sql={{max_orphans_for_sql}} -> mail sent to mayor"
 else
-  if ! gc dolt-cleanup --json --probe --force > "$APPLY_FILE"; then
+  if ! gc dolt-cleanup --json --probe --force --max-orphan-dbs "{{max_orphans_for_sql}}" > "$APPLY_FILE"; then
     ESCALATED=1
     append_report_note "apply (--force, failed)" "$APPLY_FILE"
     run_or_warn "send apply refusal escalation mail" gc mail send mayor \
@@ -190,6 +190,23 @@ else
     run_or_warn "emit invalid apply JSON escalation" gc event emit mol-dog-stale-db.escalate \
       --message "apply returned invalid JSON; leaving work bead open"
     fail_open_after_drain "gc dolt-cleanup apply returned invalid JSON; leaving work bead open"
+  fi
+
+  APPLY_ERRS=$(jq -r '.summary.errors_total // 0' "$APPLY_FILE")
+  APPLY_MAX_ORPHAN_REFUSALS=$(jq -r '[.errors[]? | select((.kind // "") == "max-orphan-refusal" or (((.error // "" | ascii_downcase) | (contains("--max-orphan-dbs") or contains("max-orphan") or contains("orphan databases")) and (contains("refus") or contains("exceed")))))] | length' "$APPLY_FILE")
+  if [ "$APPLY_ERRS" -gt 0 ] || [ "$APPLY_MAX_ORPHAN_REFUSALS" -gt 0 ]; then
+    ESCALATED=1
+    APPLY_REFUSAL_MESSAGE="apply reported ${APPLY_ERRS} error(s); leaving work bead open"
+    if [ "$APPLY_MAX_ORPHAN_REFUSALS" -gt 0 ]; then
+      APPLY_REFUSAL_MESSAGE="apply refused by max-orphan safety guard; leaving work bead open"
+    fi
+    append_report_note "apply (--force, refused)" "$APPLY_FILE"
+    run_or_warn "send apply refusal escalation mail" gc mail send mayor \
+      "ESCALATION: gc dolt-cleanup apply refused [HIGH]" \
+      "gc dolt-cleanup --probe --force refused or reported ${APPLY_ERRS} error(s). Do not retry from an agent. Operator must inspect the attached apply report before deciding whether any manual cleanup is appropriate."
+    run_or_warn "emit apply refusal escalation" gc event emit mol-dog-stale-db.escalate \
+      --message "$APPLY_REFUSAL_MESSAGE"
+    fail_open_after_drain "gc dolt-cleanup ${APPLY_REFUSAL_MESSAGE}"
   fi
 
   DROP_OK=$(jq -r '.dropped.count // 0' "$APPLY_FILE")
@@ -230,16 +247,14 @@ fi
 run_or_warn "emit done event" gc event emit mol-dog-stale-db.done \
   --message "$DONE_MESSAGE"
 
-if [ "$APPLIED" -eq 1 ] && [ "$DONE_ERRS" -gt 0 ]; then
-  ESCALATED=1
-  run_or_warn "emit apply error escalation" gc event emit mol-dog-stale-db.escalate \
-    --message "apply reported ${DONE_ERRS} error(s); leaving work bead open"
-fi
-
 if [ "$APPLIED" -eq 1 ] && [ "$MISSED_PURGE_BYTES" -gt 0 ]; then
   ESCALATED=1
   run_or_warn "emit missed purge escalation" gc event emit mol-dog-stale-db.escalate \
     --message "apply missed ${MISSED_PURGE_BYTES} reclaimable bytes; leaving work bead open"
+elif [ "$APPLIED" -eq 1 ] && [ "$DONE_ERRS" -gt 0 ]; then
+  ESCALATED=1
+  run_or_warn "emit apply error escalation" gc event emit mol-dog-stale-db.escalate \
+    --message "apply reported ${DONE_ERRS} error(s); leaving work bead open"
 fi
 
 if [ "$ORPHAN_TOTAL" -ge "{{warn_threshold}}" ]; then
@@ -247,6 +262,10 @@ if [ "$ORPHAN_TOTAL" -ge "{{warn_threshold}}" ]; then
 fi
 
 gc session nudge deacon "DOG_DONE: stale-db - orphans: ${ORPHAN_TOTAL}, applied: ${APPLIED}, escalated: ${ESCALATED}" || true
+
+if [ "$APPLIED" -eq 1 ] && [ "$MISSED_PURGE_BYTES" -gt 0 ]; then
+  fail_open_after_drain "gc dolt-cleanup apply missed ${MISSED_PURGE_BYTES} reclaimable bytes; leaving work bead open"
+fi
 
 if [ "$APPLIED" -eq 1 ] && [ "$DONE_ERRS" -gt 0 ]; then
   fail_open_after_drain "gc dolt-cleanup apply reported ${DONE_ERRS} error(s); leaving work bead open"

@@ -4695,7 +4695,7 @@ func TestHandleSessionStreamStoppedWithoutOutputReturnsNotFound(t *testing.T) {
 	}
 }
 
-func TestHandleSessionStreamRawStoppedWithoutOutputReturnsEmptyStream(t *testing.T) {
+func TestHandleSessionStreamRawStoppedWithoutOutputReturnsNotFound(t *testing.T) {
 	fs := newSessionFakeState(t)
 	srv := New(fs)
 	h := newTestCityHandlerWith(t, fs, srv)
@@ -4714,14 +4714,31 @@ func TestHandleSessionStreamRawStoppedWithoutOutputReturnsEmptyStream(t *testing
 	req := httptest.NewRequest("GET", cityURL(fs, "/session/")+info.ID+"/stream?format=raw", nil)
 	h.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("got status %d, want %d; body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got status %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
-	if ct := rec.Header().Get("Content-Type"); ct != "text/event-stream" {
-		t.Fatalf("Content-Type = %q, want text/event-stream", ct)
+}
+
+func TestLegacySessionStreamRawStoppedWithoutOutputReturnsNotFound(t *testing.T) {
+	fs := newSessionFakeState(t)
+	srv := New(fs)
+	srv.sessionLogSearchPaths = []string{t.TempDir()}
+
+	mgr := session.NewManager(fs.cityBeadStore, fs.sp)
+	info, err := mgr.Create(context.Background(), "default", "No Output", "echo test", t.TempDir(), "test", nil, session.ProviderResume{}, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
 	}
-	if !strings.Contains(rec.Body.String(), `"format":"raw"`) || !strings.Contains(rec.Body.String(), `"messages":[]`) {
-		t.Fatalf("raw stream body missing empty raw frame: %s", rec.Body.String())
+	if err := mgr.Suspend(info.ID); err != nil {
+		t.Fatalf("Suspend: %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/v0/session/"+info.ID+"/stream?format=raw", nil)
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("got status %d, want %d; body: %s", rec.Code, http.StatusNotFound, rec.Body.String())
 	}
 }
 
@@ -4775,6 +4792,58 @@ func TestHandleSessionStreamClosedSessionReturnsSnapshot(t *testing.T) {
 		if event.Type == events.WorkerOperation {
 			t.Fatalf("closed session stream emitted worker operation event: %#v", event)
 		}
+	}
+}
+
+func TestHandleSessionStreamStoppedSessionCommitsStatusHeaders(t *testing.T) {
+	fs := newSessionFakeState(t)
+	searchBase := t.TempDir()
+	srv := New(fs)
+	srv.sessionLogSearchPaths = []string{searchBase}
+	h := newTestCityHandlerWith(t, fs, srv)
+
+	mgr := session.NewManager(fs.cityBeadStore, fs.sp)
+	resume := session.ProviderResume{
+		ResumeFlag:    "--resume",
+		ResumeStyle:   "flag",
+		SessionIDFlag: "--session-id",
+	}
+	workDir := t.TempDir()
+	info, err := mgr.Create(context.Background(), "myrig/worker", "Chat", "claude", workDir, "claude", nil, resume, runtime.Config{})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	writeNamedSessionJSONL(t, searchBase, workDir, info.SessionKey+".jsonl",
+		`{"uuid":"1","parentUuid":"","type":"user","message":"{\"role\":\"user\",\"content\":\"hello\"}","timestamp":"2025-01-01T00:00:00Z"}`,
+	)
+	if err := mgr.Suspend(info.ID); err != nil {
+		t.Fatalf("Suspend: %v", err)
+	}
+
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+cityURL(fs, "/session/")+info.ID+"/stream", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	cancel()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := resp.Header.Get("GC-Session-State"); got != "suspended" {
+		t.Fatalf("committed GC-Session-State = %q, want %q", got, "suspended")
+	}
+	if got := resp.Header.Get("GC-Session-Status"); got != "stopped" {
+		t.Fatalf("committed GC-Session-Status = %q, want %q", got, "stopped")
 	}
 }
 

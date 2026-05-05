@@ -151,6 +151,10 @@ func pendingCreateSessionStillLeased(session beads.Bead, cfg *config.City, clk c
 	}
 	pendingCreate := strings.TrimSpace(session.Metadata["pending_create_claim"]) == "true" &&
 		strings.TrimSpace(session.Metadata["state"]) == "creating"
+	// Configured templates without current demand are not preserved forever
+	// merely because their agent still exists. Once the pending-create lease
+	// expires, the bead falls through to orphan/rollback handling so its alias
+	// can be released.
 	if pendingCreate && pendingCreateLeaseExpiredForRollback(session, clk, startupTimeout) {
 		return false
 	}
@@ -192,11 +196,9 @@ func pendingCreateStartInFlight(session beads.Bead, clk clock.Clock, startupTime
 }
 
 // pendingCreateNeverStartedTimeout is the rollback floor for pending creates
-// that have not reached preWakeCommit and therefore have no last_woke_at start
-// lease. The same empty-last_woke_at shape is used after recoverable provider
-// start failures because commitStartResultTraced clears the lease before
-// recordWakeFailure applies retry/quarantine backoff, so this timeout also
-// bounds that retry-bead cleanup path.
+// with no last_woke_at start lease. Production-created pending beads record
+// pending_create_started_at when they enter state=creating; use that timestamp
+// as the lease anchor when present, with CreatedAt as the legacy fallback.
 //
 // It is intentionally longer than staleCreatingStateTimeout: that one-minute
 // window still handles corrupt/unparseable last_woke_at metadata and generic
@@ -214,14 +216,18 @@ func pendingCreateNeverStartedExpired(session beads.Bead, clk clock.Clock) bool 
 	if strings.TrimSpace(session.Metadata["last_woke_at"]) != "" {
 		return false
 	}
-	if session.CreatedAt.IsZero() {
+	anchor := session.CreatedAt
+	if started, ok := parseRFC3339Metadata(session.Metadata["pending_create_started_at"]); ok {
+		anchor = started
+	}
+	if anchor.IsZero() {
 		return true
 	}
 	now := time.Now()
 	if clk != nil {
 		now = clk.Now()
 	}
-	return now.After(session.CreatedAt.Add(pendingCreateNeverStartedTimeout))
+	return now.After(anchor.Add(pendingCreateNeverStartedTimeout))
 }
 
 func pendingCreateLeaseExpiredForRollback(session beads.Bead, clk clock.Clock, startupTimeout time.Duration) bool {
@@ -235,9 +241,6 @@ func pendingCreateLeaseExpiredForRollback(session beads.Bead, clk clock.Clock, s
 		return false
 	}
 	if strings.TrimSpace(session.Metadata["last_woke_at"]) == "" {
-		if _, ok := parseRFC3339Metadata(session.Metadata["pending_create_started_at"]); ok {
-			return staleCreatingState(session, clk)
-		}
 		return pendingCreateNeverStartedExpired(session, clk)
 	}
 	return staleCreatingState(session, clk)
@@ -299,6 +302,8 @@ func reconcileSessionBeads(
 // work that lives outside the primary store. Pass nil when no rig
 // stores are attached; the reconciler will fall back to primary-store-
 // only queries.
+//
+//nolint:unparam // compatibility wrapper keeps the established test/helper signature.
 func reconcileSessionBeadsAtPath(
 	ctx context.Context,
 	cityPath string,
@@ -324,9 +329,41 @@ func reconcileSessionBeadsAtPath(
 	driftDrainTimeout time.Duration,
 	stdout, stderr io.Writer,
 ) int {
-	return reconcileSessionBeadsTraced(
+	return reconcileSessionBeadsAtPathWithNamedDemand(
 		ctx, cityPath, sessions, desiredState, configuredNames, cfg, sp, store, dops, assignedWorkBeads, rigStores, readyWaitSet, dt,
-		poolDesired, storeQueryPartial, workSet, cityName, it, clk, rec, startupTimeout, driftDrainTimeout, stdout, stderr, nil,
+		poolDesired, nil, storeQueryPartial, workSet, cityName, it, clk, rec, startupTimeout, driftDrainTimeout, stdout, stderr,
+	)
+}
+
+func reconcileSessionBeadsAtPathWithNamedDemand(
+	ctx context.Context,
+	cityPath string,
+	sessions []beads.Bead,
+	desiredState map[string]TemplateParams,
+	configuredNames map[string]bool,
+	cfg *config.City,
+	sp runtime.Provider,
+	store beads.Store,
+	dops drainOps,
+	assignedWorkBeads []beads.Bead,
+	rigStores map[string]beads.Store,
+	readyWaitSet map[string]bool,
+	dt *drainTracker,
+	poolDesired map[string]int,
+	namedSessionDemand map[string]bool,
+	storeQueryPartial bool,
+	workSet map[string]bool,
+	cityName string,
+	it idleTracker,
+	clk clock.Clock,
+	rec events.Recorder,
+	startupTimeout time.Duration,
+	driftDrainTimeout time.Duration,
+	stdout, stderr io.Writer,
+) int {
+	return reconcileSessionBeadsTracedWithNamedDemand(
+		ctx, cityPath, sessions, desiredState, configuredNames, cfg, sp, store, dops, assignedWorkBeads, rigStores, readyWaitSet, dt,
+		poolDesired, namedSessionDemand, storeQueryPartial, workSet, cityName, it, clk, rec, startupTimeout, driftDrainTimeout, stdout, stderr, nil,
 	)
 }
 
@@ -345,6 +382,41 @@ func reconcileSessionBeadsTraced(
 	readyWaitSet map[string]bool,
 	dt *drainTracker,
 	poolDesired map[string]int,
+	storeQueryPartial bool,
+	workSet map[string]bool,
+	cityName string,
+	it idleTracker,
+	clk clock.Clock,
+	rec events.Recorder,
+	startupTimeout time.Duration,
+	driftDrainTimeout time.Duration,
+	stdout, stderr io.Writer,
+	trace *sessionReconcilerTraceCycle,
+	startOptions ...startExecutionOption,
+) int {
+	return reconcileSessionBeadsTracedWithNamedDemand(
+		ctx, cityPath, sessions, desiredState, configuredNames, cfg, sp, store, dops, assignedWorkBeads, rigStores, readyWaitSet, dt,
+		poolDesired, nil, storeQueryPartial, workSet, cityName, it, clk, rec, startupTimeout, driftDrainTimeout, stdout, stderr, trace,
+		startOptions...,
+	)
+}
+
+func reconcileSessionBeadsTracedWithNamedDemand(
+	ctx context.Context,
+	cityPath string,
+	sessions []beads.Bead,
+	desiredState map[string]TemplateParams,
+	configuredNames map[string]bool,
+	cfg *config.City,
+	sp runtime.Provider,
+	store beads.Store,
+	dops drainOps,
+	assignedWorkBeads []beads.Bead,
+	rigStores map[string]beads.Store,
+	readyWaitSet map[string]bool,
+	dt *drainTracker,
+	poolDesired map[string]int,
+	namedSessionDemand map[string]bool,
 	storeQueryPartial bool,
 	workSet map[string]bool,
 	cityName string,
@@ -1206,7 +1278,7 @@ func reconcileSessionBeadsTraced(
 
 	// Use ComputeAwakeSet for the wake/sleep decision.
 	awakeInput := buildAwakeInputFromReconciler(
-		cfg, ordered, poolDesired, workSet, readyWaitSet,
+		cfg, ordered, poolDesired, namedSessionDemand, workSet, readyWaitSet,
 		assignedWorkBeads, wakeTargets, sp, clk.Now(),
 	)
 	awakeDecisions := ComputeAwakeSet(awakeInput)
