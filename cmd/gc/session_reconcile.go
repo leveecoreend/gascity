@@ -965,6 +965,9 @@ func staleCreatingState(session beads.Bead, clk clock.Clock) bool {
 	if clk == nil {
 		return false
 	}
+	if strings.TrimSpace(session.Metadata["state"]) != string(sessionpkg.StateCreating) {
+		return false
+	}
 	now := clk.Now()
 	if started, ok := parseRFC3339Metadata(session.Metadata["pending_create_started_at"]); ok {
 		return !now.Before(started.Add(staleCreatingStateTimeout))
