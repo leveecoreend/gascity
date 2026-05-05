@@ -4832,11 +4832,12 @@ schedule = "0 3 * * *"
 // without a paired update to the controller's watcher exclusion list.
 func TestControlDispatcherStartCommandTracesUnderGCRuntime(t *testing.T) {
 	const (
-		wantRuntimeDir = "${GC_CITY_RUNTIME_DIR:-${GC_CITY}/" + citylayout.RuntimeDataRoot + "}"
-		wantTracePath  = wantRuntimeDir + "/control-dispatcher-trace.log"
-		wantMkdirSnip  = `mkdir -p "` + wantRuntimeDir + `"`
-		oldTracePath   = "${GC_CITY}/control-dispatcher-trace.log"
-		qualifiedName  = "qcore/control-dispatcher"
+		wantRuntimeDir   = "${GC_CITY_RUNTIME_DIR:-${GC_CITY}/" + citylayout.RuntimeDataRoot + "}"
+		wantTracePath    = wantRuntimeDir + "/control-dispatcher-trace.log"
+		wantTraceDirExpr = `trace_dir="${GC_WORKFLOW_TRACE%/*}"`
+		wantMkdirSnip    = `mkdir -p "$trace_dir"`
+		oldTracePath     = "${GC_CITY}/control-dispatcher-trace.log"
+		qualifiedName    = "qcore/control-dispatcher"
 	)
 
 	t.Run("city-level constant", func(t *testing.T) {
@@ -4847,13 +4848,13 @@ func TestControlDispatcherStartCommandTracesUnderGCRuntime(t *testing.T) {
 		if !strings.Contains(got, wantTracePath) {
 			t.Errorf("ControlDispatcherStartCommand missing %q\n got: %s", wantTracePath, got)
 		}
-		if !strings.Contains(got, wantMkdirSnip) {
-			t.Errorf("ControlDispatcherStartCommand missing %q (needed so .gc/runtime/ exists on first start)\n got: %s", wantMkdirSnip, got)
+		if !strings.Contains(got, wantTraceDirExpr) {
+			t.Errorf("ControlDispatcherStartCommand missing %q so explicit GC_WORKFLOW_TRACE overrides create their own parent dir\n got: %s", wantTraceDirExpr, got)
 		}
-		// Guard against accidental revert: the old city-root path must not
-		// reappear as a substring (the new path contains it as a suffix, so
-		// match the trailing form including the leading slash).
-		if strings.Contains(got, `"${GC_WORKFLOW_TRACE:-`+oldTracePath+`"`) {
+		if !strings.Contains(got, wantMkdirSnip) {
+			t.Errorf("ControlDispatcherStartCommand missing %q (needed so the resolved trace parent exists on first start)\n got: %s", wantMkdirSnip, got)
+		}
+		if strings.Contains(got, oldTracePath) {
 			t.Errorf("ControlDispatcherStartCommand still references the old city-root trace path %q\n got: %s", oldTracePath, got)
 		}
 	})
@@ -4865,6 +4866,9 @@ func TestControlDispatcherStartCommandTracesUnderGCRuntime(t *testing.T) {
 		}
 		if !strings.Contains(got, wantTracePath) {
 			t.Errorf("ControlDispatcherStartCommandFor missing %q\n got: %s", wantTracePath, got)
+		}
+		if !strings.Contains(got, wantTraceDirExpr) {
+			t.Errorf("ControlDispatcherStartCommandFor missing %q so explicit GC_WORKFLOW_TRACE overrides create their own parent dir\n got: %s", wantTraceDirExpr, got)
 		}
 		if !strings.Contains(got, wantMkdirSnip) {
 			t.Errorf("ControlDispatcherStartCommandFor missing %q\n got: %s", wantMkdirSnip, got)
@@ -4878,7 +4882,7 @@ func TestControlDispatcherStartCommandTracesUnderGCRuntime(t *testing.T) {
 func TestControlDispatcherStartCommandExecResolvesRuntimeTracePath(t *testing.T) {
 	t.Run("default runtime root", func(t *testing.T) {
 		cityDir := t.TempDir()
-		tracePath, args := runControlDispatcherStartCommand(t, ControlDispatcherStartCommand, cityDir, "")
+		tracePath, args := runControlDispatcherStartCommand(t, ControlDispatcherStartCommand, cityDir, nil)
 		wantTracePath := filepath.Join(cityDir, citylayout.RuntimeDataRoot, "control-dispatcher-trace.log")
 		if tracePath != wantTracePath {
 			t.Fatalf("trace path = %q, want %q", tracePath, wantTracePath)
@@ -4894,7 +4898,9 @@ func TestControlDispatcherStartCommandExecResolvesRuntimeTracePath(t *testing.T)
 	t.Run("runtime root override", func(t *testing.T) {
 		cityDir := t.TempDir()
 		runtimeDir := filepath.Join(t.TempDir(), "custom-runtime")
-		tracePath, args := runControlDispatcherStartCommand(t, ControlDispatcherStartCommandFor("qcore/control-dispatcher"), cityDir, runtimeDir)
+		tracePath, args := runControlDispatcherStartCommand(t, ControlDispatcherStartCommandFor("qcore/control-dispatcher"), cityDir, map[string]string{
+			"GC_CITY_RUNTIME_DIR": runtimeDir,
+		})
 		wantTracePath := filepath.Join(runtimeDir, "control-dispatcher-trace.log")
 		if tracePath != wantTracePath {
 			t.Fatalf("trace path = %q, want %q", tracePath, wantTracePath)
@@ -4906,9 +4912,31 @@ func TestControlDispatcherStartCommandExecResolvesRuntimeTracePath(t *testing.T)
 			t.Fatalf("trace file %q not created: %v", wantTracePath, err)
 		}
 	})
+
+	t.Run("explicit trace override ignores runtime-root conflicts", func(t *testing.T) {
+		cityDir := t.TempDir()
+		blockedRuntimeRoot := filepath.Join(t.TempDir(), "not-a-dir")
+		if err := os.WriteFile(blockedRuntimeRoot, []byte("blocked"), 0o644); err != nil {
+			t.Fatalf("write blocked runtime-root sentinel: %v", err)
+		}
+		overrideTrace := filepath.Join(t.TempDir(), "override-runtime", "dispatcher.log")
+		tracePath, args := runControlDispatcherStartCommand(t, ControlDispatcherStartCommand, cityDir, map[string]string{
+			"GC_CITY_RUNTIME_DIR": blockedRuntimeRoot,
+			"GC_WORKFLOW_TRACE":   overrideTrace,
+		})
+		if tracePath != overrideTrace {
+			t.Fatalf("trace path = %q, want explicit override %q", tracePath, overrideTrace)
+		}
+		if args != "convoy control --serve --follow "+ControlDispatcherAgentName {
+			t.Fatalf("args = %q, want follow command for %q", args, ControlDispatcherAgentName)
+		}
+		if _, err := os.Stat(overrideTrace); err != nil {
+			t.Fatalf("override trace file %q not created: %v", overrideTrace, err)
+		}
+	})
 }
 
-func runControlDispatcherStartCommand(t *testing.T, command, cityDir, runtimeDir string) (tracePath, args string) {
+func runControlDispatcherStartCommand(t *testing.T, command, cityDir string, extraEnv map[string]string) (tracePath, args string) {
 	t.Helper()
 
 	tmp := t.TempDir()
@@ -4917,6 +4945,9 @@ func runControlDispatcherStartCommand(t *testing.T, command, cityDir, runtimeDir
 	gcScript := fmt.Sprintf(`#!/bin/sh
 set -eu
 trace_parent=${GC_WORKFLOW_TRACE%%/*}
+if [ "$trace_parent" = "$GC_WORKFLOW_TRACE" ]; then
+  trace_parent=.
+fi
 [ -d "$trace_parent" ]
 : > "$GC_WORKFLOW_TRACE"
 printf 'TRACE=%%s\nARGS=%%s\n' "$GC_WORKFLOW_TRACE" "$*" > %q
@@ -4931,8 +4962,8 @@ printf 'TRACE=%%s\nARGS=%%s\n' "$GC_WORKFLOW_TRACE" "$*" > %q
 		"GC_BIN=" + gcPath,
 		"GC_CITY=" + cityDir,
 	}
-	if runtimeDir != "" {
-		cmd.Env = append(cmd.Env, "GC_CITY_RUNTIME_DIR="+runtimeDir)
+	for key, value := range extraEnv {
+		cmd.Env = append(cmd.Env, key+"="+value)
 	}
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("run control-dispatcher start command: %v\n%s", err, out)

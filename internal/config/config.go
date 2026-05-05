@@ -39,6 +39,10 @@ const (
 	// controlDispatcherTracePathExpr is the default workflow trace file within
 	// the canonical runtime root.
 	controlDispatcherTracePathExpr = controlDispatcherRuntimeDirExpr + `/control-dispatcher-trace.log`
+	// controlDispatcherTraceDirInit creates the parent directory for the
+	// resolved trace path. This preserves explicit GC_WORKFLOW_TRACE overrides
+	// instead of unconditionally depending on the default runtime root.
+	controlDispatcherTraceDirInit = `trace_dir="${GC_WORKFLOW_TRACE%/*}"; if [ "$trace_dir" = "$GC_WORKFLOW_TRACE" ]; then trace_dir="."; fi; mkdir -p "$trace_dir"`
 	// ControlDispatcherStartCommand runs the built-in control-dispatcher worker.
 	// Wrapped in `sh -c` so any appended prompt suffix is ignored as $0.
 	// The control lane is kept resident and blocks on workflow-relevant city
@@ -52,7 +56,7 @@ const (
 	// cycle duration well past the configured patrol_interval. See
 	// engdocs/design/session-reconciler-tracing.md for the canonical
 	// .gc/runtime/ convention for trace data.
-	ControlDispatcherStartCommand = `sh -c 'export GC_WORKFLOW_TRACE="${GC_WORKFLOW_TRACE:-` + controlDispatcherTracePathExpr + `}"; mkdir -p "` + controlDispatcherRuntimeDirExpr + `"; exec "${GC_BIN:-gc}" convoy control --serve --follow ` + ControlDispatcherAgentName + `'`
+	ControlDispatcherStartCommand = `sh -c 'export GC_WORKFLOW_TRACE="${GC_WORKFLOW_TRACE:-` + controlDispatcherTracePathExpr + `}"; ` + controlDispatcherTraceDirInit + `; exec "${GC_BIN:-gc}" convoy control --serve --follow ` + ControlDispatcherAgentName + `'`
 )
 
 // ControlDispatcherStartCommandFor returns the start command for a
@@ -61,7 +65,7 @@ const (
 // fsnotify exclusion; see ControlDispatcherStartCommand for the full
 // rationale.
 func ControlDispatcherStartCommandFor(qualifiedName string) string {
-	return `sh -c 'export GC_WORKFLOW_TRACE="${GC_WORKFLOW_TRACE:-` + controlDispatcherTracePathExpr + `}"; mkdir -p "` + controlDispatcherRuntimeDirExpr + `"; exec "${GC_BIN:-gc}" convoy control --serve --follow ` + qualifiedName + `'`
+	return `sh -c 'export GC_WORKFLOW_TRACE="${GC_WORKFLOW_TRACE:-` + controlDispatcherTracePathExpr + `}"; ` + controlDispatcherTraceDirInit + `; exec "${GC_BIN:-gc}" convoy control --serve --follow ` + qualifiedName + `'`
 }
 
 // BindingQualifiedName returns the binding-qualified agent identity without a

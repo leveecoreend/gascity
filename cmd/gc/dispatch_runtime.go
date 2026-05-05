@@ -73,13 +73,19 @@ var (
 		}
 		return ep, nil
 	}
-	workflowServeIdlePollInterval            = 100 * time.Millisecond
-	workflowServeIdlePollAttempts            = 3
-	workflowServeWakeSweepInterval           = 1 * time.Second
-	workflowServeMaxIdleSleep                = 30 * time.Second
-	workflowServeWaitForWake                 = waitForRelevantWorkflowWakeWithTrace
-	workflowTraceWarningWriter     io.Writer = os.Stderr
-	workflowTraceOpenWarned        sync.Map
+	workflowServeIdlePollInterval  = 100 * time.Millisecond
+	workflowServeIdlePollAttempts  = 3
+	workflowServeWakeSweepInterval = 1 * time.Second
+	workflowServeMaxIdleSleep      = 30 * time.Second
+	workflowServeWaitForWake       = waitForRelevantWorkflowWakeWithTrace
+	workflowTraceWarnings          = struct {
+		mu     sync.Mutex
+		writer io.Writer
+		warned map[string]struct{}
+	}{
+		writer: os.Stderr,
+		warned: map[string]struct{}{},
+	}
 )
 
 // followSleepDuration returns the sleep interval the --follow loop should use
@@ -160,16 +166,39 @@ func workflowTracef(format string, args ...any) {
 }
 
 func workflowTraceWarnOpenFailure(path string, err error) {
-	if workflowTraceWarningWriter == nil || strings.TrimSpace(path) == "" || err == nil {
+	if strings.TrimSpace(path) == "" || err == nil {
 		return
 	}
-	if _, loaded := workflowTraceOpenWarned.LoadOrStore(path, struct{}{}); loaded {
+	workflowTraceWarnings.mu.Lock()
+	defer workflowTraceWarnings.mu.Unlock()
+	if workflowTraceWarnings.writer == nil {
 		return
 	}
-	fmt.Fprintf(workflowTraceWarningWriter, "gc convoy control --serve: warning: opening workflow trace %q: %v\n", path, err) //nolint:errcheck // best-effort stderr
+	if _, warned := workflowTraceWarnings.warned[path]; warned {
+		return
+	}
+	workflowTraceWarnings.warned[path] = struct{}{}
+	fmt.Fprintf(workflowTraceWarnings.writer, "gc convoy control --serve: warning: opening workflow trace %q: %v\n", path, err) //nolint:errcheck // best-effort stderr
+}
+
+func useWorkflowTraceWarnings(writer io.Writer) func() {
+	workflowTraceWarnings.mu.Lock()
+	prevWriter := workflowTraceWarnings.writer
+	workflowTraceWarnings.writer = writer
+	workflowTraceWarnings.warned = map[string]struct{}{}
+	workflowTraceWarnings.mu.Unlock()
+	return func() {
+		workflowTraceWarnings.mu.Lock()
+		workflowTraceWarnings.writer = prevWriter
+		workflowTraceWarnings.warned = map[string]struct{}{}
+		workflowTraceWarnings.mu.Unlock()
+	}
 }
 
 func runWorkflowServe(agentName string, follow bool, _ io.Writer, stderr io.Writer) error {
+	restoreTraceWarnings := useWorkflowTraceWarnings(stderr)
+	defer restoreTraceWarnings()
+
 	cityPath, err := resolveCity()
 	if err != nil {
 		return err

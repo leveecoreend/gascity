@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -1467,6 +1466,46 @@ func TestRunWorkflowServeDrainsReadyBatchBeforeRequery(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("workflowServeList calls = %d, want first ready batch plus idle check", calls)
+	}
+}
+
+func TestRunWorkflowServeRoutesTraceOpenWarningsToCommandStderr(t *testing.T) {
+	cityDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cityDir, "city.toml"), []byte("[workspace]\nname = \"test-city\"\n\n[daemon]\nformula_v2 = true\n"), 0o644); err != nil {
+		t.Fatalf("write city.toml: %v", err)
+	}
+	t.Setenv("GC_CITY", cityDir)
+	t.Setenv("GC_WORKFLOW_TRACE", filepath.Join(t.TempDir(), "missing", "workflow-trace.log"))
+
+	prevCityFlag := cityFlag
+	prevList := workflowServeList
+	prevInterval := workflowServeIdlePollInterval
+	prevAttempts := workflowServeIdlePollAttempts
+	cityFlag = ""
+	workflowServeIdlePollInterval = 0
+	workflowServeIdlePollAttempts = 0
+	t.Cleanup(func() {
+		cityFlag = prevCityFlag
+		workflowServeList = prevList
+		workflowServeIdlePollInterval = prevInterval
+		workflowServeIdlePollAttempts = prevAttempts
+	})
+
+	workflowServeList = func(_, _ string, _ map[string]string) ([]hookBead, error) {
+		return nil, nil
+	}
+
+	var stderr bytes.Buffer
+	if err := runWorkflowServe("", false, io.Discard, &stderr); err != nil {
+		t.Fatalf("runWorkflowServe: %v", err)
+	}
+
+	got := stderr.String()
+	if count := strings.Count(got, "opening workflow trace"); count != 1 {
+		t.Fatalf("warning count = %d, want 1; stderr=%q", count, got)
+	}
+	if !strings.Contains(got, "gc convoy control --serve: warning: opening workflow trace") {
+		t.Fatalf("stderr = %q, want workflow trace warning prefix", got)
 	}
 }
 
@@ -3575,13 +3614,8 @@ func TestWorkflowTracefWarnsOnceWhenTracePathCannotBeOpened(t *testing.T) {
 	t.Setenv("GC_WORKFLOW_TRACE", tracePath)
 
 	var stderr bytes.Buffer
-	prevWriter := workflowTraceWarningWriter
-	workflowTraceWarningWriter = &stderr
-	workflowTraceOpenWarned = sync.Map{}
-	t.Cleanup(func() {
-		workflowTraceWarningWriter = prevWriter
-		workflowTraceOpenWarned = sync.Map{}
-	})
+	restoreWarnings := useWorkflowTraceWarnings(&stderr)
+	defer restoreWarnings()
 
 	workflowTracef("first write")
 	workflowTracef("second write")
