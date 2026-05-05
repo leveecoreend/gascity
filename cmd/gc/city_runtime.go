@@ -1310,13 +1310,10 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 		readyWaitSet = nil
 	}
 
-	// workSet: defense-in-depth wake signal from work_query. When work_query
-	// detects pending work but scale_check hasn't caught up yet, workSet
-	// ensures at least one session wakes without waiting for the next tick.
-	workSet := result.WorkSet
-	if workSet == nil {
-		workSet = computeWorkSet(cr.cfg, shellScaleCheck, cityName, cr.cityPath, store, sessionBeads, cr.stderr)
-	}
+	// Controller wake demand comes from assigned-work scans and scale_check.
+	// work_query remains the agent-side gc hook claim path; running every
+	// work_query here can block assigned-work resumes behind unrelated probes.
+	workSet := make(map[string]bool)
 	if trace != nil {
 		templateNames := make(map[string]struct{})
 		openCounts := make(map[string]int)
@@ -1397,10 +1394,11 @@ func (cr *CityRuntime) beadReconcileTick(ctx context.Context, result DesiredStat
 	}
 
 	awakeAssignedWorkBeads := filterAssignedWorkBeadsForSessionWake(cr.cfg, cr.cityPath, open, assignedWorkBeads, assignedWorkStoreRefs)
-	reconcileSessionBeadsTraced(
+	reconcileSessionBeadsTracedWithNamedDemand(
 		ctx, cr.cityPath, open, desiredState, cfgNames, cr.cfg, cr.sp, store,
 		cr.dops,
 		awakeAssignedWorkBeads, rigStores, readyWaitSet, cr.sessionDrains, poolDesired,
+		result.NamedSessionDemand,
 		result.snapshotQueryPartial(),
 		workSet, cityName,
 		cr.it, clock.Real{}, cr.rec, cr.cfg.Session.StartupTimeoutDuration(),
@@ -1541,6 +1539,7 @@ func sweepUndesiredPoolSessionBeads(
 	if store == nil || sessionBeads == nil || cfg == nil || storeQueryPartial {
 		return 0
 	}
+	startupTimeout := cfg.Session.StartupTimeoutDuration()
 	var candidates []beads.Bead
 	for _, bead := range sessionBeads.Open() {
 		if bead.Status == "closed" {
@@ -1556,11 +1555,11 @@ func sweepUndesiredPoolSessionBeads(
 			continue
 		}
 		// Don't sweep beads that the reconciler still considers "start
-		// requested" — their work assignment window hasn't opened. Mirrors
-		// sessionStartRequested (session_reconcile.go) exactly so the two
-		// loops agree about ownership:
-		//   - pending_create_claim=true: in-flight create claim, protected
-		//     regardless of age until the lifecycle clears it.
+		// requested" — their work assignment window hasn't opened. The
+		// pending_create_claim lease mirrors the reconciler's recovery model:
+		// fresh start-in-flight and never-started queue entries are protected,
+		// but once that lease expires the crashed creator must not strand the
+		// pool slot forever.
 		//   - state=creating: protected until staleCreatingState would
 		//     return true (i.e., until staleCreatingStateTimeout has
 		//     elapsed; zero CreatedAt is treated as stale, matching
@@ -1569,10 +1568,10 @@ func sweepUndesiredPoolSessionBeads(
 		// on the same tick it's created (no work assigned →
 		// GCSweepSessionBeads closes it), spinning the pool in a rapid
 		// create→sweep→recreate loop.
-		if strings.TrimSpace(bead.Metadata["pending_create_claim"]) == "true" {
+		if pendingCreateClaimStillLeasedForSweep(bead, startupTimeout) {
 			continue
 		}
-		if strings.TrimSpace(bead.Metadata["state"]) == "creating" && !isStaleCreating(bead.CreatedAt) {
+		if strings.TrimSpace(bead.Metadata["state"]) == "creating" && !isStaleCreating(bead) {
 			continue
 		}
 		// Age grace period for the post-creating, pre-wake window. After
@@ -1635,21 +1634,33 @@ func sweepUndesiredPoolSessionBeads(
 	return len(GCSweepSessionBeads(store, rigStores, candidates))
 }
 
-// isStaleCreating mirrors staleCreatingState in session_reconcile.go without
-// requiring a clock.Clock dependency: a zero CreatedAt is treated as stale,
-// and otherwise the bead is stale once staleCreatingStateTimeout has elapsed.
-// Keeping this shape identical to the reconciler's predicate means the sweep
-// and the reconciler agree about which in-flight create beads are still alive.
-func isStaleCreating(createdAt time.Time) bool {
-	if createdAt.IsZero() {
-		return true
-	}
-	return time.Since(createdAt) >= staleCreatingStateTimeout
+// pendingCreateClaimStillLeasedForSweep keeps pending_create_claim protection
+// aligned with the reconciler: start-in-flight claims stay protected for the
+// provider-start lease, never-started creates get the longer queue lease, and
+// stale claims stop blocking pool-slot recovery.
+func pendingCreateClaimStillLeasedForSweep(bead beads.Bead, startupTimeout time.Duration) bool {
+	return pendingCreateLeaseActive(bead, nil, startupTimeout)
 }
 
-// parseRFC3339Metadata parses an RFC3339 timestamp metadata value. A missing
-// or unparseable value returns ok=false; the caller treats that as "no per-
-// start marker present" so older beads (pre-creation_complete_at rollout)
+// isStaleCreating mirrors staleCreatingState in session_reconcile.go without
+// requiring a clock.Clock dependency. It prefers the per-attempt
+// pending_create_started_at marker and falls back to CreatedAt for older beads
+// so the sweep and reconciler agree about which in-flight create beads are
+// still alive.
+func isStaleCreating(bead beads.Bead) bool {
+	now := time.Now()
+	if started, ok := parseRFC3339Metadata(bead.Metadata["pending_create_started_at"]); ok {
+		return !now.Before(started.Add(staleCreatingStateTimeout))
+	}
+	if bead.CreatedAt.IsZero() {
+		return true
+	}
+	return !now.Before(bead.CreatedAt.Add(staleCreatingStateTimeout))
+}
+
+// parseRFC3339Metadata parses an RFC3339 timestamp metadata value. A missing,
+// zero, or unparseable value returns ok=false; the caller treats that as "no
+// per-start marker present" so older beads (pre-creation_complete_at rollout)
 // fall through to the default sweepable path rather than being protected
 // indefinitely.
 func parseRFC3339Metadata(v string) (time.Time, bool) {
@@ -1659,6 +1670,9 @@ func parseRFC3339Metadata(v string) (time.Time, bool) {
 	}
 	t, err := time.Parse(time.RFC3339, v)
 	if err != nil {
+		return time.Time{}, false
+	}
+	if t.IsZero() {
 		return time.Time{}, false
 	}
 	return t, true
@@ -1711,7 +1725,7 @@ func (cr *CityRuntime) controlDispatcherTick(ctx context.Context) {
 		poolDesired = make(map[string]int)
 	}
 	mergeNamedSessionDemand(poolDesired, wfcResult.NamedSessionDemand, filteredCfg)
-	reconcileSessionBeadsAtPath(
+	reconcileSessionBeadsAtPathWithNamedDemand(
 		ctx,
 		cr.cityPath,
 		open,
@@ -1726,6 +1740,7 @@ func (cr *CityRuntime) controlDispatcherTick(ctx context.Context) {
 		nil, // control-dispatcher ticks only need ownership continuity, not main-tick assigned/ready snapshots
 		cr.sessionDrains,
 		poolDesired,
+		wfcResult.NamedSessionDemand,
 		false, // storeQueryPartial: config-change path doesn't query work beads
 		nil,   // workSet: not computed for config-change reconcile
 		cr.cityName,
@@ -1828,7 +1843,7 @@ func (cr *CityRuntime) loadDemandSnapshot(
 			result.PoolDesiredCounts = make(map[string]int)
 		}
 		mergeNamedSessionDemand(result.PoolDesiredCounts, result.NamedSessionDemand, cr.cfg)
-		result.WorkSet = computeWorkSet(cr.cfg, shellScaleCheck, cr.cityName, cr.cityPath, cr.cityBeadStore(), sessionBeads, cr.stderr)
+		result.WorkSet = make(map[string]bool)
 		cr.demandSnapshot = &runtimeDemandSnapshot{
 			createdAt:          time.Now(),
 			sessionFingerprint: sessionFingerprint,
@@ -1872,7 +1887,7 @@ func demandSnapshotDemandSourcesEventBacked(cfg *config.City) bool {
 		return false
 	}
 	for i := range cfg.Agents {
-		if strings.TrimSpace(cfg.Agents[i].ScaleCheck) != "" || strings.TrimSpace(cfg.Agents[i].WorkQuery) != "" {
+		if strings.TrimSpace(cfg.Agents[i].ScaleCheck) != "" {
 			return false
 		}
 	}

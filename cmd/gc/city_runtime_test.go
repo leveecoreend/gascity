@@ -576,8 +576,9 @@ func TestOrderTrackingSweepWatchdogOnlyClosesSweepOrderTracking(t *testing.T) {
 
 func TestCityRuntimeDemandSnapshotRefreshesWhenDemandCommandsAreCustom(t *testing.T) {
 	cases := []struct {
-		name  string
-		agent config.Agent
+		name       string
+		agent      config.Agent
+		wantBuilds int
 	}{
 		{
 			name: "custom scale_check",
@@ -585,6 +586,7 @@ func TestCityRuntimeDemandSnapshotRefreshesWhenDemandCommandsAreCustom(t *testin
 				Name:       "worker",
 				ScaleCheck: "test -f external-queue && echo 1 || echo 0",
 			},
+			wantBuilds: 2,
 		},
 		{
 			name: "custom work_query",
@@ -592,6 +594,7 @@ func TestCityRuntimeDemandSnapshotRefreshesWhenDemandCommandsAreCustom(t *testin
 				Name:      "worker",
 				WorkQuery: "gh issue list --json number --limit 1",
 			},
+			wantBuilds: 1,
 		},
 	}
 
@@ -619,10 +622,37 @@ func TestCityRuntimeDemandSnapshotRefreshesWhenDemandCommandsAreCustom(t *testin
 			_ = cr.loadDemandSnapshot(sessionBeads, nil, "patrol", false)
 			_ = cr.loadDemandSnapshot(sessionBeads, nil, "patrol", false)
 
-			if buildCalls != 2 {
-				t.Fatalf("buildDesiredState call count = %d, want 2 when demand command is not event-backed", buildCalls)
+			if buildCalls != tc.wantBuilds {
+				t.Fatalf("buildDesiredState call count = %d, want %d", buildCalls, tc.wantBuilds)
 			}
 		})
+	}
+}
+
+func TestCityRuntimeDemandSnapshotDoesNotRunControllerWorkQuery(t *testing.T) {
+	cr := &CityRuntime{
+		cityName: "test-city",
+		cityPath: t.TempDir(),
+		cfg: &config.City{
+			Workspace: config.Workspace{Name: "test-city"},
+			Agents: []config.Agent{{
+				Name:      "worker",
+				WorkQuery: `printf '[{"id":"work-1"}]'`,
+			}},
+		},
+		cs: &controllerState{
+			eventProv: events.NewFake(),
+		},
+		stderr: io.Discard,
+	}
+	cr.buildFnWithSessionBeads = func(*config.City, runtime.Provider, beads.Store, map[string]beads.Store, *sessionBeadSnapshot, *sessionReconcilerTraceCycle) DesiredStateResult {
+		return DesiredStateResult{State: map[string]TemplateParams{}}
+	}
+
+	snapshot := cr.loadDemandSnapshot(newSessionBeadSnapshot(nil), nil, "patrol", false)
+
+	if len(snapshot.result.WorkSet) != 0 {
+		t.Fatalf("WorkSet = %#v, want empty; controller demand must not run work_query", snapshot.result.WorkSet)
 	}
 }
 
@@ -1120,31 +1150,72 @@ func TestSweepUndesiredPoolSessionBeads_SkipsPendingCreateClaim(t *testing.T) {
 	}
 }
 
-// pending_create_claim is an authoritative ownership flag for the lifecycle
-// reconciler (sessionStartRequested in session_reconcile.go). The sweep must
-// honor that contract regardless of age — expiring it here would let the
-// sweep close a bead the reconciler still considers live.
-func TestSweepUndesiredPoolSessionBeads_SkipsStalePendingCreateClaim(t *testing.T) {
+// #1460: pending_create_claim stays protected only for the pending-create
+// lease. Once a never-started create ages past that lease, the sweep must
+// reap it instead of preserving the pool slot forever.
+func TestSweepUndesiredPoolSessionBeads_SweepsExpiredPendingCreateClaimLease(t *testing.T) {
 	store := beads.NewMemStore()
+	now := time.Now().UTC()
 	bead, err := store.Create(beads.Bead{
 		Title:  "worker",
 		Type:   sessionBeadType,
 		Labels: []string{sessionBeadLabel, "agent:worker"},
 		Metadata: map[string]string{
-			"session_name":         "worker-bd-stale-claim",
-			"template":             "worker",
-			"agent_name":           "worker",
-			"pool_slot":            "1",
-			poolManagedMetadataKey: boolMetadata(true),
-			"pending_create_claim": "true",
-			"continuation_epoch":   "1",
-			"generation":           "1",
+			"session_name":              "worker-bd-stale-claim",
+			"template":                  "worker",
+			"agent_name":                "worker",
+			"pool_slot":                 "1",
+			"state":                     "creating",
+			poolManagedMetadataKey:      boolMetadata(true),
+			"pending_create_claim":      "true",
+			"pending_create_started_at": pendingCreateStartedAtNow(now.Add(-(pendingCreateNeverStartedTimeout + time.Second))),
+			"continuation_epoch":        "1",
+			"generation":                "1",
 		},
 	})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	bead.CreatedAt = time.Now().Add(-2 * time.Minute)
+	bead.CreatedAt = now.Add(-24 * time.Hour)
+	sessionBeads := newSessionBeadSnapshot([]beads.Bead{bead})
+
+	closed := sweepUndesiredPoolSessionBeads(
+		store,
+		nil,
+		sessionBeads,
+		nil,
+		&config.City{Agents: []config.Agent{{Name: "worker", MinActiveSessions: intPtr(0), MaxActiveSessions: intPtr(2)}}},
+		runtime.NewFake(),
+		false,
+	)
+	if closed != 1 {
+		t.Fatalf("closed = %d, want 1 — expired pending_create_claim lease must be reaped", closed)
+	}
+}
+
+func TestSweepUndesiredPoolSessionBeads_UsesPendingCreateStartedAtForCreatingState(t *testing.T) {
+	store := beads.NewMemStore()
+	now := time.Now().UTC()
+	bead, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:worker"},
+		Metadata: map[string]string{
+			"session_name":              "worker-bd-fresh-create",
+			"template":                  "worker",
+			"agent_name":                "worker",
+			"pool_slot":                 "1",
+			poolManagedMetadataKey:      boolMetadata(true),
+			"state":                     "creating",
+			"pending_create_started_at": pendingCreateStartedAtNow(now.Add(-30 * time.Second)),
+			"continuation_epoch":        "1",
+			"generation":                "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	bead.CreatedAt = now.Add(-2 * time.Minute)
 	sessionBeads := newSessionBeadSnapshot([]beads.Bead{bead})
 
 	closed := sweepUndesiredPoolSessionBeads(
@@ -1157,7 +1228,22 @@ func TestSweepUndesiredPoolSessionBeads_SkipsStalePendingCreateClaim(t *testing.
 		false,
 	)
 	if closed != 0 {
-		t.Fatalf("closed = %d, want 0 — pending_create_claim must remain authoritative regardless of age", closed)
+		t.Fatalf("closed = %d, want 0 — fresh pending_create_started_at must keep old creating bead alive", closed)
+	}
+}
+
+func TestIsStaleCreatingTreatsZeroPendingCreateStartedAtAsMissing(t *testing.T) {
+	now := time.Now().UTC()
+	bead := beads.Bead{
+		Metadata: map[string]string{
+			"state":                     "creating",
+			"pending_create_started_at": (time.Time{}).UTC().Format(time.RFC3339),
+		},
+		CreatedAt: now,
+	}
+
+	if isStaleCreating(bead) {
+		t.Fatal("zero pending_create_started_at should fall back to fresh CreatedAt")
 	}
 }
 
