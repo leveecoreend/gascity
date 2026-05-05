@@ -83,6 +83,26 @@ func TestBuildAwakeInputFromReconcilerPopulatesPendingInteractions(t *testing.T)
 	}
 }
 
+func TestAwakeSetToWakeEvalsPreservesDecisionReason(t *testing.T) {
+	evals := awakeSetToWakeEvals(
+		map[string]AwakeDecision{
+			"s-worker": {ShouldWake: true, Reason: "assigned-work"},
+		},
+		[]AwakeSessionBead{{
+			ID:          "mc-session-1",
+			SessionName: "s-worker",
+		}},
+	)
+
+	got := evals["mc-session-1"]
+	if got.Reason != "assigned-work" {
+		t.Fatalf("Reason = %q, want assigned-work", got.Reason)
+	}
+	if !containsWakeReason(got.Reasons, WakeWork) {
+		t.Fatalf("Reasons = %v, want WakeWork", got.Reasons)
+	}
+}
+
 func TestBuildAwakeInputFromReconcilerCarriesNamedSessionDemand(t *testing.T) {
 	now := time.Now().UTC()
 	cfg := &config.City{

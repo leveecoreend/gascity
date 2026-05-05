@@ -232,6 +232,12 @@ func cancelSessionDrainForPending(session beads.Bead, sp runtime.Provider, dt *d
 	return cancelSessionDrainIf(session, sp, dt, pendingDrainReasonCancelable)
 }
 
+func cancelOrphanedSessionDrainForAssignedWork(session beads.Bead, sp runtime.Provider, dt *drainTracker) bool {
+	return cancelSessionDrainIf(session, sp, dt, func(reason string) bool {
+		return reason == "orphaned"
+	})
+}
+
 func cancelSessionConfigDriftDrain(session beads.Bead, sp runtime.Provider, dt *drainTracker) bool {
 	if dt == nil {
 		return false
@@ -453,6 +459,18 @@ func advanceSessionDrainsWithSessionsTraced(
 			if cancelSessionDrainForPending(*session, sp, dt) {
 				if trace != nil {
 					trace.recordDecision("reconciler.drain.cancel", normalizedSessionTemplate(*session, cfg), name, ds.reason, "cancel_pending", nil, nil, "")
+				}
+				continue
+			}
+		}
+
+		if eval, ok := wakeEvals[session.ID]; ok &&
+			eval.Reason == "assigned-work" &&
+			containsWakeReason(eval.Reasons, WakeWork) &&
+			ds.reason == "orphaned" {
+			if cancelOrphanedSessionDrainForAssignedWork(*session, sp, dt) {
+				if trace != nil {
+					trace.recordDecision("reconciler.drain.cancel", normalizedSessionTemplate(*session, cfg), name, ds.reason, "cancel_assigned_work", nil, nil, "")
 				}
 				continue
 			}
