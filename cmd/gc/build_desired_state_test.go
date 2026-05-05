@@ -3281,6 +3281,116 @@ func TestBuildDesiredState_PendingCreatePoolSessionStaysDesiredWithoutScaleDeman
 	}
 }
 
+func TestBuildDesiredState_PendingCreatePoolSessionCountsTowardScaleDemand(t *testing.T) {
+	cityPath := t.TempDir()
+	store := beads.NewMemStore()
+	const template = "worker"
+	sessionName := "worker-mc-starting"
+	for i := 0; i < 2; i++ {
+		if _, err := store.Create(beads.Bead{
+			Title:  fmt.Sprintf("queued work %d", i+1),
+			Type:   "task",
+			Status: "open",
+			Metadata: map[string]string{
+				"gc.routed_to": template,
+			},
+		}); err != nil {
+			t.Fatalf("create queued work: %v", err)
+		}
+	}
+	if _, err := store.Create(beads.Bead{
+		Title:  template,
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel, "agent:worker-1"},
+		Metadata: map[string]string{
+			"template":                  template,
+			"session_name":              sessionName,
+			"agent_name":                "worker-1",
+			"session_origin":            "ephemeral",
+			"pool_managed":              boolMetadata(true),
+			"pool_slot":                 "1",
+			"pending_create_claim":      boolMetadata(true),
+			"pending_create_started_at": time.Now().UTC().Format(time.RFC3339),
+			"state":                     "creating",
+		},
+	}); err != nil {
+		t.Fatalf("create session bead: %v", err)
+	}
+	cfg := &config.City{
+		Agents: []config.Agent{{
+			Name:              template,
+			StartCommand:      "true",
+			MinActiveSessions: intPtr(0),
+			MaxActiveSessions: intPtr(5),
+		}},
+	}
+	sessionSnapshot, err := loadSessionBeadSnapshot(store)
+	if err != nil {
+		t.Fatalf("load session snapshot: %v", err)
+	}
+
+	trace := newPoolDesiredStateTestTrace(template)
+	var stderr strings.Builder
+	dsResult := buildDesiredStateWithSessionBeads(
+		"test-city", cityPath, time.Now().UTC(), cfg, runtime.NewFake(),
+		store, nil, sessionSnapshot, trace, &stderr,
+	)
+	if got := dsResult.ScaleCheckCounts[template]; got != 2 {
+		t.Fatalf("ScaleCheckCounts[%s] = %d, want 2", template, got)
+	}
+	// The trace pins the buildDesiredState integration point: the pending
+	// create consumes one scale-demand slot before anonymous new requests are
+	// materialized.
+	if got := trace.decisionCounts[string(TraceSitePoolInFlightReuse)]; got != 1 {
+		t.Fatalf("in-flight reuse trace decisions = %d, want 1; stderr:\n%s", got, stderr.String())
+	}
+	rec := poolTraceDecision(t, trace, TraceSitePoolInFlightReuse)
+	for key, want := range map[string]int{
+		"scale_check":   2,
+		"in_flight":     1,
+		"reused":        1,
+		"anonymous_new": 1,
+	} {
+		if got := poolTraceFieldInt(t, rec.Fields, key); got != want {
+			t.Fatalf("%s = %d, want %d", key, got, want)
+		}
+	}
+
+	var templateCount int
+	existing, ok := dsResult.State[sessionName]
+	if !ok {
+		t.Fatalf("desired state missing pending-create pool session: keys=%v", mapKeys(dsResult.State))
+	}
+	for _, tp := range dsResult.State {
+		if tp.TemplateName == template {
+			templateCount++
+		}
+	}
+	if templateCount != 2 {
+		t.Fatalf("desired %s sessions = %d, want 2; keys=%v", template, templateCount, mapKeys(dsResult.State))
+	}
+	var anonymousNew *TemplateParams
+	for name, tp := range dsResult.State {
+		if tp.TemplateName == template && name != sessionName {
+			tpCopy := tp
+			anonymousNew = &tpCopy
+			break
+		}
+	}
+	if anonymousNew == nil {
+		t.Fatalf("desired state missing anonymous new pool session: keys=%v", mapKeys(dsResult.State))
+	}
+	if existing.InstanceName != "worker-1" {
+		t.Fatalf("existing InstanceName = %q, want worker-1", existing.InstanceName)
+	}
+	if existing.PoolSlot != 1 {
+		t.Fatalf("existing PoolSlot = %d, want 1", existing.PoolSlot)
+	}
+	if anonymousNew.PoolSlot != 2 {
+		t.Fatalf("anonymous new PoolSlot = %d, want 2", anonymousNew.PoolSlot)
+	}
+}
+
 func TestBuildDesiredState_LegacyAliaslessEphemeralPoolSessionFallsBackToSessionNameIdentity(t *testing.T) {
 	cityPath := t.TempDir()
 	store := beads.NewMemStore()
