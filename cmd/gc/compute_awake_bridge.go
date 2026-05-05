@@ -159,6 +159,7 @@ func awakeSetToWakeEvals(decisions map[string]AwakeDecision, sessionBeads []Awak
 		}
 		evals[bead.ID] = wakeEvaluation{
 			Reasons:          reasons,
+			Reason:           d.Reason,
 			ConfigSuppressed: d.Reason == "idle-sleep",
 		}
 	}

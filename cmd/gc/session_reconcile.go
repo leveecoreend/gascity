@@ -29,6 +29,7 @@ import (
 
 type wakeEvaluation struct {
 	Reasons          []WakeReason
+	Reason           string
 	Policy           resolvedSessionSleepPolicy
 	ConfigSuppressed bool
 }
