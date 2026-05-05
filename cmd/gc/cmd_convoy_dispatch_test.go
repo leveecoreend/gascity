@@ -3920,6 +3920,23 @@ func TestWorkflowTracefFallsBackToSlingTrace(t *testing.T) {
 	}
 }
 
+func TestWorkflowTraceWarningScopeResetsAcrossTopLevelInstalls(t *testing.T) {
+	badPath := filepath.Join(t.TempDir(), "missing", "workflow-trace.log")
+	var stderr bytes.Buffer
+
+	restoreOne := useWorkflowTraceWarnings(&stderr)
+	workflowTraceWarnOpenFailure(badPath, os.ErrNotExist)
+	restoreOne()
+
+	restoreTwo := useWorkflowTraceWarnings(&stderr)
+	workflowTraceWarnOpenFailure(badPath, os.ErrNotExist)
+	restoreTwo()
+
+	if count := strings.Count(stderr.String(), "opening workflow trace"); count != 2 {
+		t.Fatalf("warning count = %d, want 2 across separate top-level installs; stderr=%q", count, stderr.String())
+	}
+}
+
 func TestFollowSleepDurationHandlesPathologicalInputs(t *testing.T) {
 	prevSweep := workflowServeWakeSweepInterval
 	prevMax := workflowServeMaxIdleSleep

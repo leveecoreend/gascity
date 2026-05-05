@@ -88,6 +88,7 @@ var (
 		mu     sync.Mutex
 		writer io.Writer
 		warned map[string]struct{}
+		depth  int
 	}{
 		writer: os.Stderr,
 		warned: map[string]struct{}{},
@@ -170,8 +171,8 @@ func workflowTracef(format string, args ...any) {
 		workflowTraceWarnOpenFailure(path, err)
 		return
 	}
-	defer f.Close()                                                                                //nolint:errcheck // best-effort trace log
-	fmt.Fprintf(f, "%s %s\n", time.Now().UTC().Format(time.RFC3339), fmt.Sprintf(format, args...)) //nolint:errcheck
+	defer f.Close()                                                                                    //nolint:errcheck // best-effort trace log
+	fmt.Fprintf(f, "%s %s\n", time.Now().UTC().Format(time.RFC3339Nano), fmt.Sprintf(format, args...)) //nolint:errcheck
 }
 
 func workflowTraceWarnOpenFailure(path string, err error) {
@@ -196,15 +197,18 @@ func useWorkflowTraceWarnings(writer io.Writer) func() {
 	workflowTraceWarnings.mu.Lock()
 	prevWriter := workflowTraceWarnings.writer
 	prevWarned := workflowTraceWarnings.warned
-	if writer != workflowTraceWarnings.writer {
+	prevDepth := workflowTraceWarnings.depth
+	if workflowTraceWarnings.depth == 0 || writer != workflowTraceWarnings.writer {
 		workflowTraceWarnings.writer = writer
 		workflowTraceWarnings.warned = map[string]struct{}{}
 	}
+	workflowTraceWarnings.depth++
 	workflowTraceWarnings.mu.Unlock()
 	return func() {
 		workflowTraceWarnings.mu.Lock()
 		workflowTraceWarnings.writer = prevWriter
 		workflowTraceWarnings.warned = prevWarned
+		workflowTraceWarnings.depth = prevDepth
 		workflowTraceWarnings.mu.Unlock()
 	}
 }
