@@ -1553,6 +1553,41 @@ func initSeedArchiveWithRemote(t *testing.T, archiveRepo string, prevCount int) 
 	return remoteRepo, strings.TrimSpace(string(headOut))
 }
 
+func advanceArchiveRemoteMain(t *testing.T, remoteRepo string) string {
+	t.Helper()
+	worktree := t.TempDir()
+	if out, err := exec.Command("git", "clone", "-q", remoteRepo, worktree).CombinedOutput(); err != nil {
+		t.Fatalf("git clone remote advance worktree: %v\n%s", err, out)
+	}
+	steps := [][]string{
+		{"-C", worktree, "checkout", "-q", "main"},
+		{"-C", worktree, "config", "user.email", "test@example.invalid"},
+		{"-C", worktree, "config", "user.name", "test"},
+	}
+	for _, args := range steps {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args[2:], " "), err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "remote-marker.txt"), []byte("remote-advance\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(remote marker): %v", err)
+	}
+	for _, args := range [][]string{
+		{"-C", worktree, "add", "-A"},
+		{"-C", worktree, "commit", "-q", "-m", "remote advance"},
+		{"-C", worktree, "push", "-q", "origin", "main"},
+	} {
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args[2:], " "), err, out)
+		}
+	}
+	headOut, err := exec.Command("git", "--git-dir", remoteRepo, "rev-parse", "refs/heads/main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse remote main after advance: %v\n%s", err, headOut)
+	}
+	return strings.TrimSpace(string(headOut))
+}
+
 func TestJsonlExportCountsRecordsViaJq(t *testing.T) {
 	// Bug 1 (#1547): `wc -l` on `dolt -r json` output measures formatting, not
 	// records — the JSON object is one physical line regardless of row count.
@@ -2145,6 +2180,103 @@ func TestJsonlExportNoChangePushesPendingArchiveCommitAfterHalt(t *testing.T) {
 	}
 	if strings.Contains(string(stateData), `"pending_archive_push":true`) {
 		t.Fatalf("expected pending_archive_push to clear after push, got:\n%s", stateData)
+	}
+}
+
+func TestJsonlExportNoChangePushesPendingArchiveCommitWithoutPendingState(t *testing.T) {
+	cityDir := t.TempDir()
+	binDir := t.TempDir()
+	stateDir := t.TempDir()
+	gcLog := filepath.Join(t.TempDir(), "gc.log")
+	mailLog := filepath.Join(t.TempDir(), "gc-mail.log")
+	archiveRepo := filepath.Join(cityDir, "archive")
+	stateFile := filepath.Join(stateDir, "jsonl-export-state.json")
+
+	remoteRepo, remoteHead := initSeedArchiveWithRemote(t, archiveRepo, 100)
+	writeMultiRecordDoltStub(t, binDir, 10)
+	writeJsonlExportGCStub(t, binDir)
+
+	env := jsonlExportEnv(t, cityDir, binDir, stateDir, archiveRepo, gcLog, mailLog)
+
+	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "jsonl-export.sh"), env)
+
+	localHead, err := exec.Command("git", "-C", archiveRepo, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse local HEAD: %v\n%s", err, localHead)
+	}
+	localHaltHead := strings.TrimSpace(string(localHead))
+	if localHaltHead == remoteHead {
+		t.Fatalf("HALT run must create a local-only commit")
+	}
+
+	if err := os.WriteFile(stateFile, []byte("not-json\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(state file): %v", err)
+	}
+
+	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "jsonl-export.sh"), env)
+
+	remoteHeadOut, err := exec.Command("git", "--git-dir", remoteRepo, "rev-parse", "refs/heads/main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse remote main after replay: %v\n%s", err, remoteHeadOut)
+	}
+	if got := strings.TrimSpace(string(remoteHeadOut)); got != localHaltHead {
+		t.Fatalf("expected git-state fallback to push stranded local commit: got %s want %s", got, localHaltHead)
+	}
+}
+
+func TestJsonlExportNoChangeRebasesPendingArchiveCommitOntoAdvancedRemote(t *testing.T) {
+	cityDir := t.TempDir()
+	binDir := t.TempDir()
+	stateDir := t.TempDir()
+	gcLog := filepath.Join(t.TempDir(), "gc.log")
+	mailLog := filepath.Join(t.TempDir(), "gc-mail.log")
+	archiveRepo := filepath.Join(cityDir, "archive")
+
+	remoteRepo, _ := initSeedArchiveWithRemote(t, archiveRepo, 100)
+	writeMultiRecordDoltStub(t, binDir, 10)
+	writeJsonlExportGCStub(t, binDir)
+
+	env := jsonlExportEnv(t, cityDir, binDir, stateDir, archiveRepo, gcLog, mailLog)
+
+	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "jsonl-export.sh"), env)
+
+	localHeadBeforeReplay, err := exec.Command("git", "-C", archiveRepo, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse local HALT HEAD: %v\n%s", err, localHeadBeforeReplay)
+	}
+	haltHead := strings.TrimSpace(string(localHeadBeforeReplay))
+
+	advancedRemoteHead := advanceArchiveRemoteMain(t, remoteRepo)
+	if advancedRemoteHead == haltHead {
+		t.Fatalf("remote advance must create a new remote commit")
+	}
+
+	runScript(t, filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "jsonl-export.sh"), env)
+
+	localHeadAfterReplay, err := exec.Command("git", "-C", archiveRepo, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse local replay HEAD: %v\n%s", err, localHeadAfterReplay)
+	}
+	replayedHead := strings.TrimSpace(string(localHeadAfterReplay))
+	if replayedHead == haltHead {
+		t.Fatalf("expected replay to rebase HALT commit onto advanced remote")
+	}
+
+	remoteHeadOut, err := exec.Command("git", "--git-dir", remoteRepo, "rev-parse", "refs/heads/main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse remote main after replay: %v\n%s", err, remoteHeadOut)
+	}
+	if got := strings.TrimSpace(string(remoteHeadOut)); got != replayedHead {
+		t.Fatalf("expected replayed local HEAD to publish after remote advance: got remote %s want local %s", got, replayedHead)
+	}
+
+	logOut, err := exec.Command("git", "--git-dir", remoteRepo, "log", "--format=%s", "-2", "refs/heads/main").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git log remote main: %v\n%s", err, logOut)
+	}
+	remoteLog := string(logOut)
+	if !strings.Contains(remoteLog, "remote advance") || !strings.Contains(remoteLog, "HALT") {
+		t.Fatalf("expected remote history to contain both remote advance and replayed HALT commit, got:\n%s", remoteLog)
 	}
 }
 

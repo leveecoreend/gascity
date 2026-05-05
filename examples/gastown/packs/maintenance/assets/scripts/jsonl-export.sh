@@ -138,6 +138,25 @@ has_pending_archive_push() {
     [ "$(read_state_json | jq -r '.pending_archive_push // false')" = "true" ]
 }
 
+refresh_archive_remote_main() {
+    git fetch origin main -q 2>/dev/null
+}
+
+archive_has_local_only_commits_from_tracking() {
+    local merge_base
+
+    if ! git rev-parse --verify refs/remotes/origin/main >/dev/null 2>&1; then
+        return 1
+    fi
+    merge_base=$(git merge-base refs/remotes/origin/main HEAD 2>/dev/null) || return 1
+    [ "$(git rev-list --count "$merge_base..HEAD" 2>/dev/null || echo "0")" -gt 0 ]
+}
+
+archive_has_local_only_commits() {
+    refresh_archive_remote_main >/dev/null 2>&1 || return 1
+    archive_has_local_only_commits_from_tracking
+}
+
 set_pending_spike_alert() {
     local db="$1"
     local prev_count="$2"
@@ -256,24 +275,51 @@ retry_pending_spike_alert() {
 push_archive_main() {
     local consecutive
 
+    record_archive_push_failure() {
+        local message="$1"
+
+        echo "$message" >&2
+        consecutive=$(read_state_json | jq -r '.consecutive_push_failures // 0' || echo "0")
+        consecutive=$((consecutive + 1))
+        set_consecutive_push_failures "$consecutive"
+        set_pending_archive_push
+
+        if [ "$consecutive" -ge "$MAX_PUSH_FAILURES" ]; then
+            gc mail send mayor/ -s "ESCALATION: JSONL push failed [HIGH]" \
+                -m "Consecutive failures: $consecutive (threshold: $MAX_PUSH_FAILURES)" \
+                2>/dev/null || true
+        fi
+
+        return 1
+    }
+
+    if ! refresh_archive_remote_main; then
+        record_archive_push_failure "jsonl-export: fetching origin/main failed"
+        return 1
+    fi
+
+    if git rev-parse --verify refs/remotes/origin/main >/dev/null 2>&1; then
+        if ! git merge-base --is-ancestor refs/remotes/origin/main HEAD >/dev/null 2>&1; then
+            if ! git rebase refs/remotes/origin/main >/dev/null 2>&1; then
+                git rebase --abort >/dev/null 2>&1 || true
+                record_archive_push_failure "jsonl-export: rebase onto origin/main failed during archive push recovery"
+                return 1
+            fi
+        fi
+        if ! archive_has_local_only_commits_from_tracking; then
+            set_consecutive_push_failures "0"
+            clear_pending_archive_push
+            return 0
+        fi
+    fi
+
     if git push origin main -q 2>/dev/null; then
         set_consecutive_push_failures "0"
         clear_pending_archive_push
         return 0
     fi
 
-    consecutive=$(read_state_json | jq -r '.consecutive_push_failures // 0' || echo "0")
-    consecutive=$((consecutive + 1))
-    set_consecutive_push_failures "$consecutive"
-    set_pending_archive_push
-
-    if [ "$consecutive" -ge "$MAX_PUSH_FAILURES" ]; then
-        gc mail send mayor/ -s "ESCALATION: JSONL push failed [HIGH]" \
-            -m "Consecutive failures: $consecutive (threshold: $MAX_PUSH_FAILURES)" \
-            2>/dev/null || true
-    fi
-
-    return 1
+    record_archive_push_failure "jsonl-export: pushing archive main failed"
 }
 
 commit_archive_snapshot() {
@@ -497,7 +543,7 @@ if [ "$HALTED" -eq 1 ]; then
 fi
 
 if git diff --cached --quiet 2>/dev/null; then
-    if has_pending_archive_push; then
+    if has_pending_archive_push || archive_has_local_only_commits; then
         PUSH_STATUS="ok"
         if ! push_archive_main; then
             PUSH_STATUS="failed"
