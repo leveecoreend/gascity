@@ -905,6 +905,61 @@ func TestCollectAssignedWorkBeads_ReadyProbeStillRunsForOtherAssignees(t *testin
 	}
 }
 
+func TestCollectAssignedWorkBeads_ReadyProbeIncludesActiveSessionAssignees(t *testing.T) {
+	store := &readyQueryRecordingStore{MemStore: beads.NewMemStore()}
+	activeSession, err := store.Create(beads.Bead{
+		Title:  "active worker session",
+		Type:   sessionBeadType,
+		Status: "open",
+		Metadata: map[string]string{
+			"session_name": "worker-active",
+			"template":     "worker",
+			"state":        "active",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create active session bead: %v", err)
+	}
+	sleepySession, err := store.Create(beads.Bead{
+		Title:  "sleepy worker session",
+		Type:   sessionBeadType,
+		Status: "open",
+		Metadata: map[string]string{
+			"session_name": "worker-sleepy",
+			"template":     "worker",
+			"state":        "asleep",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create sleepy session bead: %v", err)
+	}
+	readyWork, err := store.Create(beads.Bead{
+		Title:    "ready active work",
+		Type:     "task",
+		Status:   "open",
+		Assignee: "worker-active",
+	})
+	if err != nil {
+		t.Fatalf("create ready work bead: %v", err)
+	}
+	snapshot := newSessionBeadSnapshot([]beads.Bead{activeSession, sleepySession})
+
+	got, _, _, partial := collectAssignedWorkBeadsWithStores(&config.City{}, store, nil, nil, snapshot)
+	if partial {
+		t.Fatal("collectAssignedWorkBeadsWithStores reported partial results")
+	}
+	if len(got) != 1 || got[0].ID != readyWork.ID {
+		t.Fatalf("got = %#v, want ready active-session work %s", got, readyWork.ID)
+	}
+	queried := make(map[string]bool)
+	for _, query := range store.readyQueries {
+		queried[query.Assignee] = true
+	}
+	if !queried["worker-active"] {
+		t.Fatalf("Ready queries = %#v, want probe for active session assignee", store.readyQueries)
+	}
+}
+
 func TestReadyAssignedWorkAssigneesExcludeBroadIdentities(t *testing.T) {
 	got := readyAssignedWorkAssignees(&config.City{
 		Agents: []config.Agent{{

@@ -750,9 +750,6 @@ func readyAssignedWorkAssignees(cfg *config.City, sessionBeads *sessionBeadSnaps
 			if session.Status == "closed" {
 				continue
 			}
-			if strings.TrimSpace(session.Metadata["state"]) != "asleep" {
-				continue
-			}
 			add(session.ID)
 			add(session.Metadata["session_name"])
 			add(session.Metadata["configured_named_identity"])
