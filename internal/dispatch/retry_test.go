@@ -682,7 +682,7 @@ func TestProcessRetryEvalStaleAttemptFinalizesNoop(t *testing.T) {
 	}
 }
 
-func TestProcessRetryEvalRejectsInvalidWorkerResultContract(t *testing.T) {
+func TestProcessRetryEvalRetriesInvalidWorkerResultContract(t *testing.T) {
 	t.Parallel()
 
 	store := newStrictCloseStore()
@@ -739,15 +739,91 @@ func TestProcessRetryEvalRejectsInvalidWorkerResultContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessControl(retry-eval invalid contract): %v", err)
 	}
-	if !result.Processed || result.Action != "hard-fail" {
-		t.Fatalf("result = %+v, want processed hard-fail", result)
+	if !result.Processed || result.Action != "retry" {
+		t.Fatalf("result = %+v, want processed retry", result)
+	}
+
+	logicalAfter := mustGetBead(t, store, logical.ID)
+	if logicalAfter.Status == "closed" {
+		t.Fatalf("logical status = closed, want open for retry")
+	}
+	if !strings.Contains(logicalAfter.Metadata["gc.failure_reason"], "invalid_worker_result_contract") {
+		t.Fatalf("logical gc.failure_reason = %q, want invalid_worker_result_contract", logicalAfter.Metadata["gc.failure_reason"])
+	}
+	if logicalAfter.Metadata["gc.retry_count"] != "1" {
+		t.Fatalf("logical gc.retry_count = %q, want 1", logicalAfter.Metadata["gc.retry_count"])
+	}
+}
+
+func TestProcessRetryEvalExhaustsInvalidWorkerResultContract(t *testing.T) {
+	t.Parallel()
+
+	store := newStrictCloseStore()
+	root := mustCreateWorkflowBead(t, store, beads.Bead{
+		Title: "workflow",
+		Type:  "task",
+		Metadata: map[string]string{
+			"gc.kind":             "workflow",
+			"gc.formula_contract": "graph.v2",
+		},
+	})
+	logical := mustCreateWorkflowBead(t, store, beads.Bead{
+		Title: "review",
+		Type:  "task",
+		Metadata: map[string]string{
+			"gc.kind":         "retry",
+			"gc.root_bead_id": root.ID,
+			"gc.step_ref":     "demo.review",
+			"gc.max_attempts": "2",
+			"gc.on_exhausted": "hard_fail",
+		},
+	})
+	run2 := mustCreateWorkflowBead(t, store, beads.Bead{
+		Title:  "review attempt 2",
+		Type:   "task",
+		Status: "closed",
+		Metadata: map[string]string{
+			"gc.kind":            "retry-run",
+			"gc.root_bead_id":    root.ID,
+			"gc.step_ref":        "demo.review.run.2",
+			"gc.logical_bead_id": logical.ID,
+			"gc.attempt":         "2",
+			"gc.max_attempts":    "2",
+			"gc.on_exhausted":    "hard_fail",
+		},
+	})
+	eval2 := mustCreateWorkflowBead(t, store, beads.Bead{
+		Title: "review eval 2",
+		Type:  "task",
+		Metadata: map[string]string{
+			"gc.kind":            "retry-eval",
+			"gc.root_bead_id":    root.ID,
+			"gc.step_ref":        "demo.review.eval.2",
+			"gc.logical_bead_id": logical.ID,
+			"gc.attempt":         "2",
+			"gc.max_attempts":    "2",
+			"gc.on_exhausted":    "hard_fail",
+		},
+	})
+	mustDepAdd(t, store, logical.ID, eval2.ID, "blocks")
+	mustDepAdd(t, store, eval2.ID, run2.ID, "blocks")
+
+	result, err := ProcessControl(store, eval2, ProcessOptions{})
+	if err != nil {
+		t.Fatalf("ProcessControl(retry-eval exhausted invalid contract): %v", err)
+	}
+	if !result.Processed || result.Action != "fail" {
+		t.Fatalf("result = %+v, want processed fail", result)
 	}
 
 	logicalAfter := mustGetBead(t, store, logical.ID)
 	if logicalAfter.Status != "closed" || logicalAfter.Metadata["gc.outcome"] != "fail" {
 		t.Fatalf("logical = status %q outcome %q, want closed/fail", logicalAfter.Status, logicalAfter.Metadata["gc.outcome"])
 	}
-	if !strings.Contains(logicalAfter.Metadata["gc.failure_reason"], "invalid_worker_result_contract") {
+	if logicalAfter.Metadata["gc.failure_class"] != "transient" {
+		t.Fatalf("logical gc.failure_class = %q, want transient", logicalAfter.Metadata["gc.failure_class"])
+	}
+	if logicalAfter.Metadata["gc.failure_reason"] != "invalid_worker_result_contract" {
 		t.Fatalf("logical gc.failure_reason = %q, want invalid_worker_result_contract", logicalAfter.Metadata["gc.failure_reason"])
 	}
 }

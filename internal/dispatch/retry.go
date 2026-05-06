@@ -230,7 +230,7 @@ func classifyRetryAttempt(subject beads.Bead) retryEvalResult {
 	switch outcome {
 	case "pass":
 		if strings.TrimSpace(subject.Metadata["gc.failure_class"]) != "" || strings.TrimSpace(subject.Metadata["gc.failure_reason"]) != "" {
-			return retryEvalResult{Outcome: "hard", Reason: "invalid_worker_result_contract"}
+			return retryEvalResult{Outcome: "transient", Reason: "invalid_worker_result_contract"}
 		}
 		if strings.TrimSpace(subject.Metadata["gc.output_json_required"]) == "true" && strings.TrimSpace(subject.Metadata["gc.output_json"]) == "" {
 			return retryEvalResult{Outcome: "transient", Reason: "missing_required_output_json"}
@@ -243,12 +243,12 @@ func classifyRetryAttempt(subject beads.Bead) retryEvalResult {
 		case "hard", "":
 			return retryEvalResult{Outcome: "hard", Reason: retryFailureReason(subject)}
 		default:
-			return retryEvalResult{Outcome: "hard", Reason: "invalid_worker_result_contract"}
+			return retryEvalResult{Outcome: "transient", Reason: "invalid_worker_result_contract"}
 		}
 	case "":
-		return retryEvalResult{Outcome: "hard", Reason: "invalid_worker_result_contract"}
+		return retryEvalResult{Outcome: "transient", Reason: "invalid_worker_result_contract"}
 	default:
-		return retryEvalResult{Outcome: "hard", Reason: "invalid_worker_result_contract"}
+		return retryEvalResult{Outcome: "transient", Reason: "invalid_worker_result_contract"}
 	}
 }
 
