@@ -177,6 +177,10 @@ type City struct {
 	Patches Patches `toml:"patches,omitempty"`
 	// Beads configures the bead store backend.
 	Beads BeadsConfig `toml:"beads,omitempty"`
+	// Backend tunes bd subprocess behavior orthogonal to the provider
+	// selection in [beads]. Introduced for tick-critical timeout
+	// minimization (ga-f4m2.1).
+	Backend BackendConfig `toml:"backend,omitempty"`
 	// Session configures the session provider backend.
 	Session SessionConfig `toml:"session,omitempty"`
 	// Mail configures the mail provider backend.
@@ -869,6 +873,39 @@ type BeadsConfig struct {
 	// Provider selects the bead store backend: "bd" (default), "file",
 	// or "exec:<script>" for a user-supplied script.
 	Provider string `toml:"provider,omitempty" jsonschema:"default=bd"`
+}
+
+// BackendConfig holds tunables for the bd subprocess backend that are
+// orthogonal to the provider selection in BeadsConfig. Introduced to
+// give tick-critical bd writes a tighter subprocess budget than the
+// 120s default tuned for CachingStore.Prime on big stores.
+//
+// Architecture: ga-f4m2.1 (per-call-site bd subprocess timeouts).
+type BackendConfig struct {
+	// TickSubprocessTimeout caps individual bd subprocess invocations on
+	// tick-critical write paths (status reopens, metadata batches, bead
+	// closes). Big-list reads keep the package-level default. Duration
+	// string (e.g., "30s", "1m"). Defaults to "30s".
+	TickSubprocessTimeout string `toml:"tick_subprocess_timeout,omitempty" jsonschema:"default=30s"`
+	// ManagedRetryBounded, when true, refuses to retry a transport-level
+	// bd subprocess error if the first attempt already exceeded the
+	// call's per-call subprocess budget. Default false for one release;
+	// flip on after a soak period to avoid surfacing a new failure mode
+	// alongside the timeout tightening.
+	ManagedRetryBounded bool `toml:"managed_retry_bounded,omitempty"`
+}
+
+// TickSubprocessTimeoutDuration returns the tick-critical subprocess
+// timeout as a time.Duration. Defaults to 30s if empty or unparseable.
+func (b *BackendConfig) TickSubprocessTimeoutDuration() time.Duration {
+	if b.TickSubprocessTimeout == "" {
+		return 30 * time.Second
+	}
+	d, err := time.ParseDuration(b.TickSubprocessTimeout)
+	if err != nil {
+		return 30 * time.Second
+	}
+	return d
 }
 
 // SessionConfig holds session provider settings.

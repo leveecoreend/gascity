@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gastownhall/gascity/internal/beads"
 	"github.com/gastownhall/gascity/internal/beads/contract"
@@ -234,6 +235,12 @@ var projectedDoltEnvKeys = []string{
 
 var beadsExecCommandRunnerWithEnv = beads.ExecCommandRunnerWithEnv
 
+// beadsNewExecCommandRunner is the test seam for the options-based
+// runner constructor. Tick-critical paths use this seam so they can
+// supply a tighter per-call subprocess timeout than the
+// package-level default. Tests stub this var to inject fake runners.
+var beadsNewExecCommandRunner = beads.NewExecCommandRunner
+
 var recoverManagedBDCommand = func(cityPath string) error {
 	script := gcBeadsBdScriptPath(cityPath)
 	overrides := cityRuntimeEnvMapForCity(cityPath)
@@ -367,6 +374,45 @@ func bdCommandRunnerWithManagedRetry(cityPath string, envFn func(dir string) map
 		retryEnv := envFn(dir)
 		ensureProjectedDoltEnvExplicit(retryEnv)
 		retryRunner := beadsExecCommandRunnerWithEnv(retryEnv)
+		return retryRunner(dir, name, args...)
+	}
+}
+
+// bdCommandRunnerWithManagedRetryOpts is the timeout-aware variant of
+// bdCommandRunnerWithManagedRetry. timeout > 0 caps every underlying
+// subprocess call (zero falls back to the package-level
+// beads.bdCommandTimeout). When bounded is true, the retry layer
+// refuses to fire if the first attempt's wall-clock already met or
+// exceeded the per-call budget — preventing the 4× compounding seen
+// in the spawn-hang RCA (ga-f4m2). With bounded=false the function
+// is bug-for-bug compatible with bdCommandRunnerWithManagedRetry,
+// which is why the gate ships off by default for one release.
+//
+// Architecture: ga-f4m2.1.
+func bdCommandRunnerWithManagedRetryOpts(
+	cityPath string,
+	envFn func(dir string) map[string]string,
+	timeout time.Duration,
+	bounded bool,
+) beads.CommandRunner {
+	return func(dir, name string, args ...string) ([]byte, error) {
+		env := envFn(dir)
+		ensureProjectedDoltEnvExplicit(env)
+		runner := beadsNewExecCommandRunner(beads.WithEnv(env), beads.WithSubprocessTimeout(timeout))
+		start := time.Now()
+		out, err := runner(dir, name, args...)
+		if name != "bd" || !bdTransportRetryableError(cityPath, dir, env, err) {
+			return out, err
+		}
+		if bounded && timeout > 0 && time.Since(start) >= timeout {
+			return out, err
+		}
+		if recErr := recoverManagedBDCommand(cityPath); recErr != nil {
+			return out, err
+		}
+		retryEnv := envFn(dir)
+		ensureProjectedDoltEnvExplicit(retryEnv)
+		retryRunner := beadsNewExecCommandRunner(beads.WithEnv(retryEnv), beads.WithSubprocessTimeout(timeout))
 		return retryRunner(dir, name, args...)
 	}
 }
