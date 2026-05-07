@@ -4647,6 +4647,88 @@ exit 0
 	}
 }
 
+func TestWispCompactBSDDateZFallbackUsesUTC(t *testing.T) {
+	cityDir := t.TempDir()
+	binDir := t.TempDir()
+	bdLog := filepath.Join(t.TempDir(), "bd.log")
+	dateLog := filepath.Join(t.TempDir(), "date.log")
+
+	nearBoundary := "2033-05-17T20:33:20Z"
+	beadsJSON := fmt.Sprintf(`[
+  {"id":"ga-heartbeat","status":"open","ephemeral":true,"updated_at":"%s","comment_count":0,"labels":["wisp_type:heartbeat"]}
+]`, nearBoundary)
+
+	writeExecutable(t, filepath.Join(binDir, "bd"), fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$*" >> "$BD_LOG"
+case "$1 $2" in
+  "list --json")
+    cat <<'JSON'
+%s
+JSON
+    ;;
+esac
+exit 0
+`, beadsJSON))
+
+	writeExecutable(t, filepath.Join(binDir, "date"), fmt.Sprintf(`#!/bin/sh
+printf '%%s\n' "$*" >> "$DATE_LOG"
+if [ "$1" = "+%%s" ]; then
+  echo 2000000000
+  exit 0
+fi
+if [ "$1" = "-d" ]; then
+  exit 1
+fi
+if [ "$1" = "-ju" ] && [ "$2" = "-f" ] && [ "$4" = "%s" ]; then
+  echo 1999974800
+  exit 0
+fi
+if [ "$1" = "-j" ] && [ "$2" = "-f" ] && [ "$4" = "%s" ]; then
+  echo 2000000000
+  exit 0
+fi
+exit 1
+`, nearBoundary, nearBoundary))
+
+	env := map[string]string{
+		"BD_LOG":       bdLog,
+		"DATE_LOG":     dateLog,
+		"GC_CITY":      cityDir,
+		"GC_CITY_PATH": cityDir,
+		"PATH":         binDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"TZ":           "America/Los_Angeles",
+	}
+
+	script := filepath.Join(exampleDir(), "packs", "maintenance", "assets", "scripts", "wisp-compact.sh")
+	cmd := exec.Command(script)
+	cmd.Env = mergeTestEnv(env)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s failed: %v\n%s", filepath.Base(script), err, out)
+	}
+
+	want := "wisp-compact: promoted=1 deleted=0 skipped=0"
+	if !strings.Contains(string(out), want) {
+		t.Fatalf("wisp-compact should parse BSD Z timestamps as UTC at the heartbeat TTL boundary\nwant substring: %q\ngot output:\n%s", want, out)
+	}
+
+	dateData, err := os.ReadFile(dateLog)
+	if err != nil {
+		t.Fatalf("ReadFile(date log): %v", err)
+	}
+	if !strings.Contains(string(dateData), "-ju -f %Y-%m-%dT%H:%M:%SZ "+nearBoundary+" +%s") {
+		t.Fatalf("BSD Z fallback did not force UTC:\n%s", dateData)
+	}
+
+	bdData, err := os.ReadFile(bdLog)
+	if err != nil {
+		t.Fatalf("ReadFile(bd log): %v", err)
+	}
+	if !strings.Contains(string(bdData), "update ga-heartbeat --persistent") {
+		t.Fatalf("expected expired heartbeat to be promoted, got bd calls:\n%s", bdData)
+	}
+}
+
 func TestCrossRigDepsReportsNonZeroCounter(t *testing.T) {
 	cityDir := t.TempDir()
 	binDir := t.TempDir()
