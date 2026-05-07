@@ -28,17 +28,45 @@ type CommandRunner func(dir, name string, args ...string) ([]byte, error)
 
 var bdCommandTimeout = 120 * time.Second
 
-// ExecCommandRunner returns a CommandRunner that uses os/exec to run commands.
-// Captures stdout for parsing and stderr for error diagnostics.
-// When the command is "bd", records telemetry (duration, status, output).
-func ExecCommandRunner() CommandRunner {
-	return ExecCommandRunnerWithEnv(nil)
+// RunnerOpt configures a CommandRunner returned by NewExecCommandRunner.
+// Unset fields fall back to the package-level defaults.
+type RunnerOpt func(*runnerConfig)
+
+type runnerConfig struct {
+	env     map[string]string
+	timeout time.Duration // 0 = use package-level bdCommandTimeout
 }
 
-// ExecCommandRunnerWithEnv returns a CommandRunner that uses os/exec and
-// applies the provided environment overrides. Explicit keys replace any
-// inherited values from the parent process.
-func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
+// WithSubprocessTimeout sets the per-call timeout for subprocesses launched
+// by the returned runner. A non-positive value falls back to the
+// package-level default. Use a tighter budget (e.g. 30s) for tick-critical
+// bd writes than the 120s default tuned for big-list reads.
+func WithSubprocessTimeout(d time.Duration) RunnerOpt {
+	return func(c *runnerConfig) {
+		if d > 0 {
+			c.timeout = d
+		}
+	}
+}
+
+// WithEnv supplies environment overrides applied to subprocesses launched by
+// the returned runner. Explicit keys replace any inherited values.
+func WithEnv(env map[string]string) RunnerOpt {
+	return func(c *runnerConfig) { c.env = env }
+}
+
+// NewExecCommandRunner returns a CommandRunner that uses os/exec to run
+// commands. Options configure per-runner behavior such as the subprocess
+// timeout and environment overrides. With no options the runner inherits
+// the parent process environment and uses the package-level
+// bdCommandTimeout default.
+//
+// When the command is "bd", records telemetry (duration, status, output).
+func NewExecCommandRunner(opts ...RunnerOpt) CommandRunner {
+	var cfg runnerConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
 	return func(dir, name string, args ...string) ([]byte, error) {
 		start := time.Now()
 		trace := func(status string, err error) {
@@ -59,7 +87,11 @@ func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
 				time.Now().UTC().Format(time.RFC3339Nano), status, time.Since(start), dir, name, args, msg)
 		}
 		trace("start", nil)
-		ctx, cancel := context.WithTimeout(context.Background(), bdCommandTimeout)
+		timeout := cfg.timeout
+		if timeout <= 0 {
+			timeout = bdCommandTimeout
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, name, args...)
 		cmd.WaitDelay = 2 * time.Second
@@ -68,8 +100,8 @@ func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
 		cmd.Cancel = func() error {
 			return killCommandTree(cmd)
 		}
-		if len(env) > 0 {
-			cmd.Env = mergeEnv(os.Environ(), env)
+		if len(cfg.env) > 0 {
+			cmd.Env = mergeEnv(os.Environ(), cfg.env)
 		}
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
@@ -80,7 +112,7 @@ func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
 				err, out, stderr.String())
 		}
 		if ctx.Err() == context.DeadlineExceeded {
-			timeoutErr := fmt.Errorf("timed out after %s", bdCommandTimeout)
+			timeoutErr := fmt.Errorf("timed out after %s: %w", timeout, context.DeadlineExceeded)
 			trace("timeout", timeoutErr)
 			if stderr.Len() > 0 {
 				return out, fmt.Errorf("%w: %s", timeoutErr, stderr.String())
@@ -104,6 +136,24 @@ func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
 		trace("done", err)
 		return out, err
 	}
+}
+
+// ExecCommandRunner returns a CommandRunner that uses os/exec to run
+// commands with the package-level default timeout. Captures stdout for
+// parsing and stderr for error diagnostics. Equivalent to
+// NewExecCommandRunner() with no options; preserved for callers that
+// pre-date the options API.
+func ExecCommandRunner() CommandRunner {
+	return NewExecCommandRunner()
+}
+
+// ExecCommandRunnerWithEnv returns a CommandRunner that uses os/exec and
+// applies the provided environment overrides. Explicit keys replace any
+// inherited values from the parent process. Equivalent to
+// NewExecCommandRunner(WithEnv(env)); preserved for callers that pre-date
+// the options API.
+func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
+	return NewExecCommandRunner(WithEnv(env))
 }
 
 // bdStdoutErrorDetail extracts a human-readable error description from
