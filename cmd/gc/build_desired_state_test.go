@@ -4887,7 +4887,7 @@ func TestSelectOrCreatePoolSessionBead_SkipsTerminalPoolBeadsForNewTier(t *testi
 				agents:       []config.Agent{cfgAgent},
 			}
 
-			result, err := selectOrCreatePoolSessionBead(bp, "claude", nil, map[string]bool{})
+			result, _, err := selectOrCreatePoolSessionBead(bp, &cfgAgent, "claude", nil, map[string]bool{}, map[int]bool{})
 			if err != nil {
 				t.Fatalf("selectOrCreatePoolSessionBead: %v", err)
 			}
