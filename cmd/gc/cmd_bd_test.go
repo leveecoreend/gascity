@@ -506,6 +506,8 @@ set -eu
 }
 
 func TestGcBdSuppressesBdAutoExportInChildEnv(t *testing.T) {
+	disableManagedDoltRecoveryForTest(t)
+
 	origCityFlag := cityFlag
 	origRigFlag := rigFlag
 	defer func() {
@@ -569,6 +571,8 @@ esac
 }
 
 func TestGcBdDoesNotAutoRouteHyphenatedFlagValue(t *testing.T) {
+	disableManagedDoltRecoveryForTest(t)
+
 	origCityFlag := cityFlag
 	origRigFlag := rigFlag
 	origProbe := bdBeadExists
@@ -1471,6 +1475,8 @@ func TestResolveBdScopeTargetRoutesExistingCityBeadFromRigCwd(t *testing.T) {
 }
 
 func TestGcBdRespectsRawCityFlag(t *testing.T) {
+	disableManagedDoltRecoveryForTest(t)
+
 	origCityFlag := cityFlag
 	origRigFlag := rigFlag
 	origProbe := bdBeadExists
@@ -1543,6 +1549,8 @@ set -eu
 }
 
 func TestGcBdUsesEnclosingRigWhenNoFlag(t *testing.T) {
+	disableManagedDoltRecoveryForTest(t)
+
 	origCityFlag := cityFlag
 	origRigFlag := rigFlag
 	origProbe := bdBeadExists
@@ -1628,6 +1636,8 @@ set -eu
 }
 
 func TestGcBdWarnsOnExternalOverrideDrift(t *testing.T) {
+	disableManagedDoltRecoveryForTest(t)
+
 	origCityFlag := cityFlag
 	origRigFlag := rigFlag
 	defer func() {
