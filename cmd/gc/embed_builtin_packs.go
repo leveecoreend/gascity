@@ -47,8 +47,12 @@ var builtinPacks = []builtinPack{
 func MaterializeBuiltinPacks(cityPath string) error {
 	for _, bp := range builtinPacks {
 		dst := filepath.Join(cityPath, citylayout.SystemPacksRoot, bp.name)
-		if err := materializeFS(bp.fs, ".", dst); err != nil {
+		desired, err := materializeFS(bp.fs, ".", dst)
+		if err != nil {
 			return fmt.Errorf("materializing %s pack: %w", bp.name, err)
+		}
+		if err := pruneStaleGeneratedPackFiles(dst, desired); err != nil {
+			return fmt.Errorf("pruning stale %s pack files: %w", bp.name, err)
 		}
 		if err := pruneLegacyEmbeddedOrders(bp.fs, dst); err != nil {
 			return fmt.Errorf("pruning legacy %s order paths: %w", bp.name, err)
@@ -127,9 +131,11 @@ func peekBeadsProvider(tomlPath string) string {
 	return peek.Beads.Provider
 }
 
-// materializeFS walks an embed.FS rooted at root and writes all files to dstDir.
-func materializeFS(embedded fs.FS, root, dstDir string) error {
-	return fs.WalkDir(embedded, root, func(path string, d fs.DirEntry, err error) error {
+// materializeFS walks an embed.FS rooted at root, writes all files to dstDir,
+// and returns the relative file paths that belong in the generated directory.
+func materializeFS(embedded fs.FS, root, dstDir string) (map[string]struct{}, error) {
+	desired := make(map[string]struct{})
+	err := fs.WalkDir(embedded, root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -148,6 +154,7 @@ func materializeFS(embedded fs.FS, root, dstDir string) error {
 		if d.IsDir() {
 			return os.MkdirAll(dst, 0o755)
 		}
+		desired[filepath.ToSlash(rel)] = struct{}{}
 
 		data, err := fs.ReadFile(embedded, path)
 		if err != nil {
@@ -164,6 +171,10 @@ func materializeFS(embedded fs.FS, root, dstDir string) error {
 		}
 		return fsys.WriteFileIfContentOrModeChangedAtomic(fsys.OSFS{}, dst, data, perm)
 	})
+	if err != nil {
+		return nil, err
+	}
+	return desired, nil
 }
 
 // isExecutableScriptFilename reports whether a materialized pack asset
@@ -207,6 +218,35 @@ func pruneLegacyEmbeddedOrders(embedded fs.FS, dstDir string) error {
 		}
 	}
 	return nil
+}
+
+func pruneStaleGeneratedPackFiles(dstDir string, desired map[string]struct{}) error {
+	if _, err := os.Stat(dstDir); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+
+	return filepath.WalkDir(dstDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(dstDir, path)
+		if err != nil {
+			return err
+		}
+		if _, ok := desired[filepath.ToSlash(rel)]; ok {
+			return nil
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		pruneEmptyDirs(filepath.Dir(path), dstDir)
+		return nil
+	})
 }
 
 func pruneEmptyDirs(dir, stop string) {

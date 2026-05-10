@@ -588,6 +588,68 @@ func TestMaterializeBuiltinPacks_PrunesLegacyOrderDirs(t *testing.T) {
 	}
 }
 
+func TestMaterializeBuiltinPacks_PrunesStaleGeneratedPackFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	if err := MaterializeBuiltinPacks(dir); err != nil {
+		t.Fatalf("MaterializeBuiltinPacks() error: %v", err)
+	}
+
+	stalePaths := []string{
+		filepath.Join(dir, citylayout.SystemPacksRoot, "dolt", "orders", "removed-order.toml"),
+		filepath.Join(dir, citylayout.SystemPacksRoot, "dolt", "commands", "removed-command", "run.sh"),
+		filepath.Join(dir, citylayout.SystemPacksRoot, "maintenance", "assets", "scripts", "removed-helper.sh"),
+	}
+	for _, path := range stalePaths {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir stale path: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+			t.Fatalf("write stale path: %v", err)
+		}
+	}
+
+	if err := MaterializeBuiltinPacks(dir); err != nil {
+		t.Fatalf("MaterializeBuiltinPacks() second call error: %v", err)
+	}
+
+	for _, path := range stalePaths {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("stale generated pack file still exists: %s", path)
+		}
+	}
+
+	for _, path := range []string{
+		filepath.Join(dir, citylayout.SystemPacksRoot, "dolt", "commands", "compact", "run.sh"),
+		filepath.Join(dir, citylayout.SystemPacksRoot, "dolt", "orders", "mol-dog-compactor.toml"),
+		filepath.Join(dir, citylayout.SystemPacksRoot, "maintenance", "orders", "gate-sweep.toml"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("embedded pack file missing after stale prune: %v", err)
+		}
+	}
+}
+
+func TestLoadCityConfigMaterializesBuiltinPacks(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "city.toml"), []byte("[workspace]\nname = \"test\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := loadCityConfig(dir); err != nil {
+		t.Fatalf("loadCityConfig() error: %v", err)
+	}
+
+	for _, path := range []string{
+		filepath.Join(dir, citylayout.SystemPacksRoot, "core", "pack.toml"),
+		filepath.Join(dir, citylayout.SystemPacksRoot, "dolt", "commands", "compact", "run.sh"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("builtin pack file missing after loadCityConfig: %v", err)
+		}
+	}
+}
+
 func TestBuiltinPackIncludes_DefaultProvider(t *testing.T) {
 	dir := t.TempDir()
 

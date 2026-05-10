@@ -28,6 +28,9 @@ Describe what this agent should do here.
 // in cmd_config.go and cmd_start.go that intentionally use config.Load to
 // discover remote packs before fetching them.
 func loadCityConfig(cityPath string, warningWriter ...io.Writer) (*config.City, error) {
+	if err := MaterializeBuiltinPacks(cityPath); err != nil {
+		return nil, fmt.Errorf("materializing builtin packs: %w", err)
+	}
 	extras := builtinPackIncludes(cityPath)
 	cfg, prov, err := config.LoadWithIncludes(fsys.OSFS{}, filepath.Join(cityPath, "city.toml"), extras...)
 	if err != nil {
@@ -41,6 +44,9 @@ func loadCityConfig(cityPath string, warningWriter ...io.Writer) (*config.City, 
 // loadCityConfigSuppressDeprecatedOrderWarnings performs a full config load
 // while suppressing only legacy order-path migration warnings.
 func loadCityConfigSuppressDeprecatedOrderWarnings(cityPath string, warningWriter ...io.Writer) (*config.City, error) {
+	if err := MaterializeBuiltinPacks(cityPath); err != nil {
+		return nil, fmt.Errorf("materializing builtin packs: %w", err)
+	}
 	extras := builtinPackIncludes(cityPath)
 	cfg, prov, err := config.LoadWithIncludesOptions(
 		fsys.OSFS{},
