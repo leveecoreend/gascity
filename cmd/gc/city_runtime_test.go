@@ -2402,9 +2402,9 @@ func TestBetterPoolManagedStopSuppressionBead_NewerActiveOwnerBeatsOlderManagedD
 			"state":        string(sessionpkg.StateDraining),
 		},
 	}
-	newestOwner, hasOwner := newestPoolManagedStopSuppressionOwner([]beads.Bead{olderDraining, owner})
+	anchor, hasAnchor := newestPoolManagedStopSuppressionAnchor([]beads.Bead{olderDraining, owner})
 
-	if got := betterPoolManagedStopSuppressionBead(olderDraining, owner, newestOwner, hasOwner, nil); got.ID != owner.ID {
+	if got := betterPoolManagedStopSuppressionBead(olderDraining, owner, anchor, hasAnchor, nil); got.ID != owner.ID {
 		t.Fatalf("betterPoolManagedStopSuppressionBead() winner = %s, want %s", got.ID, owner.ID)
 	}
 }
@@ -2683,6 +2683,52 @@ func TestCityRuntimeTickRunsOnDeathForCreatingPoolSession(t *testing.T) {
 	}
 }
 
+func TestCityRuntimeTickRunsOnDeathForFailedCreatePoolSession(t *testing.T) {
+	cityPath := t.TempDir()
+	outFile := filepath.Join(cityPath, "on-death.txt")
+	store := beads.NewMemStore()
+	bead := mustCreatePoolManagedSessionBead(t, store, "", string(sessionpkg.StateFailedCreate), "")
+
+	prevPoolRunning := map[string]bool{bead.Metadata["session_name"]: true}
+	var stderr bytes.Buffer
+	cr := &CityRuntime{
+		cityPath:            cityPath,
+		cityName:            "my-city",
+		logPrefix:           "gc start",
+		cfg:                 &config.City{},
+		sp:                  runtime.NewFake(),
+		standaloneCityStore: store,
+		sessionDrains:       newDrainTracker(),
+		poolDeathHandlers: map[string]poolDeathInfo{
+			bead.Metadata["session_name"]: {
+				Command: "printf fired > " + shellQuotePath(outFile),
+				Dir:     cityPath,
+			},
+		},
+		rec:    events.Discard,
+		stdout: io.Discard,
+		stderr: &stderr,
+		buildFnWithSessionBeads: func(_ *config.City, _ runtime.Provider, _ beads.Store, _ map[string]beads.Store, _ *sessionBeadSnapshot, _ *sessionReconcilerTraceCycle) DesiredStateResult {
+			return DesiredStateResult{State: map[string]TemplateParams{}}
+		},
+	}
+
+	dirty := &atomic.Bool{}
+	var lastProviderName string
+	cr.tick(context.Background(), dirty, &lastProviderName, cityPath, &prevPoolRunning, "test")
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v\nstderr=%s", outFile, err, stderr.String())
+	}
+	if got := strings.TrimSpace(string(data)); got != "fired" {
+		t.Fatalf("on_death output = %q, want %q", got, "fired")
+	}
+	if strings.Contains(stderr.String(), "skipped for managed session stop") {
+		t.Fatalf("stderr = %q, want failed-create state to preserve on_death recovery", stderr.String())
+	}
+}
+
 func TestCityRuntimeTickRunsOnDeathForStoppedPoolSessionWithoutDeliberateSleepReason(t *testing.T) {
 	cityPath := t.TempDir()
 	outFile := filepath.Join(cityPath, "on-death.txt")
@@ -2823,10 +2869,37 @@ func TestBetterPoolManagedStopSuppressionBead_TrackedOlderManagedDuplicateDoesNo
 	}
 	drains := newDrainTracker()
 	drains.set(trackedOlder.ID, &drainState{reason: "config-drift"})
-	newestOwner, hasOwner := newestPoolManagedStopSuppressionOwner([]beads.Bead{trackedOlder, owner})
+	anchor, hasAnchor := newestPoolManagedStopSuppressionAnchor([]beads.Bead{trackedOlder, owner})
 
-	if got := betterPoolManagedStopSuppressionBead(trackedOlder, owner, newestOwner, hasOwner, drains); got.ID != owner.ID {
+	if got := betterPoolManagedStopSuppressionBead(trackedOlder, owner, anchor, hasAnchor, drains); got.ID != owner.ID {
 		t.Fatalf("betterPoolManagedStopSuppressionBead() winner = %s, want %s", got.ID, owner.ID)
+	}
+}
+
+func TestBetterPoolManagedStopSuppressionBead_NonCanonicalActiveAnchorBeatsOlderManagedDuplicate(t *testing.T) {
+	activeAliasBead := beads.Bead{
+		ID:        "gc-2",
+		CreatedAt: time.Unix(20, 0).UTC(),
+		Metadata: map[string]string{
+			"template":     "worker",
+			"alias":        "crew/worker-1",
+			"session_name": "crew-worker-1",
+			"state":        string(sessionpkg.StateActive),
+		},
+	}
+	olderDraining := beads.Bead{
+		ID:        "gc-1",
+		CreatedAt: time.Unix(10, 0).UTC(),
+		Metadata: map[string]string{
+			"template":     "worker",
+			"session_name": activeAliasBead.Metadata["session_name"],
+			"state":        string(sessionpkg.StateDraining),
+		},
+	}
+	anchor, hasAnchor := newestPoolManagedStopSuppressionAnchor([]beads.Bead{olderDraining, activeAliasBead})
+
+	if got := betterPoolManagedStopSuppressionBead(olderDraining, activeAliasBead, anchor, hasAnchor, nil); got.ID != activeAliasBead.ID {
+		t.Fatalf("betterPoolManagedStopSuppressionBead() winner = %s, want %s", got.ID, activeAliasBead.ID)
 	}
 }
 
@@ -2932,12 +3005,12 @@ func TestPoolDeathHookSuppressedByManagedStopState_Contract(t *testing.T) {
 		{name: "active", state: string(sessionpkg.StateActive), want: false},
 		{name: "awake", state: string(sessionpkg.StateAwake), want: false},
 		{name: "creating", state: string(sessionpkg.StateCreating), want: false},
+		{name: "failed-create", state: string(sessionpkg.StateFailedCreate), want: false},
 		{name: "empty", state: "", want: false},
 		{name: "empty-closed", state: "", status: "closed", want: false},
 		{name: "asleep-empty", state: string(sessionpkg.StateAsleep), want: false},
 		{name: "asleep-idle", state: string(sessionpkg.StateAsleep), sleepReason: "idle", want: true},
 		{name: "suspended", state: string(sessionpkg.StateSuspended), want: true},
-		{name: "failed-create", state: string(sessionpkg.StateFailedCreate), want: true},
 		{name: "draining", state: string(sessionpkg.StateDraining), want: true},
 		{name: "drained", state: string(sessionpkg.StateDrained), want: true},
 		{name: "active-closed", state: string(sessionpkg.StateActive), status: "closed", want: false},
