@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Kiro provider launch behavior is now explicit in release notes and provider
+  docs: the built-in Kiro provider starts `kiro-cli` with `chat`,
+  `--no-interactive`, `--agent gascity`, and `--trust-all-tools` by default.
+  Operators who do not want unrestricted tool trust can replace the full
+  default argv with an explicit `[providers.kiro].args` list in `city.toml`.
+- Tmux and runtime provider-overlay staging now surface nonfatal preservation
+  warnings on stderr, including the Kiro `AGENTS.md` preservation notice when
+  project instructions already exist.
 - The built-in `control-dispatcher` trace now defaults to
   `${GC_CITY_RUNTIME_DIR}/control-dispatcher-trace.log` (falling back to
   `${GC_CITY}/.gc/runtime/control-dispatcher-trace.log`) instead of writing at
