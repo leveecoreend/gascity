@@ -2059,13 +2059,10 @@ func selectOrCreateDependencyPoolSessionBead(
 	template string,
 ) (beads.Bead, error) {
 	for _, bead := range bp.sessionBeads.Open() {
-		if bead.Status == "closed" || isManualSessionBead(bead) {
+		if isManualSessionBead(bead) {
 			continue
 		}
-		if isDrainedSessionBead(bead) {
-			continue
-		}
-		if isFailedCreateSessionBead(bead) {
+		if !poolSessionBeadReusableForNewDemand(bead) {
 			continue
 		}
 		if isNamedSessionBead(bead) {

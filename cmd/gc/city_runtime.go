@@ -960,25 +960,7 @@ func (cr *CityRuntime) poolDeathHookSuppressedByManagedStop(sessionName string) 
 	if err != nil || !found {
 		return beads.Bead{}, false, err
 	}
-	// beginSessionDrain records the controller's stop intent in-memory before the
-	// provider kill lands and before any later metadata flush can persist
-	// state=draining/asleep/closed. Consult the drain tracker first so a pool
-	// death observed in that gap still suppresses the on_death hook.
-	if cr.poolDeathHookSuppressedByDrainTracker(bead) {
-		return bead, true, nil
-	}
 	return bead, poolDeathHookSuppressedByManagedStopState(bead), nil
-}
-
-func (cr *CityRuntime) poolDeathHookSuppressedByDrainTracker(bead beads.Bead) bool {
-	if cr == nil || cr.sessionDrains == nil {
-		return false
-	}
-	id := strings.TrimSpace(bead.ID)
-	if id == "" {
-		return false
-	}
-	return cr.sessionDrains.get(id) != nil
 }
 
 func (cr *CityRuntime) poolManagedStopSuppressionBead(sessionName string) (beads.Bead, bool, error) {
@@ -1049,15 +1031,6 @@ func betterPoolManagedStopSuppressionBead(incumbent, candidate beads.Bead, dt *d
 	case candidateSuppressed && !incumbentSuppressed:
 		return candidate
 	case incumbentSuppressed && !candidateSuppressed:
-		return incumbent
-	}
-
-	incumbentClosed := strings.TrimSpace(incumbent.Status) == "closed"
-	candidateClosed := strings.TrimSpace(candidate.Status) == "closed"
-	switch {
-	case candidateClosed && !incumbentClosed:
-		return candidate
-	case incumbentClosed && !candidateClosed:
 		return incumbent
 	}
 

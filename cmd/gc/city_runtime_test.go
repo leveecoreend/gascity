@@ -2658,7 +2658,7 @@ func TestCityRuntimeTickRunsOnDeathForStoppedPoolSessionWithoutDeliberateSleepRe
 	}
 }
 
-func TestCityRuntimeTickSkipsOnDeathWhileManagedDrainTrackerEntryIsActive(t *testing.T) {
+func TestCityRuntimeTickRunsOnDeathWhileManagedDrainTrackerEntryIsActive(t *testing.T) {
 	cityPath := t.TempDir()
 	outFile := filepath.Join(cityPath, "on-death.txt")
 	store := beads.NewMemStore()
@@ -2694,11 +2694,40 @@ func TestCityRuntimeTickSkipsOnDeathWhileManagedDrainTrackerEntryIsActive(t *tes
 	var lastProviderName string
 	cr.tick(context.Background(), dirty, &lastProviderName, cityPath, &prevPoolRunning, "test")
 
-	if _, err := os.Stat(outFile); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("on_death output err = %v, want no hook execution", err)
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v\nstderr=%s", outFile, err, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), bead.ID) || !strings.Contains(stderr.String(), "state=active") {
-		t.Fatalf("stderr = %q, want drain-tracked bead context for managed-stop skip", stderr.String())
+	if got := strings.TrimSpace(string(data)); got != "fired" {
+		t.Fatalf("on_death output = %q, want %q", got, "fired")
+	}
+	if strings.Contains(stderr.String(), "skipped for managed session stop") {
+		t.Fatalf("stderr = %q, want active drain-tracked bead to keep on_death enabled", stderr.String())
+	}
+}
+
+func TestBetterPoolManagedStopSuppressionBead_SameSuppressionFallsBackToRecency(t *testing.T) {
+	olderClosed := beads.Bead{
+		ID:        "gc-1",
+		Status:    "closed",
+		CreatedAt: time.Unix(10, 0).UTC(),
+		Metadata: map[string]string{
+			"session_name": "worker-legacy",
+			"state":        string(sessionpkg.StateActive),
+		},
+	}
+	newerOpen := beads.Bead{
+		ID:        "gc-2",
+		Status:    "open",
+		CreatedAt: time.Unix(20, 0).UTC(),
+		Metadata: map[string]string{
+			"session_name": "worker-legacy",
+			"state":        string(sessionpkg.StateActive),
+		},
+	}
+
+	if got := betterPoolManagedStopSuppressionBead(olderClosed, newerOpen, nil); got.ID != newerOpen.ID {
+		t.Fatalf("betterPoolManagedStopSuppressionBead() winner = %s, want %s", got.ID, newerOpen.ID)
 	}
 }
 
