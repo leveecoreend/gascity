@@ -976,8 +976,7 @@ func (cr *CityRuntime) poolManagedStopSuppressionBead(sessionName string) (beads
 	if err != nil {
 		return beads.Bead{}, false, err
 	}
-	var openMatches []beads.Bead
-	var closedMatches []beads.Bead
+	var poolMatches []beads.Bead
 	for _, bead := range matches {
 		if !isPoolManagedSessionBead(bead) {
 			continue
@@ -985,16 +984,12 @@ func (cr *CityRuntime) poolManagedStopSuppressionBead(sessionName string) (beads
 		if strings.TrimSpace(bead.Metadata["session_name"]) != sessionName {
 			continue
 		}
-		if bead.Status == "closed" {
-			closedMatches = append(closedMatches, bead)
-			continue
-		}
-		openMatches = append(openMatches, bead)
+		poolMatches = append(poolMatches, bead)
 	}
-	if bead, ok := canonicalPoolManagedStopSuppressionBead(openMatches); ok {
-		return bead, true, nil
-	}
-	if bead, ok := canonicalPoolManagedStopSuppressionBead(closedMatches); ok {
+	// Canonicalize across open and closed beads together. Once the provider has
+	// already reported the runtime session missing, an "active" duplicate is only
+	// stale metadata; the bead that owns the session name remains authoritative.
+	if bead, ok := canonicalPoolManagedStopSuppressionBead(poolMatches); ok {
 		return bead, true, nil
 	}
 	return beads.Bead{}, false, nil
@@ -1012,11 +1007,14 @@ func canonicalPoolManagedStopSuppressionBead(matches []beads.Bead) (beads.Bead, 
 }
 
 func poolDeathHookSuppressedByManagedStop(bead beads.Bead) bool {
-	switch sessionpkg.State(strings.TrimSpace(bead.Metadata["state"])) {
-	case "", sessionpkg.StateActive, sessionpkg.StateAwake, sessionpkg.StateCreating:
-		return false
-	default:
+	switch strings.TrimSpace(bead.Metadata["state"]) {
+	case string(sessionpkg.StateDraining), "drained", string(sessionpkg.StateArchived),
+		string(sessionpkg.StateSuspended), string(sessionpkg.StateFailedCreate):
 		return true
+	case string(sessionpkg.StateAsleep), "stopped":
+		return isDeliberateSleepReason(bead.Metadata["sleep_reason"])
+	default:
+		return false
 	}
 }
 
