@@ -2383,50 +2383,29 @@ func TestCityRuntimeTickSkipsOnDeathForControllerDrainingSession(t *testing.T) {
 	}
 }
 
-func TestCityRuntimeTickRunsOnDeathWhenCanonicalPoolBeadIsActive(t *testing.T) {
-	cityPath := t.TempDir()
-	outFile := filepath.Join(cityPath, "on-death.txt")
-	store := beads.NewMemStore()
-	owner := mustCreatePoolManagedSessionBead(t, store, "", string(sessionpkg.StateActive), "")
-	mustCreatePoolManagedSessionBead(t, store, owner.Metadata["session_name"], string(sessionpkg.StateDraining), "")
-
-	prevPoolRunning := map[string]bool{owner.Metadata["session_name"]: true}
-	var stderr bytes.Buffer
-	cr := &CityRuntime{
-		cityPath:            cityPath,
-		cityName:            "my-city",
-		logPrefix:           "gc start",
-		cfg:                 &config.City{},
-		sp:                  runtime.NewFake(),
-		standaloneCityStore: store,
-		sessionDrains:       newDrainTracker(),
-		poolDeathHandlers: map[string]poolDeathInfo{
-			owner.Metadata["session_name"]: {
-				Command: "printf fired > " + shellQuotePath(outFile),
-				Dir:     cityPath,
-			},
-		},
-		rec:    events.Discard,
-		stdout: io.Discard,
-		stderr: &stderr,
-		buildFnWithSessionBeads: func(_ *config.City, _ runtime.Provider, _ beads.Store, _ map[string]beads.Store, _ *sessionBeadSnapshot, _ *sessionReconcilerTraceCycle) DesiredStateResult {
-			return DesiredStateResult{State: map[string]TemplateParams{}}
+func TestBetterPoolManagedStopSuppressionBead_NewerActiveOwnerBeatsOlderManagedDuplicate(t *testing.T) {
+	owner := beads.Bead{
+		ID:        "gc-2",
+		CreatedAt: time.Unix(20, 0).UTC(),
+		Metadata: map[string]string{
+			"template":     "worker",
+			"session_name": PoolSessionName("worker", "gc-2"),
+			"state":        string(sessionpkg.StateActive),
 		},
 	}
-
-	dirty := &atomic.Bool{}
-	var lastProviderName string
-	cr.tick(context.Background(), dirty, &lastProviderName, cityPath, &prevPoolRunning, "test")
-
-	data, err := os.ReadFile(outFile)
-	if err != nil {
-		t.Fatalf("ReadFile(%s): %v\nstderr=%s", outFile, err, stderr.String())
+	olderDraining := beads.Bead{
+		ID:        "gc-1",
+		CreatedAt: time.Unix(10, 0).UTC(),
+		Metadata: map[string]string{
+			"template":     "worker",
+			"session_name": owner.Metadata["session_name"],
+			"state":        string(sessionpkg.StateDraining),
+		},
 	}
-	if got := strings.TrimSpace(string(data)); got != "fired" {
-		t.Fatalf("on_death output = %q, want %q", got, "fired")
-	}
-	if strings.Contains(stderr.String(), "skipped for managed session stop") {
-		t.Fatalf("stderr = %q, want canonical active bead to keep on_death enabled", stderr.String())
+	newestOwner, hasOwner := newestPoolManagedStopSuppressionOwner([]beads.Bead{olderDraining, owner})
+
+	if got := betterPoolManagedStopSuppressionBead(olderDraining, owner, newestOwner, hasOwner, nil); got.ID != owner.ID {
+		t.Fatalf("betterPoolManagedStopSuppressionBead() winner = %s, want %s", got.ID, owner.ID)
 	}
 }
 
@@ -2612,6 +2591,98 @@ func TestCityRuntimeTickSkipsOnDeathForDrainTrackedDuplicateWhenOwnerStillMatche
 	}
 }
 
+func TestCityRuntimeTickSkipsOnDeathForUntrackedNewerManagedDuplicateAfterRestart(t *testing.T) {
+	cityPath := t.TempDir()
+	outFile := filepath.Join(cityPath, "on-death.txt")
+	store := beads.NewMemStore()
+	owner := mustCreatePoolManagedSessionBead(t, store, "", string(sessionpkg.StateActive), "")
+	draining := mustCreatePoolManagedSessionBead(t, store, owner.Metadata["session_name"], string(sessionpkg.StateDraining), "")
+
+	prevPoolRunning := map[string]bool{owner.Metadata["session_name"]: true}
+	var stderr bytes.Buffer
+	cr := &CityRuntime{
+		cityPath:            cityPath,
+		cityName:            "my-city",
+		logPrefix:           "gc start",
+		cfg:                 &config.City{},
+		sp:                  runtime.NewFake(),
+		standaloneCityStore: store,
+		sessionDrains:       newDrainTracker(),
+		poolDeathHandlers: map[string]poolDeathInfo{
+			owner.Metadata["session_name"]: {
+				Command: "printf fired > " + shellQuotePath(outFile),
+				Dir:     cityPath,
+			},
+		},
+		rec:    events.Discard,
+		stdout: io.Discard,
+		stderr: &stderr,
+		buildFnWithSessionBeads: func(_ *config.City, _ runtime.Provider, _ beads.Store, _ map[string]beads.Store, _ *sessionBeadSnapshot, _ *sessionReconcilerTraceCycle) DesiredStateResult {
+			return DesiredStateResult{State: map[string]TemplateParams{}}
+		},
+	}
+
+	dirty := &atomic.Bool{}
+	var lastProviderName string
+	cr.tick(context.Background(), dirty, &lastProviderName, cityPath, &prevPoolRunning, "test")
+
+	if _, err := os.Stat(outFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("on_death output err = %v, want no hook execution", err)
+	}
+	if strings.Contains(stderr.String(), "bead="+owner.ID) {
+		t.Fatalf("stderr = %q, want newer managed duplicate to beat stale owner after restart", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), draining.ID) || !strings.Contains(stderr.String(), "state=draining") {
+		t.Fatalf("stderr = %q, want newer managed duplicate context for managed-stop skip", stderr.String())
+	}
+}
+
+func TestCityRuntimeTickRunsOnDeathForCreatingPoolSession(t *testing.T) {
+	cityPath := t.TempDir()
+	outFile := filepath.Join(cityPath, "on-death.txt")
+	store := beads.NewMemStore()
+	bead := mustCreatePoolManagedSessionBead(t, store, "", string(sessionpkg.StateCreating), "")
+
+	prevPoolRunning := map[string]bool{bead.Metadata["session_name"]: true}
+	var stderr bytes.Buffer
+	cr := &CityRuntime{
+		cityPath:            cityPath,
+		cityName:            "my-city",
+		logPrefix:           "gc start",
+		cfg:                 &config.City{},
+		sp:                  runtime.NewFake(),
+		standaloneCityStore: store,
+		sessionDrains:       newDrainTracker(),
+		poolDeathHandlers: map[string]poolDeathInfo{
+			bead.Metadata["session_name"]: {
+				Command: "printf fired > " + shellQuotePath(outFile),
+				Dir:     cityPath,
+			},
+		},
+		rec:    events.Discard,
+		stdout: io.Discard,
+		stderr: &stderr,
+		buildFnWithSessionBeads: func(_ *config.City, _ runtime.Provider, _ beads.Store, _ map[string]beads.Store, _ *sessionBeadSnapshot, _ *sessionReconcilerTraceCycle) DesiredStateResult {
+			return DesiredStateResult{State: map[string]TemplateParams{}}
+		},
+	}
+
+	dirty := &atomic.Bool{}
+	var lastProviderName string
+	cr.tick(context.Background(), dirty, &lastProviderName, cityPath, &prevPoolRunning, "test")
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v\nstderr=%s", outFile, err, stderr.String())
+	}
+	if got := strings.TrimSpace(string(data)); got != "fired" {
+		t.Fatalf("on_death output = %q, want %q", got, "fired")
+	}
+	if strings.Contains(stderr.String(), "skipped for managed session stop") {
+		t.Fatalf("stderr = %q, want creating state to preserve on_death recovery", stderr.String())
+	}
+}
+
 func TestCityRuntimeTickRunsOnDeathForStoppedPoolSessionWithoutDeliberateSleepReason(t *testing.T) {
 	cityPath := t.TempDir()
 	outFile := filepath.Join(cityPath, "on-death.txt")
@@ -2726,8 +2797,36 @@ func TestBetterPoolManagedStopSuppressionBead_SameSuppressionFallsBackToRecency(
 		},
 	}
 
-	if got := betterPoolManagedStopSuppressionBead(olderClosed, newerOpen, nil); got.ID != newerOpen.ID {
+	if got := betterPoolManagedStopSuppressionBead(olderClosed, newerOpen, beads.Bead{}, false, nil); got.ID != newerOpen.ID {
 		t.Fatalf("betterPoolManagedStopSuppressionBead() winner = %s, want %s", got.ID, newerOpen.ID)
+	}
+}
+
+func TestBetterPoolManagedStopSuppressionBead_TrackedOlderManagedDuplicateDoesNotBeatNewerOwner(t *testing.T) {
+	owner := beads.Bead{
+		ID:        "gc-2",
+		CreatedAt: time.Unix(20, 0).UTC(),
+		Metadata: map[string]string{
+			"template":     "worker",
+			"session_name": PoolSessionName("worker", "gc-2"),
+			"state":        string(sessionpkg.StateActive),
+		},
+	}
+	trackedOlder := beads.Bead{
+		ID:        "gc-1",
+		CreatedAt: time.Unix(10, 0).UTC(),
+		Metadata: map[string]string{
+			"template":     "worker",
+			"session_name": owner.Metadata["session_name"],
+			"state":        string(sessionpkg.StateDraining),
+		},
+	}
+	drains := newDrainTracker()
+	drains.set(trackedOlder.ID, &drainState{reason: "config-drift"})
+	newestOwner, hasOwner := newestPoolManagedStopSuppressionOwner([]beads.Bead{trackedOlder, owner})
+
+	if got := betterPoolManagedStopSuppressionBead(trackedOlder, owner, newestOwner, hasOwner, drains); got.ID != owner.ID {
+		t.Fatalf("betterPoolManagedStopSuppressionBead() winner = %s, want %s", got.ID, owner.ID)
 	}
 }
 

@@ -999,38 +999,36 @@ func canonicalPoolManagedStopSuppressionBead(matches []beads.Bead, dt *drainTrac
 	if len(matches) == 0 {
 		return beads.Bead{}, false
 	}
+	newestOwner, hasOwner := newestPoolManagedStopSuppressionOwner(matches)
 	winner := matches[0]
 	for _, bead := range matches[1:] {
-		winner = betterPoolManagedStopSuppressionBead(winner, bead, dt)
+		winner = betterPoolManagedStopSuppressionBead(winner, bead, newestOwner, hasOwner, dt)
 	}
 	return winner, true
 }
 
-func betterPoolManagedStopSuppressionBead(incumbent, candidate beads.Bead, dt *drainTracker) beads.Bead {
-	incumbentTracked := drainTrackerHasBead(dt, incumbent.ID)
-	candidateTracked := drainTrackerHasBead(dt, candidate.ID)
-	switch {
-	case candidateTracked && !incumbentTracked:
-		return candidate
-	case incumbentTracked && !candidateTracked:
-		return incumbent
+func newestPoolManagedStopSuppressionOwner(matches []beads.Bead) (beads.Bead, bool) {
+	var owner beads.Bead
+	hasOwner := false
+	for _, bead := range matches {
+		if !beadOwnsPoolSessionName(bead) {
+			continue
+		}
+		if !hasOwner || bead.CreatedAt.After(owner.CreatedAt) || (bead.CreatedAt.Equal(owner.CreatedAt) && strings.TrimSpace(bead.ID) > strings.TrimSpace(owner.ID)) {
+			owner = bead
+			hasOwner = true
+		}
 	}
+	return owner, hasOwner
+}
 
-	incumbentOwnsName := beadOwnsPoolSessionName(incumbent)
-	candidateOwnsName := beadOwnsPoolSessionName(candidate)
+func betterPoolManagedStopSuppressionBead(incumbent, candidate, newestOwner beads.Bead, hasOwner bool, dt *drainTracker) beads.Bead {
+	incumbentRank := poolManagedStopSuppressionRank(incumbent, newestOwner, hasOwner, dt)
+	candidateRank := poolManagedStopSuppressionRank(candidate, newestOwner, hasOwner, dt)
 	switch {
-	case candidateOwnsName && !incumbentOwnsName:
+	case candidateRank > incumbentRank:
 		return candidate
-	case incumbentOwnsName && !candidateOwnsName:
-		return incumbent
-	}
-
-	incumbentSuppressed := poolDeathHookSuppressedByManagedStopState(incumbent)
-	candidateSuppressed := poolDeathHookSuppressedByManagedStopState(candidate)
-	switch {
-	case candidateSuppressed && !incumbentSuppressed:
-		return candidate
-	case incumbentSuppressed && !candidateSuppressed:
+	case incumbentRank > candidateRank:
 		return incumbent
 	}
 
@@ -1050,12 +1048,47 @@ func drainTrackerHasBead(dt *drainTracker, beadID string) bool {
 	return dt.get(beadID) != nil
 }
 
+func poolManagedStopSuppressionRank(bead, newestOwner beads.Bead, hasOwner bool, dt *drainTracker) int {
+	suppressed := poolDeathHookSuppressedByManagedStopState(bead)
+	ownsName := beadOwnsPoolSessionName(bead)
+	tracked := drainTrackerHasBead(dt, bead.ID)
+	ownerIsNewer := hasOwner && strings.TrimSpace(newestOwner.ID) != "" && strings.TrimSpace(newestOwner.ID) != strings.TrimSpace(bead.ID) &&
+		newestOwner.CreatedAt.After(bead.CreatedAt)
+
+	switch {
+	case suppressed && tracked && !ownerIsNewer:
+		// Live drain-tracker intent wins while it still points at the newest
+		// managed-stop candidate. If the tracked duplicate is older than the
+		// current canonical owner, treat the tracker as stale and fall back to
+		// bead-backed authority.
+		return 5
+	case suppressed && ownsName:
+		return 4
+	case suppressed && hasOwner && strings.TrimSpace(newestOwner.ID) != strings.TrimSpace(bead.ID) && bead.CreatedAt.After(newestOwner.CreatedAt):
+		// After a controller restart, drainTracker state is gone. A newer
+		// managed-stop duplicate still needs to beat an older active owner so
+		// death-hook suppression survives restart.
+		return 3
+	case ownsName:
+		return 2
+	case suppressed:
+		return 1
+	default:
+		return 0
+	}
+}
+
 func poolDeathHookSuppressedByManagedStopState(bead beads.Bead) bool {
 	switch strings.TrimSpace(bead.Metadata["state"]) {
 	case string(sessionpkg.StateDraining), string(sessionpkg.StateDrained),
 		string(sessionpkg.StateArchived), string(sessionpkg.StateSuspended),
 		string(sessionpkg.StateFailedCreate), "gc_swept", "orphaned":
 		return true
+	case string(sessionpkg.StateCreating):
+		// Keep creating fail-open. Async-start cleanup can stop a runtime while
+		// the bead is still creating, and those disappearances should preserve
+		// crash recovery until the lifecycle reaches a deliberate terminal state.
+		return false
 	case string(sessionpkg.StateAsleep), "stopped":
 		return isDeliberateSleepReason(bead.Metadata["sleep_reason"])
 	case string(sessionpkg.StateQuarantined):
