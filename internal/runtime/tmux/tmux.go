@@ -42,6 +42,7 @@ type Config struct {
 	NudgeReadyTimeout  time.Duration
 	NudgeRetryInterval time.Duration
 	NudgeLockTimeout   time.Duration
+	StopTimeout        time.Duration
 	// NudgeIdleTimeout is how long Nudge waits for the agent to become idle
 	// before sending the message. This prevents interrupting active tool calls.
 	// If the agent doesn't become idle within this timeout, the message is
@@ -63,6 +64,7 @@ func DefaultConfig() Config {
 		NudgeReadyTimeout:  10 * time.Second,
 		NudgeRetryInterval: 500 * time.Millisecond,
 		NudgeLockTimeout:   30 * time.Second,
+		StopTimeout:        10 * time.Second,
 		NudgeIdleTimeout:   30 * time.Second,
 		DebounceMs:         500,
 		DisplayMs:          5000,
@@ -217,7 +219,14 @@ func (t *Tmux) approvalDedup() *approvalDedup {
 // or fork-blocked host cannot hang the call indefinitely. When the parent
 // already has an earlier deadline, that earlier deadline wins.
 func (t *Tmux) runCtx(ctx context.Context, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, tmuxSubprocessTimeout)
+	return t.runCtxWithTimeout(ctx, tmuxSubprocessTimeout, args...)
+}
+
+func (t *Tmux) runCtxWithTimeout(ctx context.Context, timeout time.Duration, args ...string) (string, error) {
+	if timeout <= 0 {
+		timeout = tmuxSubprocessTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	allArgs := []string{"-u"}
 	if t.cfg.SocketName != "" {
@@ -225,6 +234,14 @@ func (t *Tmux) runCtx(ctx context.Context, args ...string) (string, error) {
 	}
 	allArgs = append(allArgs, args...)
 	return t.exec.executeCtx(ctx, allArgs)
+}
+
+func (t *Tmux) runStop(args ...string) (string, error) {
+	timeout := t.cfg.StopTimeout
+	if timeout <= 0 {
+		timeout = DefaultConfig().StopTimeout
+	}
+	return t.runCtxWithTimeout(context.Background(), timeout, args...)
 }
 
 // run executes a tmux command and returns stdout. All commands include -u
@@ -423,7 +440,11 @@ func (t *Tmux) EnsureSessionFresh(name, workDir string) error {
 
 // KillSession terminates a tmux session.
 func (t *Tmux) KillSession(name string) error {
-	_, err := t.run("kill-session", "-t", name)
+	return t.killSessionWithRun(name, t.run)
+}
+
+func (t *Tmux) killSessionWithRun(name string, run func(...string) (string, error)) error {
+	_, err := run("kill-session", "-t", name)
 	return err
 }
 
@@ -451,10 +472,10 @@ const processKillGracePeriod = 2 * time.Second
 // This ensures Claude processes and all their children are properly terminated.
 func (t *Tmux) KillSessionWithProcesses(name string) error {
 	// Get the pane PID
-	pid, err := t.GetPanePID(name)
+	pid, err := t.getPanePIDWithRun(name, t.runStop)
 	if err != nil {
 		// Session might not exist or server may have already gone away.
-		killErr := t.KillSession(name)
+		killErr := t.killSessionWithRun(name, t.runStop)
 		if killErr == nil || errors.Is(killErr, ErrSessionNotFound) || errors.Is(killErr, ErrNoServer) {
 			return nil
 		}
@@ -506,7 +527,7 @@ func (t *Tmux) KillSessionWithProcesses(name string) error {
 	// Kill the tmux session
 	// Ignore missing/dead-server errors - killing the pane process may have
 	// already caused tmux to destroy the session automatically.
-	err = t.KillSession(name)
+	err = t.killSessionWithRun(name, t.runStop)
 	if errors.Is(err, ErrSessionNotFound) || errors.Is(err, ErrNoServer) {
 		return nil
 	}
@@ -1667,11 +1688,15 @@ func (t *Tmux) GetPaneWorkDir(session string) (string, error) {
 // returning the active pane's PID in multi-pane sessions. When target is
 // a pane ID (e.g., "%5"), uses it directly.
 func (t *Tmux) GetPanePID(target string) (string, error) {
+	return t.getPanePIDWithRun(target, t.run)
+}
+
+func (t *Tmux) getPanePIDWithRun(target string, run func(...string) (string, error)) (string, error) {
 	tmuxTarget := target
 	if !strings.HasPrefix(target, "%") {
 		tmuxTarget = target + ":^.0"
 	}
-	out, err := t.run("display-message", "-t", tmuxTarget, "-p", "#{pane_pid}")
+	out, err := run("display-message", "-t", tmuxTarget, "-p", "#{pane_pid}")
 	if err != nil {
 		return "", err
 	}

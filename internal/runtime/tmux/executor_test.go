@@ -175,6 +175,41 @@ func TestRunBoundsByTmuxSubprocessTimeout(t *testing.T) {
 	}
 }
 
+func TestKillSessionWithProcessesUsesStopTimeout(t *testing.T) {
+	orig := tmuxSubprocessTimeout
+	tmuxSubprocessTimeout = 5 * time.Second
+	t.Cleanup(func() { tmuxSubprocessTimeout = orig })
+
+	bx := &ctxBlockingExecutor{}
+	tm := &Tmux{
+		cfg:  Config{StopTimeout: 50 * time.Millisecond},
+		exec: bx,
+	}
+
+	start := time.Now()
+	err := tm.KillSessionWithProcesses("slow-stop")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("err = nil, want context deadline exceeded")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded chain", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("elapsed = %s, want stop timeout rather than tmux subprocess timeout", elapsed)
+	}
+	if len(bx.calls) != 2 {
+		t.Fatalf("tmux calls = %d, want pane lookup and kill-session", len(bx.calls))
+	}
+	if got := strings.Join(bx.calls[0], " "); !strings.Contains(got, "display-message") {
+		t.Fatalf("first tmux call = %v, want display-message", bx.calls[0])
+	}
+	if got := strings.Join(bx.calls[1], " "); !strings.Contains(got, "kill-session") {
+		t.Fatalf("second tmux call = %v, want kill-session", bx.calls[1])
+	}
+}
+
 func TestRunInjectsSocketFlag(t *testing.T) {
 	fe := &fakeExecutor{}
 	tm := &Tmux{cfg: Config{SocketName: "bright-lights"}, exec: fe}

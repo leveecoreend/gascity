@@ -82,6 +82,7 @@ func TestPermissionModeCycleSendsBackTab(t *testing.T) {
 }
 
 func TestSetPermissionModeReturnsUnverifiedWhenPostSwitchReadUnsupported(t *testing.T) {
+	withFastPermissionModeVerification(t)
 	fe := &fakeExecutor{
 		outs: []string{
 			"Shift+Tab to cycle permission mode: Default mode",
@@ -100,6 +101,70 @@ func TestSetPermissionModeReturnsUnverifiedWhenPostSwitchReadUnsupported(t *test
 	if state.Mode != runtime.PermissionModeAcceptEdits || state.Verified {
 		t.Fatalf("state = %+v, want acceptEdits with verified=false", state)
 	}
+}
+
+func TestSetPermissionModePollsUntilPostSwitchReadConfirmsTarget(t *testing.T) {
+	withFastPermissionModeVerification(t)
+	fe := &fakeExecutor{
+		outs: []string{
+			"Shift+Tab to cycle permission mode: Default mode",
+			"",
+			"plain prompt while footer redraws",
+			"Shift+Tab to cycle permission mode: Accept Edits mode",
+		},
+	}
+	tm := NewTmux()
+	tm.exec = fe
+	provider := permissionModeTestProvider(tm, "sess")
+
+	state, err := provider.SetPermissionMode(context.Background(), "sess", "claude", runtime.PermissionModeAcceptEdits)
+	if err != nil {
+		t.Fatalf("SetPermissionMode: %v", err)
+	}
+	if state.Mode != runtime.PermissionModeAcceptEdits || !state.Verified {
+		t.Fatalf("state = %+v, want verified acceptEdits", state)
+	}
+}
+
+func TestSetPermissionModePollsPastStalePostSwitchMode(t *testing.T) {
+	withFastPermissionModeVerification(t)
+	fe := &fakeExecutor{
+		outs: []string{
+			"Shift+Tab to cycle permission mode: Accept Edits mode",
+			"",
+			"Shift+Tab to cycle permission mode: Accept Edits mode",
+			"Shift+Tab to cycle permission mode: Plan mode",
+		},
+	}
+	tm := NewTmux()
+	tm.exec = fe
+	provider := permissionModeTestProvider(tm, "sess")
+
+	state, err := provider.SetPermissionMode(context.Background(), "sess", "claude", runtime.PermissionModePlan)
+	if err != nil {
+		t.Fatalf("SetPermissionMode: %v", err)
+	}
+	if state.Mode != runtime.PermissionModePlan || !state.Verified {
+		t.Fatalf("state = %+v, want verified plan", state)
+	}
+}
+
+func withFastPermissionModeVerification(t *testing.T) {
+	t.Helper()
+	oldCycleDelay := permissionModeCycleKeyDelay
+	oldSettleDelay := permissionModePostSwitchSettleDelay
+	oldPollInterval := permissionModePostSwitchPollInterval
+	oldPollTimeout := permissionModePostSwitchPollTimeout
+	permissionModeCycleKeyDelay = time.Millisecond
+	permissionModePostSwitchSettleDelay = time.Millisecond
+	permissionModePostSwitchPollInterval = time.Millisecond
+	permissionModePostSwitchPollTimeout = 5 * time.Millisecond
+	t.Cleanup(func() {
+		permissionModeCycleKeyDelay = oldCycleDelay
+		permissionModePostSwitchSettleDelay = oldSettleDelay
+		permissionModePostSwitchPollInterval = oldPollInterval
+		permissionModePostSwitchPollTimeout = oldPollTimeout
+	})
 }
 
 type permissionModeStaticFetcher map[string]bool

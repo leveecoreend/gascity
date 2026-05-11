@@ -12,6 +12,13 @@ import (
 
 var _ runtime.PermissionModeSwitcher = (*Provider)(nil)
 
+var (
+	permissionModeCycleKeyDelay          = 200 * time.Millisecond
+	permissionModePostSwitchSettleDelay  = 300 * time.Millisecond
+	permissionModePostSwitchPollInterval = 100 * time.Millisecond
+	permissionModePostSwitchPollTimeout  = 5 * time.Second
+)
+
 // PermissionModeCapability reports whether the tmux-backed provider can read
 // and switch the running session's permission mode.
 func (p *Provider) PermissionModeCapability(name, provider string) runtime.PermissionModeCapability {
@@ -131,25 +138,48 @@ func (p *Provider) setPermissionModeFromCurrent(ctx context.Context, name, provi
 		if err := p.sendClaudePermissionModeCycleKey(name); err != nil {
 			return runtime.PermissionModeState{}, err
 		}
-		if err := sleepWithContext(ctx, 200*time.Millisecond); err != nil {
+		if err := sleepWithContext(ctx, permissionModeCycleKeyDelay); err != nil {
 			return runtime.PermissionModeState{}, err
 		}
 	}
-	if err := sleepWithContext(ctx, 300*time.Millisecond); err != nil {
+	if err := sleepWithContext(ctx, permissionModePostSwitchSettleDelay); err != nil {
 		return runtime.PermissionModeState{}, err
 	}
-	confirmed, err := p.PermissionMode(ctx, name, provider)
-	if err != nil {
-		if errors.Is(err, runtime.ErrPermissionModeUnsupported) {
-			return runtime.PermissionModeState{Mode: mode, Verified: false}, nil
+	return p.confirmPermissionMode(ctx, name, provider, mode)
+}
+
+func (p *Provider) confirmPermissionMode(ctx context.Context, name, provider string, mode runtime.PermissionMode) (runtime.PermissionModeState, error) {
+	deadline := time.NewTimer(permissionModePostSwitchPollTimeout)
+	defer deadline.Stop()
+	poll := time.NewTicker(permissionModePostSwitchPollInterval)
+	defer poll.Stop()
+
+	var lastMode runtime.PermissionMode
+	var sawMode bool
+	for {
+		confirmed, err := p.PermissionMode(ctx, name, provider)
+		if err == nil {
+			if confirmed.Mode == mode {
+				confirmed.Verified = true
+				return confirmed, nil
+			}
+			lastMode = confirmed.Mode
+			sawMode = true
+		} else if !errors.Is(err, runtime.ErrPermissionModeUnsupported) {
+			return runtime.PermissionModeState{}, fmt.Errorf("%w: %w", runtime.ErrPermissionModeVerificationFailed, err)
 		}
-		return runtime.PermissionModeState{}, fmt.Errorf("%w: %w", runtime.ErrPermissionModeVerificationFailed, err)
+
+		select {
+		case <-ctx.Done():
+			return runtime.PermissionModeState{}, ctx.Err()
+		case <-deadline.C:
+			if sawMode {
+				return runtime.PermissionModeState{}, fmt.Errorf("%w: confirmed %q, want %q", runtime.ErrPermissionModeVerificationFailed, lastMode, mode)
+			}
+			return runtime.PermissionModeState{Mode: mode, Verified: false}, nil
+		case <-poll.C:
+		}
 	}
-	if confirmed.Mode != mode {
-		return runtime.PermissionModeState{}, fmt.Errorf("%w: confirmed %q, want %q", runtime.ErrPermissionModeVerificationFailed, confirmed.Mode, mode)
-	}
-	confirmed.Verified = true
-	return confirmed, nil
 }
 
 func providerSupportsClaudePermissionMode(provider string) bool {
