@@ -1,280 +1,186 @@
 # Gas City SDK Roadmap
 
-What needs to be built in the `gc` binary to make Gas Town run as pure
-configuration. Derived from the FUTURE.md review — every `gt` command was
-flattened to its bd primitives, and what's left here is what requires Go code.
-
-## Guiding principle
-
-If a gastown `gt` command is just bd operations, it gets inlined into
-prompts/formulas as raw `bd` commands. What remains here are things that
-touch sessions, the controller, atomic operations, compound bead workflows,
-or config infrastructure that only Go can provide.
-
----
-
-## Tier 0: Already exists
-
-These gc commands are implemented and working today:
-
-- `gc start` / `gc stop` / `gc init`
-- `gc rig add` / `gc rig list`
-- `gc agent add/suspend/resume` + `gc session list/attach/peek/kill/logs` + `gc runtime drain/undrain/drain-check/drain-ack`
-- `gc mail send/inbox/read`
-- `gc formula list/show`
-- `gc events` (with `--type` and `--since` filters)
-- `gc prime`
-- `gc bd` (passthrough to beads CLI)
-- `gc version`
-
----
-
-## Tier 1: Core agent work loop
-
-Required for any agent to do useful work. These are the first things
-to implement after the current tutorial work.
-
-### gc peek — session output capture
-
-**Why Go:** Needs session provider abstraction. Different providers
-expose output differently (tmux capture-pane, API logs, etc.).
-
-**Interface:** `gc peek <agent-name> [--lines N]`
-**Delegates to:** `session/tmux` → `tmux capture-pane`
-
-**Scope:** New agent API on session provider interface. ~50 lines.
-
-### gc context --usage — context window utilization
-
-**Why Go:** Provider-specific. Claude Code may expose via env var,
-raw API tracks token count, etc. Only the session provider knows.
-
-**Interface:** `gc context --usage` → returns percentage or token count
-**Delegates to:** Session provider
-
-**Scope:** New agent API on session provider interface. ~50 lines.
-
----
-
-## Tier 2: Event system extension
-
-### gc events --watch — blocking event subscription
-
-**Why Go:** Extends existing `gc events` with Kubernetes Watch pattern.
-Blocks until matching event arrives or timeout expires.
-
-**Interface:** `gc events --watch [--type=<filter>] [--timeout=<duration>]`
-**Returns:** Matching event(s) or "no events" on timeout
-**Design reference:** Kubernetes Watch API (resourceVersion for resume,
-server-side timeout guarantees response)
-
-**Key detail:** Timeout ensures agent never sees a hung process. Backoff
-logic stays in prompt (ZFC) — prompt increases `--timeout` each iteration.
-
-**Scope:** Extension of existing cmd_events.go. ~150 lines.
-
----
-
-## Tier 3: Complete mail namespace
-
-Mail is partially implemented. These complete it. Each is thin sugar
-over bd, but semantic naming makes prompts dramatically clearer.
-
-| Command | bd equivalent | Scope |
-|---------|--------------|-------|
-| `gc mail archive <id>` | `bd close <id>` | ~10 lines |
-| `gc mail delete <id>` | `bd delete <id>` | ~10 lines |
-| `gc mail mark-read <id>` | `bd update <id> --label=read` | ~10 lines |
-| `gc mail hook <id>` | `bd update <id> --status=hooked` | ~10 lines |
-| `gc mail send --human` | Delivery to tmux prompt vs inbox | ~30 lines |
-| `gc mail send --notify` | Nudge after mail creation | ~20 lines |
-
-**Total scope:** ~90 lines, all in existing cmd_mail.go.
-
----
-
-## ~~Tier 4: Molecule lifecycle~~ — RESOLVED
-
-### ~~gc mol squash~~ — inlined to bd commands
-
-**Resolution:** Squash is just two bd commands: `bd close "$MOL_ID"` +
-`bd create --type=digest --title="<summary>"`. Closing the molecule root
-detaches it from the agent's hook (closed beads don't appear in queries).
-Step children are already closed during execution via `bd close`.
-No Go command needed — inlined directly into prompts and formulas.
-
-**gc mol namespace removed:** All molecule operations use `bd mol` directly
-(wisp, current, list, show). Step completion is `bd close <step-id>`.
-Await-signal/await-event replaced by `gc events --watch` with prompt-level
-exponential backoff tracking on agent bead labels.
-
----
-
-## Tier 5: Rig lifecycle
-
-### gc rig start/stop/park/dock/unpark/undock/restart/status
-
-**Why Go:** Rig state management in the controller. Park/dock change
-how the reconciler treats agents in that rig.
-
-| Command | What it does |
-|---------|-------------|
-| `gc rig start <rig>` | Start all agents for rig |
-| `gc rig stop <rig>` | Stop all agents for rig |
-| `gc rig park <rig>` | Temporary pause — controller skips rig |
-| `gc rig unpark <rig>` | Resume parked rig |
-| `gc rig dock <rig>` | Permanent disable — rig removed from reconciliation |
-| `gc rig undock <rig>` | Re-enable docked rig |
-| `gc rig restart <rig>` | Stop + start |
-| `gc rig status <rig>` | Report rig health |
-
-**Scope:** ~200 lines. Rig state stored in `.gc/rigs/<name>/state.json`.
-
-### gc agent suspend — generic agent suspension
-
-**Why Go:** Stop a specific agent without draining. Different from
-drain (which waits for work to complete).
-
-**Scope:** ~30 lines.
-
----
-
-## Tier 6: Config infrastructure
-
-### Prompt template rendering
-
-**Why Go:** Primitive #5 in the architecture. Go `text/template`
-rendering of `.md.tmpl` files with variables from city/rig/agent config.
-
-**Variables:** `{{ cmd }}`, `{{ .CityRoot }}`, `{{ .RigName }}`,
-`{{ .AgentName }}`, plus custom vars from city.toml.
-
-**Scope:** ~100 lines. New package or function in config.
-
-### Pre-start hooks
-
-**Why Go:** Generic `pre_start` field on `[[agent]]` config. Run a
-shell command before agent session starts (e.g., `git pull`).
-
-**Config:**
-```toml
-[[agent]]
-name = "refinery"
-pre_start = "git pull --rebase"
-```
-
-**Scope:** ~30 lines in cmd_start.go / reconcile.go.
-
-### Custom session naming templates
-
-**Why Go:** Allow configurable session name patterns in city.toml
-instead of hardcoded `gc-{city}-{agent}`.
-
-**Config:**
-```toml
-[session]
-name_template = "{prefix}-{name}"
-```
-
-**Scope:** ~30 lines in session package.
-
----
-
-## Tier 7: System health
-
-### gc doctor — system diagnostics
-
-**Why Go:** Check city state consistency: stale agent registrations,
-orphaned sessions (tmux sessions without agent config), orphaned
-worktrees, event log corruption, etc.
-
-**Interface:** `gc doctor [-v] [--fix]`
-- Default: report problems
-- `-v`: verbose output
-- `--fix`: auto-repair what's safe to fix
-
-**Scope:** ~200 lines. Grows over time as we discover failure modes.
-
-### Crash loop backoff (controller)
-
-**Why Go:** Controller tracks per-instance restart count. Session
-uptime < threshold = crash (increment counter), >= threshold = normal
-exit (reset). `max_restarts` within `restart_window` → backoff.
-
-**Config:**
-```toml
-[agent.pool]
-max_restarts = 3
-restart_window = "5m"
-```
-
-**Scope:** ~100 lines in reconcile.go. See `crash-loop-backoff.md`
-in memory for full design.
-
----
-
-## Open design questions
-
-### Convoys
-
-Convoys sit in the same space as epics — batch coordination over
-related beads. Which layer do they belong in? Options:
-- Bead metadata (labels + parent-child relationships)
-- Molecule grouping
-- Separate primitive
-
-Needs design discussion before implementation.
-
-### Nudge delivery modes
-
-`--mode=immediate/queue/wait-idle` — re-review whether mail
-(which is persistent) obviates the need for delivery modes on
-nudge (which is ephemeral). May not be needed.
-
----
-
-## What does NOT need gc implementation
-
-These were resolved as raw bd commands, controller responsibilities,
-or prompt-level logic. They get inlined into prompts/formulas:
-
-| Former gt command | Replacement |
-|-------------------|-------------|
-| `gc sling` | `bd update <bead> --assignee=<role>` |
-| `gc done` | `git push` + `bd create --type=merge-request` + `bd close` + exit |
-| `gc handoff` | `gc mail send -s "HANDOFF"` + exit |
-| `gc escalate` | `gc mail send witness/ -s "ESCALATION"` |
-| `gc polecat list/nuke/status` | `gc session list` (with filters) |
-| `gc session status/start/stop` | `gc session list` / controller |
-| `gc dog done/status/list` | `bd close` + exit / `gc session list` |
-| `gc deacon heartbeat/cleanup/redispatch/zombie-scan` | Controller |
-| `gc boot status/spawn/triage` | Controller |
-| `gc mayor stop/start` | Controller |
-| `gc warrant file` | `bd create --type=warrant` |
-| `gc compact` | bd list + bd close/delete (prompt-level) |
-| `gc patrol digest` | bd list + bd create (prompt-level) |
-| `gc worktree` | Raw `git worktree` commands |
-| `gc costs` | Removed — provider-specific |
-| `gc mq list/submit/integration` | bd queries + git workflow (gastown-gc helper) |
-| `gc convoy feed/cleanup` | Deprecated — pool auto-scaling |
-| `gc hook` | `bd ready --label=pool:$POOL --unassigned` + `bd update --claim` (prompt-level loop) |
-| Agent bead protocol | `bd update --label` + `bd show` |
-| Gates | `bd gate list/close/check` via `gc bd` |
-| Orders | Prompt-level (filesystem + state.json) |
-
----
-
-## Estimated total scope
-
-| Tier | Lines (est.) | Priority |
+This file tracks SDK-level work still needed for the Gastown example. It is
+the strategic companion to `FUTURE.md`: `FUTURE.md` is the concise current gap
+inventory; this file explains what should or should not become Go code.
+
+Most of the original roadmap has shipped. Do not use old `gt` command parity
+as the standard for new SDK work. Gas City should only grow Go surfaces for
+session/provider boundaries, controller-owned lifecycle, atomic workflow
+operations, typed API/event surfaces, and reusable configuration mechanics.
+Everything else should stay in prompts, formulas, pack scripts, or `gc bd`
+passthrough.
+
+## Current conclusion
+
+Gastown can now be represented primarily as packs, prompts, formulas, orders,
+and bead operations. Remaining work is cleanup and a few possible convenience
+surfaces, not a broad SDK buildout.
+
+The current implementation already includes:
+
+- Agent work loop: `gc hook`, `gc sling`, `gc prime`, `gc handoff`,
+  `gc runtime drain-ack`, `gc runtime request-restart`.
+- Session operations: `gc session list/attach/peek/kill/logs/nudge/reset`,
+  plus `gc session submit` for semantic delivery.
+- Coordination: `gc mail`, `gc convoy`, `gc workflow` alias, `gc order`,
+  `gc events`, `gc event`, `gc formula`, `gc bd`.
+- Rig and city lifecycle: `gc rig add/list/remove/restart/resume/status/suspend`,
+  top-level `gc start/stop/restart/status/suspend/resume/reload`.
+- Config infrastructure: prompt template rendering, prompt fragments,
+  `pre_start`, `session_live`, `session_setup`, custom `session_template`,
+  named sessions, imports, pack commands, doctor scripts, and runtime
+  fingerprinting.
+- Health/ops: `gc doctor`, `gc trace`, `gc dashboard`, `gc beads`, Dolt
+  cleanup/config/state helpers, supervisor registration.
+
+## Remaining SDK candidates
+
+These are the only currently visible SDK candidates from the Gastown audit.
+
+| Candidate | Why it might belong in Go | Current recommendation |
+|-----------|---------------------------|------------------------|
+| `gc context --usage` | Context-window utilization is provider-specific and belongs behind a session/provider boundary if exposed at all. | Keep as the only real feature candidate. First define the provider contract and confirm a current prompt needs it. |
+| `gc mail hook <id>` | Could atomically convert a message bead into assigned work. | Do not implement yet. Current prompts use mail lifecycle plus bead assignment directly. |
+| `gc mail send --human` | Convenience alias for a delivery channel. | Prefer `gc mail send human ...`. Add a flag only if backwards-compatible script sugar becomes useful. |
+| Additional rig verbs: `start`, `stop`, `park`, `dock`, `unpark`, `undock`, `reboot` | Could make rig lifecycle vocabulary more expressive. | Do not add state-file-backed lifecycle. Current model is `suspend/resume/restart/status`; either keep prompts on those verbs or add aliases with the same semantics. |
+
+## Cleanup roadmap
+
+These are documentation/prompt tasks, not new primitives.
+
+| Task | Reason |
+|------|--------|
+| Update `packs/gastown/agents/mayor/prompt.template.md` rig lifecycle wording. | It still talks about `stop/start` and `restart/reboot` even though the implemented rig verbs are `suspend/resume/restart/status`. |
+| Keep `FUTURE.md` and this file in sync. | `FUTURE.md` is now the current gap inventory; this file should stay higher-level. |
+| Remove old "pure gt parity" assumptions from future planning. | Role-specific commands are intentionally not SDK primitives. |
+
+## Shipped since the old roadmap
+
+The original roadmap listed these as future work. They are now implemented
+and should not be re-designed from scratch.
+
+### Core agent loop
+
+- `gc hook [agent]` runs the configured `work_query`.
+- `gc sling [target] <bead-or-formula-or-text>` routes work, can create a
+  task from inline text or stdin, can instantiate formula wisps, supports
+  `--on`, and can create workflow/convoy structure.
+- `gc handoff` sends durable handoff mail and coordinates restart for
+  controller-managed sessions; `gc handoff --auto` exists for provider
+  compaction hooks.
+- `gc runtime drain-ack` and `gc runtime request-restart` are the canonical
+  agent-exit/context-refresh surfaces.
+
+### Session inspection and nudge
+
+- The old proposed `gc peek` is implemented as `gc session peek <target>
+  --lines N`.
+- The old proposed top-level `gc nudge` is implemented as `gc session nudge
+  <target> <message...>`.
+- Delivery modes exist via `gc session nudge --delivery
+  immediate|wait-idle|queue`.
+- Deferred nudge inspection/delivery exists under `gc nudge status`, plus
+  hidden runtime hook commands.
+
+### Event watch and orders
+
+- `gc events --watch` exists, with `--type`, `--timeout`, `--after`,
+  `--after-cursor`, and payload filters.
+- `gc events --follow` exists for continuous streaming.
+- Orders are first-class `orders/*.toml` files, surfaced through
+  `gc order list/show/run/check/history/sweep-tracking`.
+- The controller evaluates orders and dispatches due work as wisps or exec
+  scripts.
+
+### Mail lifecycle
+
+Mail is no longer "partially implemented." Current subcommands include:
+
+- `send`, `inbox`, `read`, `peek`, `reply`, `thread`.
+- `archive`, `delete`, `mark-read`, `mark-unread`.
+- `check`, `count`.
+- `send --notify` and `reply --notify`.
+
+Remaining mail possibilities are only `mail hook` and `send --human`, both
+convenience candidates rather than required SDK surfaces.
+
+### Convoys and workflows
+
+Convoys are implemented as graphs of related work beads. Current commands
+include:
+
+- `gc convoy create/list/status/target/add/close/check/stranded/land`.
+- `gc convoy delete/delete-source/reopen-source`.
+- `gc convoy control` and `gc convoy poke` for control-dispatcher plumbing.
+- `gc workflow` as a deprecated alias for convoy/control operations.
+
+This closes the old "where do convoys belong?" design question for the
+current implementation.
+
+### Config infrastructure
+
+- Prompt templates ending in `.template.md` are rendered with Go
+  `text/template`.
+- Shared prompt fragments and pack-level `template-fragments/` are loaded.
+- Prompt frontmatter metadata and rendered prompt hashes are tracked.
+- `[[agent]].pre_start` exists, is template-expanded, is included in runtime
+  fingerprints, and is executed by tmux before session creation.
+- `[workspace].session_template` controls session names.
+- Named sessions model always-on/on-demand role identities without
+  hardcoding roles in Go.
+
+### Health
+
+- `gc doctor [-v|--verbose] [--fix]` exists and has grown into the general
+  city/workspace health check.
+- Crash/restart behavior is controller-owned and configured through daemon,
+  lifecycle, session, and agent settings rather than role-specific commands.
+
+## What should not become SDK code
+
+These are resolved as raw bead operations, prompt/formula protocol, pack
+scripts, or generic controller/session behavior.
+
+| Old idea | Current route |
+|----------|---------------|
+| Role-specific commands such as `gc polecat`, `gc dog`, `gc boot`, `gc mayor`, `gc deacon` | Generic session, runtime, rig, mail, convoy, order, and bead operations. |
+| `gc done` | Git push/metadata/status updates, optional refinery routing, then `gc runtime drain-ack`. |
+| `gc escalate` | `gc mail send <target> -s "ESCALATION: ..."` and durable bead metadata when appropriate. |
+| `gc mq ...` | Merge-request beads, refinery formulas/prompts, git workflow, and bead metadata. |
+| `gc warrant file ...` | `gc bd create --type=task --label=warrant --metadata ...` routed to dog. |
+| `gc compact` / `gc patrol digest` | `gc bd` queries plus maintenance orders and scripts. |
+| `gc worktree ...` | `pre_start` worktree setup scripts and raw `git worktree` where needed. |
+| `gc feed ...` | `gc events --since`, `gc events --watch`, or `gc events --follow`. |
+| `gc costs` | Removed; provider-specific and not an SDK primitive. |
+| Agent bead protocol commands | Session beads, metadata, labels, `gc session`, and `gc bd`. |
+| Gates namespace in `gc` | `gc bd gate ...` passthrough. |
+| Molecule namespace in `gc` | `gc bd mol ...` passthrough plus hidden `gc wisp autoclose` infrastructure. |
+
+## Primitive test for future roadmap items
+
+Before adding any new `gc` command for Gastown, check:
+
+1. Does it cross the session/provider boundary?
+2. Does it require controller-owned lifecycle or reconciliation?
+3. Does it need atomic multi-bead/workflow mutation that prompts cannot make
+   reliable?
+4. Does it need typed HTTP/SSE/API behavior?
+5. Is it a reusable config/rendering/materialization mechanism?
+
+If the answer is no, keep it in pack configuration, prompt text, formulas,
+scripts, or `gc bd`.
+
+## Updated scope estimate
+
+The old roadmap estimated about 1,200 lines of Go. That work has mostly
+landed. The remaining possible SDK scope is small:
+
+| Item | Rough scope | Priority |
 |------|-------------|----------|
-| 1: Core agent loop | ~100 | Immediate |
-| 2: Event watch | ~150 | High |
-| 3: Mail namespace | ~90 | High |
-| ~~4: Mol squash~~ | ~~150~~ | ~~RESOLVED~~ |
-| 5: Rig lifecycle | ~230 | Medium |
-| 6: Config infrastructure | ~160 | Medium |
-| 7: System health | ~300 | Low |
-| **Total** | **~1,180** | |
+| Provider-backed `gc context --usage`, if retained | 100-200 lines plus provider contracts | Low until a prompt needs it |
+| Optional `gc mail hook` | 20-60 lines | Low |
+| Optional `gc mail send --human` alias | 10-30 lines | Low |
+| Optional rig verb aliases | 50-150 lines, depending on semantics | Low/UX-driven |
 
-~1,200 lines of Go to make Gas Town run as pure configuration.
+The bigger remaining work is documentation hygiene, not SDK implementation.
