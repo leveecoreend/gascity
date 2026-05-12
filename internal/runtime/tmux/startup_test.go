@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -54,7 +55,7 @@ type fakeStartOps struct {
 	waitReadyHook            func()
 	hasSessionHook           func()
 	sendKeysHook             func()
-	runSetupCommandHook      func(string)
+	runSetupCommandHook      func(string, map[string]string)
 	hasSessionResult         bool
 	hasSessionErr            error
 	setRemainOnExitErr       error
@@ -170,7 +171,7 @@ func (f *fakeStartOps) runSetupCommand(_ context.Context, cmd string, env map[st
 		timeout: timeout,
 	})
 	if f.runSetupCommandHook != nil {
-		f.runSetupCommandHook(cmd)
+		f.runSetupCommandHook(cmd, env)
 	}
 	if f.runSetupCommandErr != nil {
 		return f.runSetupCommandErr
@@ -391,7 +392,7 @@ func TestDoStartSession_DoesNotNudgeAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ops := &fakeStartOps{
 		hasSessionResult:    true,
-		runSetupCommandHook: func(_ string) { cancel() },
+		runSetupCommandHook: func(_ string, _ map[string]string) { cancel() },
 	}
 
 	cfg := runtime.Config{
@@ -1020,6 +1021,213 @@ func TestDoStartSession_PreStartFailureIsFatal(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "running pre_start") {
 		t.Fatalf("error = %q, want running pre_start", err)
+	}
+
+	assertCallSequence(t, ops, []string{"runSetupCommand"})
+}
+
+func TestDoStartSession_PreStartResultAddsGCBeadIDBeforeCreate(t *testing.T) {
+	ops := &fakeStartOps{
+		hasSessionResult: true,
+		runSetupCommandHook: func(cmd string, env map[string]string) {
+			if cmd != "claim-work" {
+				return
+			}
+			resultPath := env[preStartResultEnv]
+			if resultPath == "" {
+				t.Fatal("pre_start command did not receive GC_PRE_START_RESULT")
+			}
+			err := os.WriteFile(resultPath, []byte(`{"action":"continue","env":{"GC_BEAD_ID":"bd-1"}}`), 0o644)
+			if err != nil {
+				t.Fatalf("WriteFile(%s): %v", resultPath, err)
+			}
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:  "claude",
+		WorkDir:  "/proj",
+		PreStart: []string{"claim-work"},
+		Env:      map[string]string{"GC_SESSION_NAME": "session-1"},
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := ops.calls[1].env["GC_BEAD_ID"]; got != "bd-1" {
+		t.Fatalf("createSession GC_BEAD_ID = %q, want bd-1; env=%v", got, ops.calls[1].env)
+	}
+}
+
+func TestDoStartSession_PreStartDrainSkipsCreate(t *testing.T) {
+	ops := &fakeStartOps{
+		runSetupCommandHook: func(cmd string, env map[string]string) {
+			if cmd != "claim-work" {
+				return
+			}
+			resultPath := env[preStartResultEnv]
+			err := os.WriteFile(resultPath, []byte(`{"action":"drain","reason":"no_work"}`), 0o644)
+			if err != nil {
+				t.Fatalf("WriteFile(%s): %v", resultPath, err)
+			}
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:  "claude",
+		WorkDir:  "/proj",
+		PreStart: []string{"claim-work"},
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if !errors.Is(err, runtime.ErrPreStartDrained) {
+		t.Fatalf("doStartSession() error = %v, want ErrPreStartDrained", err)
+	}
+
+	assertCallSequence(t, ops, []string{"runSetupCommand"})
+}
+
+func TestDoStartSession_ReturnsPreStartClaimOnCreateFailure(t *testing.T) {
+	ops := &fakeStartOps{
+		createErrs: []error{errors.New("tmux create failed")},
+		runSetupCommandHook: func(cmd string, env map[string]string) {
+			if cmd != "claim-work" {
+				return
+			}
+			resultPath := env[preStartResultEnv]
+			err := os.WriteFile(resultPath, []byte(`{"action":"continue","env":{"GC_BEAD_ID":"bd-1"},"claimed_bead_id":"bd-1"}`), 0o644)
+			if err != nil {
+				t.Fatalf("WriteFile(%s): %v", resultPath, err)
+			}
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:  "claude",
+		WorkDir:  "/proj",
+		PreStart: []string{"claim-work"},
+		Env:      map[string]string{"GC_SESSION_NAME": "session-1"},
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if err == nil {
+		t.Fatal("expected create failure")
+	}
+	ids := runtime.PreStartClaimedBeadIDs(err)
+	if len(ids) != 1 || ids[0] != "bd-1" {
+		t.Fatalf("pre_start claimed ids = %#v, want [bd-1]; err=%v", ids, err)
+	}
+
+	assertCallSequence(t, ops, []string{"runSetupCommand", "createSession"})
+}
+
+func TestDoStartSession_RejectsMultiplePreStartClaims(t *testing.T) {
+	ops := &fakeStartOps{
+		runSetupCommandHook: func(cmd string, env map[string]string) {
+			resultPath := env[preStartResultEnv]
+			var data string
+			switch cmd {
+			case "claim-one":
+				data = `{"action":"continue","env":{"GC_BEAD_ID":"bd-1"},"claimed_bead_id":"bd-1"}`
+			case "claim-two":
+				data = `{"action":"continue","env":{"GC_BEAD_ID":"bd-2"},"claimed_bead_id":"bd-2"}`
+			default:
+				return
+			}
+			if err := os.WriteFile(resultPath, []byte(data), 0o644); err != nil {
+				t.Fatalf("WriteFile(%s): %v", resultPath, err)
+			}
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:  "claude",
+		WorkDir:  "/proj",
+		PreStart: []string{"claim-one", "claim-two"},
+		Env:      map[string]string{"GC_SESSION_NAME": "session-1"},
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if err == nil {
+		t.Fatal("expected multiple-claim failure")
+	}
+	ids := runtime.PreStartClaimedBeadIDs(err)
+	if !reflect.DeepEqual(ids, []string{"bd-1", "bd-2"}) {
+		t.Fatalf("pre_start claimed ids = %#v, want [bd-1 bd-2]; err=%v", ids, err)
+	}
+	if !strings.Contains(err.Error(), "multiple claim-producing pre_start commands are not supported") {
+		t.Fatalf("error = %q, want multiple-claim failure", err)
+	}
+
+	assertCallSequence(t, ops, []string{"runSetupCommand", "runSetupCommand"})
+}
+
+func TestDoStartSession_ReturnsPreStartClaimWhenCommandFailsAfterWritingResult(t *testing.T) {
+	ops := &fakeStartOps{
+		runSetupCommandErr: errors.New("post-claim setup failed"),
+		runSetupCommandHook: func(cmd string, env map[string]string) {
+			if cmd != "claim-and-fail" {
+				return
+			}
+			resultPath := env[preStartResultEnv]
+			err := os.WriteFile(resultPath, []byte(`{"action":"continue","env":{"GC_BEAD_ID":"bd-1"},"claimed_bead_id":"bd-1"}`), 0o644)
+			if err != nil {
+				t.Fatalf("WriteFile(%s): %v", resultPath, err)
+			}
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:  "claude",
+		WorkDir:  "/proj",
+		PreStart: []string{"claim-and-fail"},
+		Env:      map[string]string{"GC_SESSION_NAME": "session-1"},
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if err == nil {
+		t.Fatal("expected pre_start failure")
+	}
+	ids := runtime.PreStartClaimedBeadIDs(err)
+	if !reflect.DeepEqual(ids, []string{"bd-1"}) {
+		t.Fatalf("pre_start claimed ids = %#v, want [bd-1]; err=%v", ids, err)
+	}
+	if !strings.Contains(err.Error(), "post-claim setup failed") {
+		t.Fatalf("error = %q, want command failure", err)
+	}
+
+	assertCallSequence(t, ops, []string{"runSetupCommand"})
+}
+
+func TestDoStartSession_RejectsClaimedBeadEnvFromPreStartResultEnv(t *testing.T) {
+	ops := &fakeStartOps{
+		runSetupCommandHook: func(cmd string, env map[string]string) {
+			if cmd != "claim-work" {
+				return
+			}
+			resultPath := env[preStartResultEnv]
+			err := os.WriteFile(resultPath, []byte(`{"action":"continue","env":{"GC_PRE_START_CLAIMED_BEAD_ID":"bd-victim"}}`), 0o644)
+			if err != nil {
+				t.Fatalf("WriteFile(%s): %v", resultPath, err)
+			}
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:  "claude",
+		WorkDir:  "/proj",
+		PreStart: []string{"claim-work"},
+		Env:      map[string]string{"GC_SESSION_NAME": "session-1"},
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if err == nil {
+		t.Fatal("expected unsupported env error")
+	}
+	if !strings.Contains(err.Error(), `pre_start env key "GC_PRE_START_CLAIMED_BEAD_ID" is not supported`) {
+		t.Fatalf("error = %q, want unsupported claimed env key", err)
 	}
 
 	assertCallSequence(t, ops, []string{"runSetupCommand"})

@@ -5,7 +5,7 @@ mark it done, and exit.
 
 ## Startup
 
-Run `gc prime` to check your hook for assigned work.
+Use `$GC_BEAD_ID` when set; otherwise run `gc hook --claim`.
 
 ## When you have a bead
 
@@ -15,11 +15,11 @@ Run `gc prime` to check your hook for assigned work.
 
 ## If no work
 
-If `gc prime` shows no assigned beads, run:
+If no bead was pre-claimed, run:
 ```
-gc bd ready --label=pool:worker --unassigned --limit=1 --json
+gc hook --claim
 ```
-Claim the first result with `gc bd update <id> --claim`, close it, then `gc runtime drain-ack` and `exit`.
+Close the claimed bead, then `gc runtime drain-ack` and `exit`.
 
 ## Environment
 

@@ -1,6 +1,6 @@
 scope = "city"
 fallback = true
-nudge = "Check your hook for work assignments."
+nudge = "Run gc hook --claim to claim work. After closing it, run gc hook --claim for more work."
 idle_timeout = "2h"
 min_active_sessions = 0
 max_active_sessions = 3

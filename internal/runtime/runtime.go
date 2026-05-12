@@ -35,6 +35,105 @@ var ErrInteractionUnsupported = errors.New("session interaction is unsupported")
 // process, but it exited before startup completed successfully.
 var ErrSessionDiedDuringStartup = errors.New("session died during startup")
 
+// ErrPreStartDrained reports that pre_start determined there is no work to run
+// and the provider should skip creating a runtime session.
+var ErrPreStartDrained = errors.New("pre_start drained")
+
+// PreStartClaimsError wraps a startup error with bead IDs claimed by
+// pre_start. Callers that own the bead store can use the IDs for rollback.
+type PreStartClaimsError struct {
+	Err            error
+	ClaimedBeadIDs []string
+}
+
+// Error implements error.
+func (e *PreStartClaimsError) Error() string {
+	if e == nil || e.Err == nil {
+		return "pre_start claimed work"
+	}
+	return e.Err.Error()
+}
+
+// Unwrap returns the underlying startup error.
+func (e *PreStartClaimsError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// WithPreStartClaimedBeads annotates err with claimed bead IDs.
+func WithPreStartClaimedBeads(err error, ids ...string) error {
+	if err == nil {
+		return nil
+	}
+	trimmed := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		trimmed = append(trimmed, id)
+	}
+	if len(trimmed) == 0 {
+		return err
+	}
+	return &PreStartClaimsError{Err: err, ClaimedBeadIDs: trimmed}
+}
+
+// PreStartClaimedBeadIDs returns bead IDs attached to a pre_start startup
+// error. The returned slice is a copy.
+func PreStartClaimedBeadIDs(err error) []string {
+	var claimErr *PreStartClaimsError
+	if !errors.As(err, &claimErr) || len(claimErr.ClaimedBeadIDs) == 0 {
+		return nil
+	}
+	return append([]string(nil), claimErr.ClaimedBeadIDs...)
+}
+
+// PreStartDrainError wraps ErrPreStartDrained with the provider-supplied
+// reason, when one exists.
+type PreStartDrainError struct {
+	Err    error
+	Reason string
+}
+
+// Error implements error.
+func (e *PreStartDrainError) Error() string {
+	if e == nil || e.Err == nil {
+		return ErrPreStartDrained.Error()
+	}
+	return e.Err.Error()
+}
+
+// Unwrap returns the underlying drain sentinel.
+func (e *PreStartDrainError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// WithPreStartDrainReason annotates a pre_start drain with a reason string.
+func WithPreStartDrainReason(err error, reason string) error {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return err
+	}
+	return &PreStartDrainError{Err: err, Reason: reason}
+}
+
+// PreStartDrainReason returns the reason attached to a pre_start drain error.
+func PreStartDrainReason(err error) string {
+	var drainErr *PreStartDrainError
+	if !errors.As(err, &drainErr) {
+		return ""
+	}
+	return strings.TrimSpace(drainErr.Reason)
+}
+
 // ErrSessionNotFound reports that an operation targeted a session the
 // runtime does not know about. Benign for Stop() — the session was
 // already gone — but fatal for Attach/Send. Providers wrap their own

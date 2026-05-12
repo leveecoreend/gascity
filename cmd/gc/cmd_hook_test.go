@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -33,6 +35,147 @@ func TestHookHasWork(t *testing.T) {
 	}
 }
 
+func TestHookClaimClaimsUnassignedWork(t *testing.T) {
+	runner := func(string, string) (string, error) {
+		return `[{"id":"bd-1","status":"open","metadata":{"gc.routed_to":"worker"}}]`, nil
+	}
+	claimer := &fakeHookClaimExecutor{
+		claimResults: map[string]hookWorkItem{
+			"bd-1": {ID: "bd-1", Status: "in_progress", Assignee: "session-1", Metadata: map[string]string{"gc.routed_to": "worker"}},
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("bd ready", "", runner, claimer, hookClaimOptions{
+		Assignee:   "session-1",
+		Identities: []string{"session-1", "worker"},
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doHookClaim() = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if got := claimer.claimed; len(got) != 1 || got[0] != "bd-1:session-1" {
+		t.Fatalf("claimed = %#v, want bd-1 claimed by session-1", got)
+	}
+	var items []hookWorkItem
+	if err := json.Unmarshal(stdout.Bytes(), &items); err != nil {
+		t.Fatalf("claim output is not JSON array: %v; out=%s", err, stdout.String())
+	}
+	if len(items) != 1 || items[0].ID != "bd-1" || items[0].Assignee != "session-1" || items[0].Status != "in_progress" {
+		t.Fatalf("items = %#v, want claimed bd-1", items)
+	}
+}
+
+func TestHookClaimReturnsAssignedInProgressWithoutClaim(t *testing.T) {
+	runner := func(string, string) (string, error) {
+		return `[{"id":"bd-1","status":"in_progress","assignee":"session-1"}]`, nil
+	}
+	claimer := &fakeHookClaimExecutor{}
+
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("bd list", "", runner, claimer, hookClaimOptions{
+		Assignee:   "session-1",
+		Identities: []string{"session-1", "worker"},
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doHookClaim() = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if len(claimer.claimed) != 0 {
+		t.Fatalf("claimed = %#v, want no claim for existing in-progress work", claimer.claimed)
+	}
+	var items []hookWorkItem
+	if err := json.Unmarshal(stdout.Bytes(), &items); err != nil {
+		t.Fatalf("claim output is not JSON array: %v; out=%s", err, stdout.String())
+	}
+	if len(items) != 1 || items[0].ID != "bd-1" {
+		t.Fatalf("items = %#v, want existing bd-1", items)
+	}
+}
+
+func TestHookClaimIgnoresBdOwnerFieldWhenAssigneeMissing(t *testing.T) {
+	runner := func(string, string) (string, error) {
+		return `[{"id":"bd-1","status":"open","owner":"julianknutsen@users.noreply.github.com"}]`, nil
+	}
+	claimer := &fakeHookClaimExecutor{
+		claimResults: map[string]hookWorkItem{
+			"bd-1": {ID: "bd-1", Status: "in_progress", Assignee: "session-1", Owner: "julianknutsen@users.noreply.github.com"},
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("bd ready", "", runner, claimer, hookClaimOptions{
+		Assignee:   "session-1",
+		Identities: []string{"session-1"},
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doHookClaim() = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if got := claimer.claimed; len(got) != 1 || got[0] != "bd-1:session-1" {
+		t.Fatalf("claimed = %#v, want bd-1 claimed by session-1", got)
+	}
+	var items []hookWorkItem
+	if err := json.Unmarshal(stdout.Bytes(), &items); err != nil {
+		t.Fatalf("claim output is not JSON array: %v; out=%s", err, stdout.String())
+	}
+	if len(items) != 1 || items[0].ID != "bd-1" || items[0].Assignee != "session-1" || items[0].Owner != "" {
+		t.Fatalf("items = %#v, want canonical assignee without owner", items)
+	}
+}
+
+func TestHookClaimPreStartResultDrainsWithoutWork(t *testing.T) {
+	runner := func(string, string) (string, error) { return `[]`, nil }
+	resultPath := filepath.Join(t.TempDir(), "pre-start-result.json")
+
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("bd ready", "", runner, &fakeHookClaimExecutor{}, hookClaimOptions{
+		Assignee:           "session-1",
+		Identities:         []string{"session-1"},
+		PreStartResultPath: resultPath,
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doHookClaim(pre-start no work) = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty in pre-start result mode", stdout.String())
+	}
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("ReadFile(%s): %v", resultPath, err)
+	}
+	var result hookPreStartResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("pre-start result is not JSON: %v; data=%s", err, data)
+	}
+	if result.Action != "drain" || result.Reason != "no_work" {
+		t.Fatalf("pre-start result = %#v, want drain/no_work", result)
+	}
+}
+
+func TestHookClaimDoesNotPreassignContinuationGroupSiblings(t *testing.T) {
+	runner := func(string, string) (string, error) {
+		return `[{"id":"bd-1","status":"open","metadata":{"gc.routed_to":"worker","gc.continuation_group":"main"}}]`, nil
+	}
+	claimer := &fakeHookClaimExecutor{
+		claimResults: map[string]hookWorkItem{
+			"bd-1": {ID: "bd-1", Status: "in_progress", Assignee: "session-1", Metadata: map[string]string{
+				"gc.routed_to":          "worker",
+				"gc.continuation_group": "main",
+			}},
+		},
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := doHookClaim("bd ready", "", runner, claimer, hookClaimOptions{
+		Assignee:   "session-1",
+		Identities: []string{"session-1"},
+	}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("doHookClaim() = %d, want 0; stderr=%s", code, stderr.String())
+	}
+	if len(claimer.claimed) != 1 {
+		t.Fatalf("claimed = %#v, want only the selected bead claimed", claimer.claimed)
+	}
+}
+
 func TestHookCommandError(t *testing.T) {
 	runner := func(string, string) (string, error) { return "", fmt.Errorf("command failed") }
 	var stdout, stderr bytes.Buffer
@@ -43,6 +186,30 @@ func TestHookCommandError(t *testing.T) {
 	if !strings.Contains(stderr.String(), "command failed") {
 		t.Errorf("stderr = %q, want to contain %q", stderr.String(), "command failed")
 	}
+}
+
+type fakeHookClaimExecutor struct {
+	claimResults   map[string]hookWorkItem
+	claimConflicts map[string]bool
+	claimed        []string
+}
+
+func (f *fakeHookClaimExecutor) Claim(_ context.Context, _ string, beadID, assignee string) (hookWorkItem, bool, error) {
+	f.claimed = append(f.claimed, beadID+":"+assignee)
+	if f.claimConflicts[beadID] {
+		return hookWorkItem{}, false, nil
+	}
+	if item, ok := f.claimResults[beadID]; ok {
+		return item, true, nil
+	}
+	return hookWorkItem{ID: beadID, Status: "in_progress", Assignee: assignee}, true, nil
+}
+
+func (f *fakeHookClaimExecutor) Show(_ context.Context, _ string, beadID string) (hookWorkItem, error) {
+	if item, ok := f.claimResults[beadID]; ok {
+		return item, nil
+	}
+	return hookWorkItem{ID: beadID}, nil
 }
 
 func TestHookInjectNoWork(t *testing.T) {

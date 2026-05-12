@@ -10,7 +10,7 @@ CI/CD issues, dependency updates. You never work on project features.
 
 ## Work Loop
 
-1. Check your hook: `gc hook`
+1. Check your hook: `gc hook --claim`
 2. If work is assigned, execute it.
 3. When done, close the bead: `gc bd close <id>`
 4. Check for more work.

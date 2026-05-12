@@ -1735,6 +1735,9 @@ type Agent struct {
 	// PreStart is a list of shell commands run before session creation.
 	// Commands run on the target filesystem: locally for tmux, inside the
 	// pod/container for exec providers. Template variables same as session_setup.
+	// Tmux pre_start commands may write a JSON action file to
+	// $GC_PRE_START_RESULT; gc hook --claim --pre-start-result uses this to pass
+	// GC_BEAD_ID into the session or drain before launch when no work remains.
 	PreStart []string `toml:"pre_start,omitempty"`
 	// PromptTemplate is the path to this agent's prompt template file.
 	// Relative paths resolve against the city directory.

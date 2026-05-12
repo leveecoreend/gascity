@@ -3414,6 +3414,173 @@ func TestCommitStartResult_SessionInitializingClearsInFlightLease(t *testing.T) 
 	}
 }
 
+func TestCommitStartResult_PreStartDrainedSleepsWithoutFailure(t *testing.T) {
+	store := beads.NewMemStore()
+	clk := &clock.Fake{Time: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)}
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: creatingMeta(map[string]string{
+			"session_name":         "worker",
+			"template":             "worker",
+			"generation":           "2",
+			"continuation_epoch":   "1",
+			"instance_token":       "tok-worker",
+			"pending_create_claim": "true",
+			"last_woke_at":         clk.Now().Format(time.RFC3339),
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := startResult{
+		prepared: preparedStart{
+			candidate: startCandidate{
+				session: &session,
+				tp: TemplateParams{
+					Command:      "worker",
+					SessionName:  "worker",
+					TemplateName: "worker",
+				},
+			},
+		},
+		err:      runtime.ErrPreStartDrained,
+		outcome:  "pre_start_drained",
+		started:  clk.Now(),
+		finished: clk.Now(),
+	}
+
+	if commitStartResult(result, store, clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
+		t.Fatal("pre-start drain should not count as a woke session")
+	}
+	updated, err := store.Get(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != "open" {
+		t.Fatalf("status = %q, want open", updated.Status)
+	}
+	if got := updated.Metadata["state"]; got != "asleep" {
+		t.Fatalf("state = %q, want asleep", got)
+	}
+	if got := updated.Metadata["sleep_reason"]; got != "no_work" {
+		t.Fatalf("sleep_reason = %q, want no_work", got)
+	}
+	if got := updated.Metadata["pending_create_claim"]; got != "" {
+		t.Fatalf("pending_create_claim = %q, want cleared", got)
+	}
+}
+
+func TestCommitStartResult_PreStartDrainedPreservesReason(t *testing.T) {
+	store := beads.NewMemStore()
+	clk := &clock.Fake{Time: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)}
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: creatingMeta(map[string]string{
+			"session_name":         "worker",
+			"template":             "worker",
+			"pending_create_claim": "true",
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := startResult{
+		prepared: preparedStart{
+			candidate: startCandidate{
+				session: &session,
+				tp: TemplateParams{
+					Command:      "worker",
+					SessionName:  "worker",
+					TemplateName: "worker",
+				},
+			},
+		},
+		err:      runtime.WithPreStartDrainReason(runtime.ErrPreStartDrained, "claim_conflict"),
+		outcome:  "pre_start_drained",
+		started:  clk.Now(),
+		finished: clk.Now(),
+	}
+
+	if commitStartResult(result, store, clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
+		t.Fatal("pre-start drain should not count as a woke session")
+	}
+	updated, err := store.Get(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := updated.Metadata["sleep_reason"]; got != "claim_conflict" {
+		t.Fatalf("sleep_reason = %q, want claim_conflict", got)
+	}
+}
+
+func TestReleasePreStartClaimedBeadsReopensOnlyMatchingInProgressWork(t *testing.T) {
+	store := beads.NewMemStore()
+	claimed, err := store.Create(beads.Bead{
+		ID:       "bd-claimed",
+		Title:    "claimed",
+		Type:     "task",
+		Assignee: "worker-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(claimed.ID, beads.UpdateOpts{Status: stringPtr("in_progress")}); err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.Create(beads.Bead{
+		ID:       "bd-other",
+		Title:    "other",
+		Type:     "task",
+		Assignee: "other-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(other.ID, beads.UpdateOpts{Status: stringPtr("in_progress")}); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := store.Create(beads.Bead{
+		ID:       "bd-closed",
+		Title:    "closed",
+		Type:     "task",
+		Assignee: "worker-session",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(closed.ID, beads.UpdateOpts{Status: stringPtr("closed")}); err != nil {
+		t.Fatal(err)
+	}
+
+	releasePreStartClaimedBeads(store, []string{claimed.ID, other.ID, closed.ID}, "worker-session")
+
+	updatedClaimed, err := store.Get(claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedClaimed.Status != "open" || updatedClaimed.Assignee != "" {
+		t.Fatalf("claimed bead = status %q assignee %q, want open/unassigned", updatedClaimed.Status, updatedClaimed.Assignee)
+	}
+	updatedOther, err := store.Get(other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedOther.Status != "in_progress" || updatedOther.Assignee != "other-session" {
+		t.Fatalf("other bead changed: status %q assignee %q", updatedOther.Status, updatedOther.Assignee)
+	}
+	updatedClosed, err := store.Get(closed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedClosed.Status != "closed" || updatedClosed.Assignee != "worker-session" {
+		t.Fatalf("closed bead changed: status %q assignee %q", updatedClosed.Status, updatedClosed.Assignee)
+	}
+}
+
 func TestCommitStartResult_RollbackPendingErrorClearsInFlightLeaseWhenCloseFails(t *testing.T) {
 	store := &failingCloseStore{MemStore: beads.NewMemStore()}
 	clk := &clock.Fake{Time: time.Date(2026, 4, 28, 13, 0, 0, 0, time.UTC)}

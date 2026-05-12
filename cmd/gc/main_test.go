@@ -6008,11 +6008,14 @@ max = -1
 	if !strings.Contains(out, "gc hook") {
 		t.Fatalf("graph-worker prompt missing gc hook routed-queue lookup:\n%s", out)
 	}
-	if !strings.Contains(out, "bd update <id> --claim") {
-		t.Fatalf("graph-worker prompt missing atomic claim instruction:\n%s", out)
+	if !strings.Contains(out, "gc hook --claim") {
+		t.Fatalf("graph-worker prompt missing atomic hook claim instruction:\n%s", out)
 	}
-	if !strings.Contains(out, "Do not start work with `bd update --status in_progress`") {
+	if !strings.Contains(out, "`bd update --status in_progress`") {
 		t.Fatalf("graph-worker prompt missing guard against unassigned in_progress work:\n%s", out)
+	}
+	if !strings.Contains(out, "$GC_BEAD_ID") {
+		t.Fatalf("graph-worker prompt missing pre-start claimed bead env:\n%s", out)
 	}
 }
 

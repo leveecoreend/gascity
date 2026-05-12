@@ -18,18 +18,34 @@ import (
 func newHookCmd(stdout, stderr io.Writer) *cobra.Command {
 	var inject bool
 	var hookFormat string
+	var claim bool
+	var preStartResult bool
 	cmd := &cobra.Command{
 		Use:   "hook [agent]",
 		Short: "Check for available work",
 		Long: `Checks for available work using the agent's work_query config.
 
 Without --inject: prints raw output, exits 0 if work exists, 1 if empty.
+With --claim: atomically claims one work item for the current session and prints it as JSON.
 With --inject: silent legacy Stop-hook compatibility; skips the work query and always exits 0.
 
 		The agent is determined from $GC_AGENT or a positional argument.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdHookWithFormat(args, inject, hookFormat, stdout, stderr) != 0 {
+			if inject && claim {
+				fmt.Fprintln(stderr, "gc hook: --inject and --claim cannot be used together") //nolint:errcheck // best-effort stderr
+				return errExit
+			}
+			if preStartResult && !claim {
+				fmt.Fprintln(stderr, "gc hook: --pre-start-result requires --claim") //nolint:errcheck // best-effort stderr
+				return errExit
+			}
+			if cmdHookWithOptions(args, hookCommandOptions{
+				Inject:         inject,
+				HookFormat:     hookFormat,
+				Claim:          claim,
+				PreStartResult: preStartResult,
+			}, stdout, stderr) != 0 {
 				return errExit
 			}
 			return nil
@@ -37,6 +53,8 @@ With --inject: silent legacy Stop-hook compatibility; skips the work query and a
 	}
 	cmd.Flags().BoolVar(&inject, "inject", false, "silent legacy Stop-hook compatibility; skip work query and exit 0")
 	cmd.Flags().StringVar(&hookFormat, "hook-format", "", "format hook output for a provider")
+	cmd.Flags().BoolVar(&claim, "claim", false, "atomically claim one work item for the current session")
+	cmd.Flags().BoolVar(&preStartResult, "pre-start-result", false, "write pre_start action JSON to $GC_PRE_START_RESULT")
 	if flag := cmd.Flags().Lookup("hook-format"); flag != nil {
 		flag.Hidden = true
 	}
@@ -51,12 +69,23 @@ func cmdHook(args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdHookWithFormat(args []string, inject bool, hookFormat string, stdout, stderr io.Writer) int {
-	if inject {
+	return cmdHookWithOptions(args, hookCommandOptions{Inject: inject, HookFormat: hookFormat}, stdout, stderr)
+}
+
+type hookCommandOptions struct {
+	Inject         bool
+	HookFormat     string
+	Claim          bool
+	PreStartResult bool
+}
+
+func cmdHookWithOptions(args []string, opts hookCommandOptions, stdout, stderr io.Writer) int {
+	if opts.Inject {
 		return 0
 	}
 	// Accepted for compatibility with installed hook commands; non-inject
 	// gc hook output is intentionally raw regardless of provider format.
-	_ = hookFormat
+	_ = opts.HookFormat
 
 	agentName := os.Getenv("GC_ALIAS")
 	if agentName == "" {
@@ -155,7 +184,43 @@ func cmdHookWithFormat(args []string, inject bool, hookFormat string, stdout, st
 	runner := func(command, dir string) (string, error) {
 		return shellWorkQueryWithEnv(command, dir, queryEnv)
 	}
-	return doHook(workQuery, workDir, inject, runner, stdout, stderr)
+	if opts.Claim {
+		preStartResultPath := ""
+		if opts.PreStartResult {
+			preStartResultPath = strings.TrimSpace(os.Getenv(hookPreStartResultEnv))
+			if preStartResultPath == "" {
+				fmt.Fprintf(stderr, "gc hook: --pre-start-result requires $%s\n", hookPreStartResultEnv) //nolint:errcheck // best-effort stderr
+				return 1
+			}
+		}
+		identities := hookIdentityCandidates(
+			os.Getenv("GC_SESSION_ID"),
+			sessionForQuery,
+			os.Getenv("GC_ALIAS"),
+			agentForQuery,
+			os.Getenv("GC_AGENT"),
+		)
+		return doHookClaim(workQuery, workDir, runner, shellHookClaimExecutor{env: queryEnv}, hookClaimOptions{
+			Assignee:           sessionForQuery,
+			Identities:         identities,
+			PreStartResultPath: preStartResultPath,
+		}, stdout, stderr)
+	}
+	return doHook(workQuery, workDir, false, runner, stdout, stderr)
+}
+
+func hookIdentityCandidates(values ...string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 // hookQueryEnv returns the full work-query environment for a hook subprocess.

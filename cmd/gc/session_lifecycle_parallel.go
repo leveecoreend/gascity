@@ -954,6 +954,10 @@ func runPreparedStartCandidate(
 	finished := time.Now()
 	rollbackPending := err != nil && shouldRollbackPendingCreate(item.candidate.session)
 	rateLimitScreen := err != nil && startupRateLimitScreenDetected(item, cityPath, sp, store, cfg)
+	if errors.Is(err, runtime.ErrPreStartDrained) {
+		rollbackPending = false
+		rateLimitScreen = false
+	}
 	if err != nil && rollbackPending && !rateLimitScreen && runningSessionMatchesPendingCreate(item.candidate.session, item.candidate.name(), sp) {
 		return startResult{
 			prepared:        item,
@@ -970,6 +974,8 @@ func runPreparedStartCandidate(
 	case errors.Is(err, runtime.ErrSessionInitializing):
 		outcome = "session_initializing"
 		err = nil
+	case errors.Is(err, runtime.ErrPreStartDrained):
+		outcome = "pre_start_drained"
 	case startCtxErr == context.DeadlineExceeded:
 		outcome = "deadline_exceeded"
 		if err == nil {
@@ -1000,6 +1006,9 @@ func runPreparedStartCandidate(
 	if err == nil {
 		rateLimitScreen = false
 	}
+	if err != nil {
+		releasePreStartClaimedBeads(store, runtime.PreStartClaimedBeadIDs(err), item.candidate.name())
+	}
 	return startResult{
 		prepared:        item,
 		err:             err,
@@ -1009,6 +1018,45 @@ func runPreparedStartCandidate(
 		rollbackPending: rollbackPending,
 		rateLimitScreen: rateLimitScreen,
 		phases:          phases,
+	}
+}
+
+func releasePreStartClaimedBeads(store beads.Store, ids []string, assignee string) {
+	if store == nil || len(ids) == 0 {
+		return
+	}
+	assignee = strings.TrimSpace(assignee)
+	if assignee == "" {
+		return
+	}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		current, err := store.Get(id)
+		if err != nil {
+			log.Printf("releasePreStartClaimedBeads: get %s: %v", id, err)
+			continue
+		}
+		if strings.TrimSpace(current.Assignee) != assignee {
+			continue
+		}
+		status := strings.TrimSpace(current.Status)
+		clearAssignee := ""
+		opts := beads.UpdateOpts{Assignee: &clearAssignee}
+		switch status {
+		case "in_progress":
+			open := "open"
+			opts.Status = &open
+		case "open":
+		default:
+			log.Printf("releasePreStartClaimedBeads: skip %s with status %q", id, status)
+			continue
+		}
+		if err := store.Update(id, opts); err != nil {
+			log.Printf("releasePreStartClaimedBeads: update %s: %v", id, err)
+		}
 	}
 }
 
@@ -1390,6 +1438,26 @@ func commitStartResultTraced(
 	if result.outcome == "session_initializing" {
 		clearPendingStartInFlightLease(session, store, stderr)
 		logLifecycleOutcome(stderr, "start", wave, name, tp.TemplateName, result.outcome, result.started, result.finished, nil, result.phases)
+		return false
+	}
+	if result.outcome == "pre_start_drained" || errors.Is(result.err, runtime.ErrPreStartDrained) {
+		reason := runtime.PreStartDrainReason(result.err)
+		if reason == "" {
+			reason = "no_work"
+		}
+		metadata := sessionpkg.SleepPatch(clk.Now(), reason)
+		if err := store.SetMetadataBatch(session.ID, metadata); err != nil {
+			fmt.Fprintf(stderr, "session reconciler: recording pre-start drain for %s: %v\n", name, err) //nolint:errcheck
+			logLifecycleOutcome(stderr, "start", wave, name, tp.TemplateName, "pre_start_drain_metadata_failed", result.started, result.finished, err, result.phases)
+			return false
+		}
+		if session.Metadata == nil {
+			session.Metadata = make(map[string]string, len(metadata))
+		}
+		for key, value := range metadata {
+			session.Metadata[key] = value
+		}
+		logLifecycleOutcome(stderr, "start", wave, name, tp.TemplateName, "pre_start_drained", result.started, result.finished, nil, result.phases)
 		return false
 	}
 	if result.err != nil {

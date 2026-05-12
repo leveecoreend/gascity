@@ -22,7 +22,7 @@ check for new messages from other agents or the controller. Run
 
 ## Work pickup
 
-When you finish your current task or have no active work, run `gc hook` to
+When you finish your current task or have no active work, run `gc hook --claim` to
 check for and claim new work from the queue.
 
 ## Key commands
@@ -30,7 +30,7 @@ check for and claim new work from the queue.
 - `gc prime` — load/reload agent context
 - `gc nudge drain --inject` — drain queued nudges
 - `gc mail check --inject` — check for inter-agent messages
-- `gc hook` — check for and claim available work
+- `gc hook --claim` — check for and claim available work
 - `bd ready` — list ready beads (tasks)
 - `bd show <id>` — show bead details
 - `bd close <id>` — mark a bead as done

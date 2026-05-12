@@ -418,7 +418,7 @@ Two rules help a lot:
 | `gt sling` | `gc sling` | Direct mapping in spirit and name. |
 | `gt handoff` | `gc handoff` | Near-direct mapping. |
 | `gt convoy` | `gc convoy` | Near-direct mapping for convoy creation and tracking. |
-| `gt hook` | `gc hook` | Same name, narrower surface: `gc hook` is work-query and hook injection behavior, not the full Town hook manager. |
+| `gt hook` | `gc hook --claim` | Same family, narrower surface: Gas City hook runs configured work queries and can atomically claim one bead for the current session. |
 | `gt ready` | `bd ready` | This stays bead-centric more than city-centric. |
 | `gt done` | no single direct equivalent | In Gas City this is usually a bead close, metadata transition, convoy action, or formula step. |
 | `gt unsling` | no direct equivalent | Usually replaced by bead edits plus re-routing with `bd` and `gc sling`. |

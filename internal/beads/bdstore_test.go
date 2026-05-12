@@ -600,6 +600,35 @@ func TestBdStoreUpdatePassesPriority(t *testing.T) {
 	}
 }
 
+func TestBdStoreClaimUsesBdClaimAndReadsClaimedBead(t *testing.T) {
+	var calls []string
+	runner := func(_, name string, args ...string) ([]byte, error) {
+		call := name + " " + strings.Join(args, " ")
+		calls = append(calls, call)
+		switch call {
+		case "bd update --json bd-42 --claim":
+			return []byte(`{"id":"bd-42"}`), nil
+		case "bd show --json bd-42":
+			return []byte(`[{"id":"bd-42","title":"task","status":"in_progress","issue_type":"task","assignee":"worker-1","created_at":"2025-01-15T10:30:00Z"}]`), nil
+		default:
+			return nil, fmt.Errorf("unexpected call %q", call)
+		}
+	}
+	s := beads.NewBdStore("/city", runner)
+
+	claimed, err := s.Claim("bd-42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.ID != "bd-42" || claimed.Status != "in_progress" || claimed.Assignee != "worker-1" {
+		t.Fatalf("claimed bead = %+v", claimed)
+	}
+	want := []string{"bd update --json bd-42 --claim", "bd show --json bd-42"}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+}
+
 func TestBdStoreWaitForParentProjection(t *testing.T) {
 	var mu sync.Mutex
 	showCalls := 0
@@ -2341,6 +2370,33 @@ func TestExecCommandRunnerWithEnvOverridesInheritedValues(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("runner should preserve working dir usability: %v", err)
+	}
+}
+
+func TestExecCommandRunnerWithEnvironUsesExactEnvironment(t *testing.T) {
+	t.Setenv("GC_CITY_PATH", "/wrong")
+	t.Setenv("GC_DOLT_PORT", "9999")
+
+	dir := t.TempDir()
+	runner := beads.ExecCommandRunnerWithEnviron([]string{
+		"GC_CITY_PATH=/city",
+		"PATH=" + os.Getenv("PATH"),
+	})
+
+	out, err := runner(dir, "sh", "-c", `printf '%s\n%s\n' "$GC_CITY_PATH" "${GC_DOLT_PORT-unset}"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("lines = %q, want 2 lines", string(out))
+	}
+	if lines[0] != "/city" {
+		t.Fatalf("GC_CITY_PATH = %q, want %q", lines[0], "/city")
+	}
+	if lines[1] != "unset" {
+		t.Fatalf("GC_DOLT_PORT = %q, want unset", lines[1])
 	}
 }
 

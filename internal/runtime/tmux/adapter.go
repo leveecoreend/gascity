@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -666,14 +667,28 @@ func (o *tmuxStartOps) runSetupCommand(ctx context.Context, cmd string, env map[
 // Testable via fakeStartOps without a real tmux server.
 // The setupTimeout parameter controls the per-command timeout for
 // session_setup, session_setup_script, and pre_start commands.
-func doStartSession(ctx context.Context, ops startOps, name string, cfg runtime.Config, setupTimeout time.Duration) error {
+func doStartSession(ctx context.Context, ops startOps, name string, cfg runtime.Config, setupTimeout time.Duration) (err error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
 	// Step 0: Run pre-start commands (directory/worktree preparation).
-	if err := runPreStart(ctx, ops, name, cfg, setupTimeout); err != nil {
+	cfg, err = runPreStart(ctx, ops, name, cfg, setupTimeout)
+	if err != nil {
+		err = runtime.WithPreStartClaimedBeads(err, preStartClaimedBeadIDs(cfg)...)
+		if errors.Is(err, runtime.ErrPreStartDrained) {
+			return err
+		}
 		return fmt.Errorf("running pre_start: %w", err)
+	}
+	claimedBeadIDs := preStartClaimedBeadIDs(cfg)
+	if len(claimedBeadIDs) > 0 {
+		delete(cfg.Env, preStartClaimedBeadEnv)
+		defer func() {
+			if err != nil && !errors.Is(err, runtime.ErrPreStartDrained) {
+				err = runtime.WithPreStartClaimedBeads(err, claimedBeadIDs...)
+			}
+		}()
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -832,20 +847,151 @@ func runSessionLive(ctx context.Context, ops startOps, name string, cfg runtime.
 // Used for directory/worktree preparation. Failures are fatal because
 // launching into an unprepared workDir can point agents at the wrong repo or
 // skip required bootstrap state entirely.
-func runPreStart(ctx context.Context, ops startOps, _ string, cfg runtime.Config, setupTimeout time.Duration) error {
+const (
+	preStartResultEnv        = "GC_PRE_START_RESULT"
+	preStartClaimedBeadEnv   = "GC_PRE_START_CLAIMED_BEAD_ID"
+	maxPreStartResultEnvSize = 8 * 1024
+)
+
+type preStartCommandResult struct {
+	Action        string            `json:"action"`
+	Reason        string            `json:"reason,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	ClaimedBeadID string            `json:"claimed_bead_id,omitempty"`
+}
+
+func runPreStart(ctx context.Context, ops startOps, _ string, cfg runtime.Config, setupTimeout time.Duration) (runtime.Config, error) {
 	if len(cfg.PreStart) == 0 {
-		return nil
+		return cfg, nil
 	}
-	setupEnv := make(map[string]string, len(cfg.Env))
-	for k, v := range cfg.Env {
-		setupEnv[k] = v
+	if cfg.Env == nil {
+		cfg.Env = map[string]string{}
 	}
+	resultDir, err := os.MkdirTemp("", "gc-pre-start-*")
+	if err != nil {
+		return cfg, fmt.Errorf("creating pre_start result dir: %w", err)
+	}
+	defer os.RemoveAll(resultDir) //nolint:errcheck // best-effort temp cleanup
 	for i, cmd := range cfg.PreStart {
-		if err := ops.runSetupCommand(ctx, cmd, setupEnv, setupTimeout); err != nil {
-			return fmt.Errorf("pre_start[%d]: %w", i, err)
+		setupEnv := make(map[string]string, len(cfg.Env)+1)
+		for k, v := range cfg.Env {
+			setupEnv[k] = v
+		}
+		resultPath := filepath.Join(resultDir, fmt.Sprintf("%d.json", i))
+		setupEnv[preStartResultEnv] = resultPath
+		cmdErr := ops.runSetupCommand(ctx, cmd, setupEnv, setupTimeout)
+		result, ok, err := readPreStartResult(resultPath)
+		if err != nil {
+			return cfg, fmt.Errorf("pre_start[%d]: %w", i, err)
+		}
+		if ok {
+			if err := applyPreStartResult(&cfg, result); err != nil {
+				return cfg, fmt.Errorf("pre_start[%d]: %w", i, err)
+			}
+			switch strings.TrimSpace(result.Action) {
+			case "", "continue":
+			case "drain":
+				err := runtime.WithPreStartDrainReason(runtime.ErrPreStartDrained, result.Reason)
+				return cfg, fmt.Errorf("pre_start[%d]: %w", i, err)
+			default:
+				return cfg, fmt.Errorf("pre_start[%d]: unknown pre_start action %q", i, result.Action)
+			}
+		}
+		if cmdErr != nil {
+			return cfg, fmt.Errorf("pre_start[%d]: %w", i, cmdErr)
+		}
+	}
+	return cfg, nil
+}
+
+func readPreStartResult(path string) (preStartCommandResult, bool, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return preStartCommandResult{}, false, nil
+	}
+	if err != nil {
+		return preStartCommandResult{}, false, err
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return preStartCommandResult{}, false, nil
+	}
+	var result preStartCommandResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		return preStartCommandResult{}, false, fmt.Errorf("parsing %s: %w", preStartResultEnv, err)
+	}
+	return result, true, nil
+}
+
+func applyPreStartResult(cfg *runtime.Config, result preStartCommandResult) error {
+	for key, value := range result.Env {
+		if err := validatePreStartEnv(key, value); err != nil {
+			return err
+		}
+		cfg.Env[key] = value
+	}
+	if result.ClaimedBeadID != "" {
+		if err := appendPreStartClaimedBeadID(cfg, result.ClaimedBeadID); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func validatePreStartEnv(key, value string) error {
+	switch key {
+	case "GC_BEAD_ID":
+	default:
+		return fmt.Errorf("pre_start env key %q is not supported", key)
+	}
+	return validatePreStartValue(key, value)
+}
+
+func validatePreStartValue(key, value string) error {
+	if strings.ContainsAny(value, "\x00\n") {
+		return fmt.Errorf("pre_start env %s contains an invalid value", key)
+	}
+	if len(value) > maxPreStartResultEnvSize {
+		return fmt.Errorf("pre_start env %s is too large", key)
+	}
+	return nil
+}
+
+func appendPreStartClaimedBeadID(cfg *runtime.Config, id string) error {
+	if err := validatePreStartValue(preStartClaimedBeadEnv, id); err != nil {
+		return err
+	}
+	ids := preStartClaimedBeadIDs(*cfg)
+	id = strings.TrimSpace(id)
+	for _, existing := range ids {
+		if existing == id {
+			return nil
+		}
+	}
+	ids = append(ids, id)
+	cfg.Env[preStartClaimedBeadEnv] = strings.Join(ids, "\n")
+	if len(ids) > 1 {
+		return fmt.Errorf("multiple claim-producing pre_start commands are not supported")
+	}
+	return nil
+}
+
+func preStartClaimedBeadIDs(cfg runtime.Config) []string {
+	raw := strings.TrimSpace(cfg.Env[preStartClaimedBeadEnv])
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, "\n")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]bool, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" || seen[part] {
+			continue
+		}
+		seen[part] = true
+		out = append(out, part)
+	}
+	return out
 }
 
 // ensureFreshSession creates a session, handling stale tmux state.

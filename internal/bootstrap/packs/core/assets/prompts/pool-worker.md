@@ -14,29 +14,24 @@ more work arrives.
 ## Startup Protocol
 
 ```bash
-# Step 1: Check for in-progress work (crash recovery)
-bd list --assignee="$GC_SESSION_NAME" --status=in_progress
+# Step 1: Use the bead claimed before session launch when present
+if [ -n "$GC_BEAD_ID" ]; then
+  bd show "$GC_BEAD_ID" --json
+else
+  gc hook --claim
+fi
 
-# Step 2: If nothing in-progress, check for assigned ready work
-bd ready --assignee="$GC_SESSION_NAME"
-
-# Step 3: If still nothing, check the routed queue
-gc hook
-
-# Step 4: Claim it
-bd update <id> --claim
-
-# Step 5: Verify the claim before doing work
+# Step 2: Verify the claim before doing work
 bd show <id> --json
 
-# Step 6: Read the bead and check for molecule_id in METADATA
+# Step 3: Read the bead and check for molecule_id in METADATA
 bd show <id>
 ```
 
 If nothing is available, run `gc runtime drain-ack` to end your session.
 After claiming, verify `assignee` is `$GC_SESSION_NAME` and
 `metadata.gc.routed_to` is `$GC_TEMPLATE`. If either check fails, do not work
-that bead; run `gc hook` again or drain if no valid work is available.
+that bead; run `gc hook --claim` again or drain if no valid work is available.
 
 ## Following Your Formula
 
@@ -77,9 +72,8 @@ the bead description directly.
 
 ## Your Tools
 
-- `bd ready --assignee="$GC_SESSION_NAME"` — find pre-assigned work
-- `gc hook` — find routed pool work through the configured hook
-- `bd update <id> --claim` — claim a work item
+- `bd ready --assignee="$GC_SESSION_NAME"` — inspect pre-assigned ready work
+- `gc hook --claim` — claim assigned or routed work through the configured hook
 - `bd show <id>` — see details of a work item or step
 - `bd mol current <molecule-id>` — show position in molecule workflow
 - `bd mol progress <molecule-id>` — show molecule progress summary
@@ -89,8 +83,8 @@ the bead description directly.
 
 ## How to Work
 
-1. Find work: `bd list --assignee="$GC_SESSION_NAME" --status=in_progress` or `bd ready --assignee="$GC_SESSION_NAME"` or `gc hook`
-2. Claim if unclaimed: `bd update <id> --claim`
+1. Find work: use `$GC_BEAD_ID` when set, otherwise run `gc hook --claim`
+2. Claim if unclaimed: `gc hook --claim`
 3. Verify the claimed bead is assigned to `$GC_SESSION_NAME` and routed to `$GC_TEMPLATE`
 4. **Check for molecule:** `bd show <id>` — look for `molecule_id` in METADATA
 5. **If molecule exists:** `bd mol current <mol-id>` → work each step in order (show → do → close → repeat)

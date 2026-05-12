@@ -86,10 +86,12 @@ Your formula: `mol-polecat-work`
 > **The Universal Propulsion Principle: If your hook/work query finds work, YOU RUN IT.**
 
 ```bash
-# Step 1: Check for assigned work
-gc bd list --assignee="$GC_SESSION_NAME" --status=in_progress
-{{ .WorkQuery }}                                             # Find pool work
-gc bd update <id> --claim                                       # Atomic grab
+# Step 1: Use the pre-start claimed bead, or claim one now
+if [ -n "$GC_BEAD_ID" ]; then
+  gc bd show "$GC_BEAD_ID" --json
+else
+  gc hook --claim
+fi
 
 # Step 2: Work found? -> Follow formula steps. Nothing? -> Check mail
 gc mail inbox
@@ -97,7 +99,7 @@ gc mail inbox
 # Step 3: Execute — read formula steps and work through them in order
 ```
 
-When nudged after dispatch, run `gc hook` or `{{ .WorkQuery }}`. That lookup
+When nudged after dispatch, run `gc hook --claim`. That lookup
 checks assigned work first (session bead ID, runtime session name, then
 alias) and only falls through to unassigned pool work routed to
 `${GC_RIG:+$GC_RIG/}{{ .BindingPrefix }}polecat`.
