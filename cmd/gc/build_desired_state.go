@@ -1548,22 +1548,31 @@ func realizePoolDesiredSessions(
 			continue
 		}
 		used[sessionBead.ID] = true
-		instanceName := poolInstanceName(cfgAgent.Name, slot, cfgAgent)
-		qualifiedInstance := cfgAgent.QualifiedInstanceName(instanceName)
-		instanceAgent := deepCopyAgent(cfgAgent, instanceName, cfgAgent.Dir)
-		fpExtra := buildFingerprintExtra(&instanceAgent)
-		tp, err := resolveTemplateForSessionBead(bp, &instanceAgent, qualifiedInstance, fpExtra, sessionBead)
+		resolveAgent, qualifiedInstance, poolSlot := poolDesiredRequestIdentity(cfgAgent, slot)
+		fpExtra := buildFingerprintExtra(resolveAgent)
+		tp, err := resolveTemplateForSessionBead(bp, resolveAgent, qualifiedInstance, fpExtra, sessionBead)
 		if err != nil {
 			fmt.Fprintf(stderr, "buildDesiredState: pool %q session %s: %v (skipping)\n", qualifiedName, sessionBead.ID, err) //nolint:errcheck
 			continue
 		}
 		tp.Alias = qualifiedInstance
 		tp.InstanceName = qualifiedInstance
-		tp.PoolSlot = slot
+		tp.PoolSlot = poolSlot
 		setPoolTemplateRuntimeIdentity(&tp, qualifiedInstance, sessionBead)
-		installAgentSideEffects(bp, &instanceAgent, tp, stderr)
+		installAgentSideEffects(bp, resolveAgent, tp, stderr)
 		desired[tp.SessionName] = tp
 	}
+}
+
+func poolDesiredRequestIdentity(cfgAgent *config.Agent, slot int) (*config.Agent, string, int) {
+	qualifiedName := cfgAgent.QualifiedName()
+	if !cfgAgent.SupportsInstanceExpansion() {
+		return cfgAgent, qualifiedName, 0
+	}
+	instanceName := poolInstanceName(cfgAgent.Name, slot, cfgAgent)
+	qualifiedInstance := cfgAgent.QualifiedInstanceName(instanceName)
+	instanceAgent := deepCopyAgent(cfgAgent, instanceName, cfgAgent.Dir)
+	return &instanceAgent, qualifiedInstance, slot
 }
 
 // setPoolTemplateRuntimeIdentity stamps the pool alias unless this bead is in a
@@ -1931,7 +1940,7 @@ func selectOrCreatePoolSessionBead(
 	}
 	// Resume tier: reuse the session that has in-progress work assigned.
 	if preferred != nil && preferred.ID != "" && !used[preferred.ID] && !isFailedCreateSessionBead(*preferred) {
-		slot := claimPoolSlot(cfgAgent, *preferred, usedSlots)
+		slot := claimDesiredPoolSlot(cfgAgent, *preferred, usedSlots)
 		return *preferred, slot, nil
 	}
 	// Reuse an existing active/creating session bead. Skip drained, closed,
@@ -1966,19 +1975,25 @@ func selectOrCreatePoolSessionBead(
 			continue
 		}
 		if desiredName := strings.TrimSpace(bead.Metadata["session_name"]); desiredName != "" {
-			slot := claimPoolSlot(cfgAgent, bead, usedSlots)
+			slot := claimDesiredPoolSlot(cfgAgent, bead, usedSlots)
 			return bead, slot, nil
 		}
 	}
-	slot := claimPoolSlot(cfgAgent, beads.Bead{}, usedSlots)
-	instanceName := poolInstanceName(cfgAgent.Name, slot, cfgAgent)
-	qualifiedInstance := cfgAgent.QualifiedInstanceName(instanceName)
+	slot := claimDesiredPoolSlot(cfgAgent, beads.Bead{}, usedSlots)
+	_, qualifiedInstance, poolSlot := poolDesiredRequestIdentity(cfgAgent, slot)
 	bead, err := createPoolSessionBeadWithGuardedAlias(bp, template, qualifiedInstance, slot)
 	if err != nil {
 		delete(usedSlots, slot)
 		return bead, 0, err
 	}
-	return bead, slot, nil
+	return bead, poolSlot, nil
+}
+
+func claimDesiredPoolSlot(cfgAgent *config.Agent, sessionBead beads.Bead, used map[int]bool) int {
+	if !cfgAgent.SupportsInstanceExpansion() {
+		return 0
+	}
+	return claimPoolSlot(cfgAgent, sessionBead, used)
 }
 
 func createPoolSessionBeadWithGuardedAlias(
