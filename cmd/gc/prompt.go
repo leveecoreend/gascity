@@ -125,6 +125,16 @@ func renderPromptWithMeta(fs fsys.FS, cityPath, cityName, templatePath string, c
 		loadSharedTemplates(fs, tmpl, fragDir, stderr)
 	}
 
+	// Load shared templates from the city root itself. cfg.PackDirs is
+	// populated only from imported packs, so a root city pack with no
+	// [imports.*] blocks would otherwise silently ignore its own
+	// prompts/shared/ and template-fragments/ directories. Loaded after
+	// imported-pack fragments (so city-root wins on name collision with
+	// imports) but before sibling shared/ and per-agent fragments below
+	// (which keep their existing higher precedence).
+	loadSharedTemplates(fs, tmpl, filepath.Join(cityPath, "prompts", "shared"), stderr)
+	loadSharedTemplates(fs, tmpl, filepath.Join(cityPath, "template-fragments"), stderr)
+
 	// Load shared templates from sibling shared/ directory (highest priority —
 	// wins on name collision with cross-pack templates).
 	sharedDir := filepath.Join(filepath.Dir(sourcePath), "shared")

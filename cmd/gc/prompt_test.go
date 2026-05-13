@@ -980,3 +980,69 @@ func TestProviderDisplayNameFallsBackToKeyForUnknownProvider(t *testing.T) {
 		t.Errorf("displayName = %q, want %q (unknown provider should fall back to key)", gotName, "totally-unknown")
 	}
 }
+
+// TestRenderPromptCityRootTemplateFragments verifies that template-fragments/
+// at the city root (the root pack itself) are loaded into the template set,
+// not just template-fragments/ inside imported pack dirs. Regression test for
+// rp-aew: a PackV2 root pack with no [imports.*] blocks (so cfg.PackDirs is
+// empty) must still be able to use its own template-fragments/.
+func TestRenderPromptCityRootTemplateFragments(t *testing.T) {
+	f := fsys.NewFake()
+	f.Files["/city/template-fragments/recovery.template.md"] = []byte(
+		`{{ define "recovery" }}recover-from-city-root{{ end }}`)
+	f.Files["/city/agents/x/prompt.template.md"] = []byte(`{{ template "recovery" . }}`)
+	got := renderPrompt(f, "/city", "", "agents/x/prompt.template.md", PromptContext{},
+		"", io.Discard, nil, nil, nil)
+	if got != "recover-from-city-root" {
+		t.Errorf("renderPrompt(city-root template-fragments) = %q, want %q",
+			got, "recover-from-city-root")
+	}
+}
+
+// TestRenderPromptCityRootPromptsShared mirrors the test above for the
+// prompts/shared/ subdirectory at the city root.
+func TestRenderPromptCityRootPromptsShared(t *testing.T) {
+	f := fsys.NewFake()
+	f.Files["/city/prompts/shared/greet.template.md"] = []byte(
+		`{{ define "greet" }}hello-from-city-root{{ end }}`)
+	f.Files["/city/agents/x/prompt.template.md"] = []byte(`{{ template "greet" . }}`)
+	got := renderPrompt(f, "/city", "", "agents/x/prompt.template.md", PromptContext{},
+		"", io.Discard, nil, nil, nil)
+	if got != "hello-from-city-root" {
+		t.Errorf("renderPrompt(city-root prompts/shared) = %q, want %q",
+			got, "hello-from-city-root")
+	}
+}
+
+// TestRenderPromptCityRootFragmentsPerAgentWins ensures the new city-root
+// fragment load does not displace per-agent fragments (which must still win
+// on name collision).
+func TestRenderPromptCityRootFragmentsPerAgentWins(t *testing.T) {
+	f := fsys.NewFake()
+	f.Files["/city/template-fragments/footer.template.md"] = []byte(
+		`{{ define "footer" }}city-root{{ end }}`)
+	f.Files["/city/agents/x/template-fragments/footer.template.md"] = []byte(
+		`{{ define "footer" }}per-agent{{ end }}`)
+	f.Files["/city/agents/x/prompt.template.md"] = []byte(`{{ template "footer" . }}`)
+	got := renderPrompt(f, "/city", "", "agents/x/prompt.template.md", PromptContext{},
+		"", io.Discard, nil, nil, nil)
+	if got != "per-agent" {
+		t.Errorf("renderPrompt(per-agent overrides city-root) = %q, want %q",
+			got, "per-agent")
+	}
+}
+
+// TestRenderPromptCityRootFragmentsAbsentNoEffect is the regression-safety
+// check: when the city root has no template-fragments/ or prompts/shared/,
+// rendered output is byte-identical to pre-fix behavior (i.e. the new
+// directory probes silently no-op via the loadSharedTemplates ReadDir miss).
+func TestRenderPromptCityRootFragmentsAbsentNoEffect(t *testing.T) {
+	f := fsys.NewFake()
+	f.Files["/city/agents/x/prompt.template.md"] = []byte("plain body {{ .AgentName }}")
+	got := renderPrompt(f, "/city", "", "agents/x/prompt.template.md",
+		PromptContext{AgentName: "x"}, "", io.Discard, nil, nil, nil)
+	want := "plain body x"
+	if got != want {
+		t.Errorf("renderPrompt(no city-root fragments) = %q, want %q", got, want)
+	}
+}
