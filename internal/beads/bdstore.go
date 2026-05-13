@@ -354,6 +354,7 @@ type bdIssue struct {
 	Assignee     string       `json:"assignee"`
 	From         string       `json:"from"`
 	ParentID     string       `json:"parent"`
+	Ephemeral    bool         `json:"ephemeral"`
 	Ref          string       `json:"ref"`
 	Needs        []string     `json:"needs"`
 	Description  string       `json:"description"`
@@ -473,6 +474,7 @@ func (b *bdIssue) toBead() Bead {
 		Assignee:     b.Assignee,
 		From:         from,
 		ParentID:     parentID,
+		Ephemeral:    b.Ephemeral,
 		Ref:          b.Ref,
 		Needs:        b.Needs,
 		Description:  b.Description,
@@ -564,6 +566,9 @@ func (s *BdStore) Create(b Bead) (Bead, error) {
 	if b.ParentID != "" {
 		args = append(args, "--parent", b.ParentID)
 	}
+	if b.Ephemeral {
+		args = append(args, "--ephemeral")
+	}
 	metadata := maps.Clone(b.Metadata)
 	if b.From != "" {
 		if metadata == nil {
@@ -602,6 +607,9 @@ func (s *BdStore) Create(b Bead) (Bead, error) {
 		if created.Metadata == nil {
 			created.Metadata = maps.Clone(metadata)
 		}
+	}
+	if b.Ephemeral {
+		created.Ephemeral = true
 	}
 	return created, nil
 }

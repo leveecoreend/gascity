@@ -371,7 +371,10 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 	}
 	if !opts.DeferAssignees && IsGraphApplyEnabled() {
 		if applier, ok := store.(beads.GraphApplyStore); ok {
-			return instantiateViaGraphApply(ctx, applier, recipe, opts)
+			if supportsEphemeralGraphApply(applier) {
+				return instantiateViaGraphApply(ctx, applier, recipe, opts)
+			}
+			graphApplyTracef("graph-apply ephemeral-unsupported recipe=%s store=%T", recipe.Name, store)
 		}
 		graphApplyTracef("graph-apply unavailable recipe=%s store=%T", recipe.Name, store)
 	}
@@ -395,9 +398,8 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 		}
 
 		b := stepToBead(step, vars, priorityOverride)
-		if opts.DeferAssignees {
-			deferBeadRouting(&b)
-		}
+		b.Ephemeral = true
+		deferBeadRouting(&b)
 		hasFutureBlocker := false
 		for _, dep := range recipe.Deps {
 			if dep.StepID != step.ID || dep.Type == "parent-child" {
@@ -556,6 +558,12 @@ func Instantiate(ctx context.Context, store beads.Store, recipe *formula.Recipe,
 			}
 		}
 	}
+	if !opts.DeferAssignees {
+		if err := activateDeferredBeads(store, createdIDs); err != nil {
+			markFailed(store, createdIDs)
+			return nil, err
+		}
+	}
 
 	rootID := ""
 	if len(createdIDs) > 0 {
@@ -594,8 +602,11 @@ func InstantiateFragment(ctx context.Context, store beads.Store, recipe *formula
 	}
 	if IsGraphApplyEnabled() {
 		if applier, ok := store.(beads.GraphApplyStore); ok {
-			opts.PriorityOverride = priorityOverride
-			return instantiateFragmentViaGraphApply(ctx, store, applier, recipe, opts)
+			if supportsEphemeralGraphApply(applier) {
+				opts.PriorityOverride = priorityOverride
+				return instantiateFragmentViaGraphApply(ctx, store, applier, recipe, opts)
+			}
+			graphApplyTracef("graph-apply fragment-ephemeral-unsupported root=%s store=%T", opts.RootID, store)
 		}
 		graphApplyTracef("graph-apply fragment-unavailable root=%s store=%T", opts.RootID, store)
 	}
@@ -622,6 +633,8 @@ func InstantiateFragment(ctx context.Context, store beads.Store, recipe *formula
 		// fanout-expanded fragment beads are actionable work that pool
 		// workers claim from `bd ready`. Do not apply nonRootStepBeadType
 		// here (#1039).
+		b.Ephemeral = true
+		deferBeadRouting(&b)
 		hasFutureBlocker := false
 		for _, dep := range recipe.Deps {
 			if dep.StepID != step.ID || dep.Type == "parent-child" {
@@ -761,6 +774,10 @@ func InstantiateFragment(ctx context.Context, store beads.Store, recipe *formula
 			markFailed(store, createdIDs)
 			return nil, fmt.Errorf("assigning fragment step %q: %w", stepID, err)
 		}
+	}
+	if err := activateDeferredBeads(store, createdIDs); err != nil {
+		markFailed(store, createdIDs)
+		return nil, err
 	}
 
 	return &FragmentResult{
@@ -910,6 +927,46 @@ func deferBeadMetadataValue(b *beads.Bead, sourceKey, deferredKey string) {
 		b.Metadata[deferredKey] = value
 		delete(b.Metadata, sourceKey)
 	}
+}
+
+func activateDeferredBeads(store beads.Store, ids []string) error {
+	for _, id := range ids {
+		if err := activateDeferredBead(store, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func activateDeferredBead(store beads.Store, id string) error {
+	b, err := store.Get(id)
+	if err != nil {
+		return fmt.Errorf("loading deferred bead %q: %w", id, err)
+	}
+	update := beads.UpdateOpts{}
+	if assignee := b.Metadata[DeferredAssigneeMetadataKey]; assignee != "" && b.Assignee != assignee {
+		update.Assignee = &assignee
+	}
+	if typ := b.Metadata[DeferredTypeMetadataKey]; typ != "" && b.Type != typ {
+		update.Type = &typ
+	}
+	metadata := map[string]string{}
+	if routedTo := b.Metadata[DeferredRoutedToMetadataKey]; routedTo != "" && b.Metadata["gc.routed_to"] != routedTo {
+		metadata["gc.routed_to"] = routedTo
+	}
+	if executionRoutedTo := b.Metadata[DeferredExecutionRoutedToMetadataKey]; executionRoutedTo != "" && b.Metadata["gc.execution_routed_to"] != executionRoutedTo {
+		metadata["gc.execution_routed_to"] = executionRoutedTo
+	}
+	if len(metadata) > 0 {
+		update.Metadata = metadata
+	}
+	if update.Assignee == nil && update.Type == nil && len(update.Metadata) == 0 {
+		return nil
+	}
+	if err := store.Update(id, update); err != nil {
+		return fmt.Errorf("activating deferred bead %q: %w", id, err)
+	}
+	return nil
 }
 
 func ensureBeadMetadata(b *beads.Bead) {

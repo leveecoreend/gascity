@@ -78,6 +78,14 @@ func instantiateViaGraphApply(ctx context.Context, applier beads.GraphApplyStore
 	}, nil
 }
 
+func supportsEphemeralGraphApply(applier beads.GraphApplyStore) bool {
+	capable, ok := applier.(beads.EphemeralGraphApplyStore)
+	if !ok {
+		return true
+	}
+	return capable.SupportsEphemeralGraphApply()
+}
+
 func instantiateFragmentViaGraphApply(ctx context.Context, store beads.Store, applier beads.GraphApplyStore, recipe *formula.FragmentRecipe, opts FragmentOptions) (*FragmentResult, error) {
 	graphApplyTracef("graph-apply fragment-enter root=%s applier=%T", opts.RootID, applier)
 	plan, err := buildFragmentApplyPlan(store, recipe, opts)
@@ -117,6 +125,7 @@ func buildRecipeApplyPlan(recipe *formula.Recipe, opts Options) (*beads.GraphApp
 
 	plan := &beads.GraphApplyPlan{
 		CommitMessage: fmt.Sprintf("gc: instantiate %s", recipe.Name),
+		Ephemeral:     true,
 		Nodes:         make([]beads.GraphApplyNode, 0, len(recipe.Steps)),
 		Edges:         make([]beads.GraphApplyEdge, 0, len(recipe.Deps)),
 	}
@@ -294,6 +303,7 @@ func buildFragmentApplyPlan(store beads.Store, recipe *formula.FragmentRecipe, o
 
 	plan := &beads.GraphApplyPlan{
 		CommitMessage: fmt.Sprintf("gc: instantiate fragment into %s", opts.RootID),
+		Ephemeral:     true,
 		Nodes:         make([]beads.GraphApplyNode, 0, len(recipe.Steps)),
 		Edges:         make([]beads.GraphApplyEdge, 0, len(recipe.Deps)+len(opts.ExternalDeps)),
 	}
