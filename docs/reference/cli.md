@@ -46,6 +46,7 @@ gc [flags]
 | [gc order](#gc-order) | Manage orders (scheduled and event-driven dispatch) |
 | [gc pack](#gc-pack) | Manage remote pack sources |
 | [gc prime](#gc-prime) | Output the behavioral prompt for an agent |
+| [gc prompt](#gc-prompt) | Author and inspect agent prompt templates |
 | [gc register](#gc-register) | Register a city with the machine-wide supervisor |
 | [gc reload](#gc-reload) | Reload the current city's config without restarting the city/controller |
 | [gc restart](#gc-restart) | Restart all agent sessions in the city |
@@ -56,7 +57,6 @@ gc [flags]
 | [gc session](#gc-session) | Manage interactive chat sessions |
 | [gc shell](#gc-shell) | Manage the Gas City shell integration hook |
 | [gc skill](#gc-skill) | List visible skills |
-| [gc slack](#gc-slack) | Manage the Slack pack — apps, channel mappings, and dispatch |
 | [gc sling](#gc-sling) | Route work to a session config or agent |
 | [gc start](#gc-start) | Start the city under the machine-wide supervisor |
 | [gc status](#gc-status) | Show city-wide status overview |
@@ -1093,9 +1093,13 @@ Compile and display a formula recipe.
 By default, shows the recipe with &#123;&#123;variable&#125;&#125; placeholders intact.
 Use --var to substitute variables and preview the resolved output.
 
+When --rig is set (or cwd is inside a rig), rig-scoped formula_vars from
+city.toml are shown as "(rig default=...)" alongside each applicable var.
+
 Examples:
   gc formula show mol-feature
   gc formula show mol-feature --var title="Auth system" --var branch=main
+  gc formula show mol-polecat-work --rig mo
 
 ```
 gc formula show <formula-name> [flags]
@@ -1785,6 +1789,95 @@ gc prime [agent-name] [flags]
 | `--hook-format` | string |  | format hook output for a provider |
 | `--strict` | bool |  | fail on missing city, missing or unknown agent, or unreadable prompt_template instead of falling back to the default prompt |
 
+## gc prompt
+
+Subcommands for authoring agent prompt templates.
+
+Currently the only subcommand is 'synth', which invokes the configured
+provider in one-shot mode to generate a prompt template for a given role.
+
+```
+gc prompt
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| [gc prompt synth](#gc-prompt-synth) | Generate an agent prompt template by invoking the LLM |
+
+## gc prompt synth
+
+Renders a meta-prompt with the given parameters, invokes the configured
+provider in one-shot mode, and emits the generated prompt template.
+
+The default behavior prints the generated prompt to stdout. Pass --write
+to save it directly to &lt;city&gt;/agents/&lt;role&gt;/prompt.template.md (use --force
+to overwrite an existing file).
+
+Context type is determined by --rig:
+
+  (no --rig)     City context. The agent is HQ-only and operates at
+                 the city level (e.g. mayor, deacon). The meta-prompt
+                 emphasizes coordination, dispatch, monitoring.
+  --rig &lt;name&gt;   Rig context. The agent is attached to the named rig
+                 (looked up in city.toml). The meta-prompt includes
+                 the rig path, default branch, and project-aware
+                 guidance (git operations, branch management, etc.).
+
+Auto-detection:
+  --provider     defaults to workspace.provider in city.toml
+
+Baseline:
+  The synth pulls in an existing prompt template as a refinement
+  baseline so the LLM iterates on a known-good shape rather than
+  designing from scratch. Resolution priority:
+    1. &lt;city&gt;/agents/&lt;role&gt;/prompt.template.md     (user customization)
+    2. &lt;city&gt;/.gc/system/packs/*/agents/&lt;role&gt;/    (pack default)
+    3. embedded prompts/&lt;role&gt;.md                  (built-in fallback)
+    4. embedded prompts/mayor.md                   (structural reference,
+                                                     used only when no
+                                                     role-specific source
+                                                     exists)
+
+Two execution modes:
+
+  --writer-agent ""        Direct mode (default). Spawns a one-shot
+                           subprocess of the configured provider; no
+                           Gas City agent is involved. Useful for
+                           bootstrap and offline-friendly invocations.
+
+  --writer-agent &lt;name&gt;    Slingued mode. Creates a bead and slings the
+                           synth as work to the named agent via the
+                           mol-prompt-synth formula; the agent's
+                           session reads the meta-prompt, generates the
+                           prompt, and writes it to the destination.
+
+                           Async by default — the CLI prints the bead
+                           ID + destination and returns immediately;
+                           use 'gc bd show &lt;id&gt;' to track progress.
+                           Pass --wait to block until the agent closes
+                           the bead (or --wait-timeout fires).
+
+The output is LLM-generated. Review it carefully before relying on it.
+When --write is used, a comment header records the inputs and generation
+date for traceability.
+
+```
+gc prompt synth [flags]
+```
+
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `--city` | string |  | city path (default: auto-resolve) |
+| `--force` | bool |  | with --write, overwrite the destination if it exists |
+| `--meta-prompt` | string |  | override the embedded meta-prompt with a file path |
+| `--provider` | string |  | target AI provider key (default: city.toml workspace.provider) |
+| `--rig` | string |  | rig name from city.toml (default: empty = city/HQ context, no rig) |
+| `--role` | string |  | agent role to design (required, e.g. mayor, polecat, witness) |
+| `--wait` | bool |  | in slingued mode, block until the agent closes the bead |
+| `--wait-timeout` | duration | `10m0s` | in slingued mode with --wait, abort after this duration |
+| `--write` | bool |  | write to &lt;city&gt;/agents/&lt;role&gt;/prompt.template.md instead of stdout (direct mode only; slingued mode always writes) |
+| `--writer-agent` | string |  | Gas City agent to delegate the synth to via mol-prompt-synth (default: empty = direct mode, no agent) |
+
 ## gc register
 
 Register a city directory with the machine-wide supervisor.
@@ -1812,8 +1905,18 @@ Force the current city controller to re-read effective config and
 process one reload tick without restarting the city/controller.
 
 Reload may fetch configured remote packs before recomputing effective
-config. Existing per-session restarts may still happen if normal config
-drift rules require them.
+config. By default, per-session restarts may still happen if normal
+config drift rules require them.
+
+With --soft, the controller accepts any detected per-session config
+drift instead of draining the drifted sessions: each open session's
+recorded config hash is updated to the hash the freshly reloaded
+config produces for it, so the immediately-following reconcile tick
+sees no drift and no config-drift drains fire. Useful when editing a
+running city's .gc/settings.json without disrupting in-flight work.
+Sessions whose template no longer maps to a configured agent are
+NOT updated; normal orphan/suspended drain handles them on the next
+tick.
 
 ```
 gc reload [path] [flags]
@@ -1822,6 +1925,7 @@ gc reload [path] [flags]
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
 | `--async` | bool |  | Return after the controller accepts the reload request |
+| `--soft` | bool |  | Accept config drift on open sessions instead of draining them |
 | `--timeout` | string | `5m` | How long to wait for reload completion |
 
 ## gc restart
@@ -2574,180 +2678,6 @@ gc skill list [flags]
 | `--agent` | string |  | show the effective skill view for this agent |
 | `--session` | string |  | show the effective skill view for this session |
 
-## gc slack
-
-Manage the Slack pack used for human ↔ Gas City coordination.
-
-On-disk state written by these commands lives under &lt;cityPath&gt;/.gc/slack/.
-The slack-pack adapter (examples/slack-pack/adapter/) reads that state
-via env vars injected at "gc start".
-
-```
-gc slack
-```
-
-| Subcommand | Description |
-|------------|-------------|
-| [gc slack import-app](#gc-slack-import-app) | Import a Slack app manifest into the gc city's slack-pack registry |
-| [gc slack map-channel](#gc-slack-map-channel) | Bind a Slack channel to a gc session for slash-command routing |
-| [gc slack map-rig](#gc-slack-map-rig) | Bind a Slack rig to a set of channels for slash-command default routing |
-| [gc slack status](#gc-slack-status) | Show imported Slack apps, channel mappings, and rig mappings for the current city |
-| [gc slack sync-commands](#gc-slack-sync-commands) | Reconcile the locally-imported Slack app's slash commands with what's live in Slack |
-
-## gc slack import-app
-
-Import a Slack app manifest into the gc city's slack-pack registry.
-
-Reads the JSON manifest at &lt;manifest.json&gt;, validates that it declares
-the bot scopes the slack-pack adapter and downstream commands require,
-and persists an app record keyed by (workspace_id, app_id) at
-&lt;cityPath&gt;/.gc/slack/apps.json.
-
-Slack manifests do not contain workspace_id or app_id (Slack assigns
-the latter when the app is created); both are required CLI flags.
-Re-importing the same (workspace_id, app_id) updates the record in
-place — the registry never grows from idempotent re-imports.
-
-Schema reference: https://api.slack.com/reference/manifests
-
-```
-gc slack import-app <manifest.json> [flags]
-```
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--app-id` | string |  | Slack app id, e.g. A0123456 — assigned by Slack post-create (required) |
-| `--workspace-id` | string |  | Slack workspace (team) id, e.g. T0123456 (required; defaults to $SLACK_WORKSPACE_ID when set) |
-
-## gc slack map-channel
-
-Bind a Slack channel to a gc session for slash-command routing.
-
-Persists a (workspace_id, channel_id) → session record at
-&lt;cityPath&gt;/.gc/slack/channel_mappings.json. The slack-pack adapter
-reads this file at startup and routes incoming /slack/interactions
-slash-command requests for the channel to the bound session.
-
---session is required (unless --remove). The binding is idempotent:
-re-binding the same channel preserves the original CreatedAt and
-overwrites the target fields. --remove always exits 0 — if no
-binding exists, the command is a no-op.
-
-For rig→channel bindings, use 'gc slack map-rig' (gc-cby.4). The
-legacy '--rig' flag on this verb is deprecated (gc-cby.25); cobra
-hides it from --help and emits a stderr deprecation warning on
-every use.
-
-```
-gc slack map-channel <channel-id> [flags]
-```
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--remove` | bool |  | Remove the binding for &lt;channel-id&gt; if one exists (idempotent) |
-| `--session` | string |  | Bind the channel to a gc session (mutually exclusive with --rig) |
-| `--workspace-id` | string |  | Slack workspace (team) id, e.g. T0123456 (required; defaults to $SLACK_WORKSPACE_ID when set) |
-
-## gc slack map-rig
-
-Bind a Slack rig to a set of channels for slash-command default routing.
-
-Persists a (workspace_id, rig_name) → set-of-channel-ids record at
-&lt;cityPath&gt;/.gc/slack/rig_mappings.json. The slack-pack adapter reads
-this file at startup and uses it as the fall-through resolver when
-no per-channel 'map-channel' binding exists for an inbound channel.
-
-The binding is idempotent: re-binding the same rig replaces the
-channel set (sorted+deduped) and preserves the original CreatedAt.
-Channels can be supplied as repeated --channel flags, comma-
-separated values, or a mix.
-
---remove drops the entire rig record. --remove-channels drops just
-the listed channels from the rig's set; if the resulting set is
-empty, the record itself is deleted. Both are idempotent — a missing
-record (or unknown channel) is a silent no-op. --remove,
---remove-channels, and --channel are mutually exclusive.
-
-```
-gc slack map-rig <rig-name> [flags]
-```
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--channel` | stringSlice |  | Slack channel id to include in the rig's set; repeat or comma-separate for multiple |
-| `--fix-formula` | string |  | Molecule name spawned by the adapter when this rig handles an inbound interaction (e.g. `mol-slack-fix-issue`). Optional. Omit on re-bind to preserve the current value. |
-| `--remove` | bool |  | Remove the rig record entirely (idempotent; mutually exclusive with --channel and --remove-channels) |
-| `--remove-channels` | stringSlice |  | Drop these channels from the rig's set; if the set becomes empty the record is deleted (idempotent; mutually exclusive with --channel and --remove) |
-| `--sling-target` | string |  | Qualified agent name (`&lt;rig&gt;/&lt;role&gt;`, e.g. `mission-control/polecat`) the adapter targets when dispatching for this rig. Stored on the rig record; required at use time. Omit on re-bind to preserve the current value. |
-| `--workspace-id` | string |  | Slack workspace (team) id, e.g. T0123456 (required; defaults to $SLACK_WORKSPACE_ID when set) |
-
-## gc slack status
-
-Show imported Slack apps, channel mappings, and rig mappings for the current city.
-
-Reads &lt;cityPath&gt;/.gc/slack/apps.json (written by 'gc slack import-app'),
-&lt;cityPath&gt;/.gc/slack/channel_mappings.json (written by
-'gc slack map-channel'), and &lt;cityPath&gt;/.gc/slack/rig_mappings.json
-(written by 'gc slack map-rig') and prints a unified summary.
-
-Per-channel mappings are overrides on top of rig→&#123;channels&#125; defaults;
-the channel mapping wins. When the two stores claim the same channel
-for DIFFERENT rigs, the rig-mapping section is annotated with
-"(conflict: cby.3 channel mapping wins)" in human output and the
-JSON shape sets "conflict": true.
-
---channel &lt;id&gt; filters channel mappings to the named channel AND
-filters rig mappings to records whose channel set contains &lt;id&gt;.
---workspace-id &lt;id&gt; filters all three sections to the named workspace.
-When $SLACK_WORKSPACE_ID is set the filter defaults to that workspace;
-pass --workspace-id="" to override and see records across all workspaces.
---json emits a machine-readable shape with top-level keys "apps",
-"channel_mappings", and "rig_mappings".
-
-```
-gc slack status [flags]
-```
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--channel` | string |  | Filter channel mappings to a single channel id; rig mappings are filtered to records whose channel_ids contain this id |
-| `--json` | bool |  | Emit machine-readable JSON instead of human-readable text |
-| `--workspace-id` | string |  | Filter apps, channel mappings, and rig mappings to a single Slack workspace id (defaults to $SLACK_WORKSPACE_ID when set; pass --workspace-id="" to see all workspaces) |
-
-## gc slack sync-commands
-
-Reconcile the locally-imported Slack app's slash commands with what's live in Slack.
-
-Reads the imported app record from &lt;cityPath&gt;/.gc/slack/apps.json (built
-by `gc slack import-app`), calls Slack apps.manifest.export to read the
-live manifest, diffs the two slash-command sets, and (unless --dry-run)
-calls apps.manifest.update to push the local manifest. After update,
-apps.manifest.export is called once more to verify convergence.
-
-The verb refuses to push when manifest fields OUTSIDE features.slash_commands
-have drifted from local — pass --allow-non-command-drift to opt into a
-full-manifest replace.
-
-The Slack configuration access token (xoxe.xoxp-...) is read from the
-SLACK_CONFIG_ACCESS_TOKEN environment variable, or from --token. Token
-values never appear in error or log output.
-
-Schema: https://api.slack.com/methods/apps.manifest.update
-
-```
-gc slack sync-commands [flags]
-```
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `--allow-non-command-drift` | bool |  | Allow the push when non-command manifest fields differ from local |
-| `--app-id` | string |  | Slack app id, e.g. A0123456 (required) |
-| `--dry-run` | bool |  | Print the diff and exit without calling apps.manifest.update |
-| `--output` | string | `text` | Output format: text\|json |
-| `--timeout` | duration | `30s` | Hard timeout for the entire operation |
-| `--token` | string |  | Slack configuration access token (xoxe.xoxp-...). Falls back to SLACK_CONFIG_ACCESS_TOKEN |
-| `--workspace-id` | string |  | Slack workspace (team) id, e.g. T0123456 (required; defaults to $SLACK_WORKSPACE_ID when set) |
-
 ## gc sling
 
 Route a bead to a session config or agent using the target's sling_query.
@@ -2784,6 +2714,7 @@ gc sling [target] <bead-or-formula-or-text> [flags]
 | `--nudge` | bool |  | nudge target after routing |
 | `--on` | string |  | attach wisp from formula to bead before routing |
 | `--owned` | bool |  | mark auto-convoy as owned (skip auto-close) |
+| `--reassign` | bool |  | clear any existing human assignee before routing (for human→pool handoff) |
 | `--scope-kind` | string |  | logical workflow scope kind for graph.v2 launches |
 | `--scope-ref` | string |  | logical workflow scope ref for graph.v2 launches |
 | `--stdin` | bool |  | read bead text from stdin (first line = title, rest = description) |

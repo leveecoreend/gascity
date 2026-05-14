@@ -285,34 +285,23 @@ func (p *Parser) Resolve(formula *Formula) (*Formula, error) {
 	return merged, nil
 }
 
-// loadFormula loads a formula by name from search paths.
-// Tries canonical TOML first (.toml), then JSON. Legacy infixed TOML is
-// rejected with a migration hint before canonical lookup proceeds.
+// loadFormula loads a formula by name from search paths. Search paths are
+// ordered lowest→highest priority (matching ComputeFormulaLayers); the
+// highest-priority path containing the formula wins. Within a single path,
+// canonical .toml beats legacy .formula.toml beats legacy .formula.json.
 func (p *Parser) loadFormula(name string) (*Formula, error) {
-	// Check cache first
 	if cached, ok := p.cache[name]; ok {
 		return cached, nil
 	}
 
-	for _, dir := range p.searchPaths {
-		legacyPath := filepath.Join(dir, name+FormulaLegacyExtTOML)
-		if _, err := os.Stat(legacyPath); err == nil {
-			return nil, fmt.Errorf("unsupported PackV1 formula path %s; rename to %s%s", legacyPath, name, FormulaExtTOML)
-		}
+	path, ok := Resolve(p.searchPaths, name)
+	if !ok {
+		return nil, fmt.Errorf("formula %q not found in search paths", name)
 	}
-
-	// Search for the formula file - try canonical TOML first, then JSON.
-	extensions := []string{FormulaExtTOML, FormulaExtJSON}
-	for _, dir := range p.searchPaths {
-		for _, ext := range extensions {
-			path := filepath.Join(dir, name+ext)
-			if _, err := os.Stat(path); err == nil {
-				return p.ParseFile(path)
-			}
-		}
+	if strings.HasSuffix(path, FormulaLegacyExtTOML) {
+		return nil, fmt.Errorf("unsupported PackV1 formula path %s; rename to %s%s", path, name, FormulaExtTOML)
 	}
-
-	return nil, fmt.Errorf("formula %q not found in search paths", name)
+	return p.ParseFile(path)
 }
 
 // LoadByName loads a formula by name from search paths.

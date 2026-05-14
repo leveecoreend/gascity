@@ -83,9 +83,14 @@ func computePoolDesiredStates(
 	trace *sessionReconcilerTraceCycle,
 ) []PoolDesiredState {
 	// Build reverse lookup: any identifier → session bead ID.
-	// Assignee on work beads may be a bead ID, session name, or alias.
+	// Assignee on work beads may be a bead ID, session name, alias, or
+	// a prior alias preserved in alias_history. Resume-tier dispatch
+	// drops in-progress work whose owning session can't be resolved
+	// from this map, so missing identities cause live sessions to look
+	// orphaned and let a duplicate spawn for the same bead.
 	assigneeToSessionBeadID := make(map[string]string)
 	sessionBeadTemplate := make(map[string]string)
+	namedSessionBeadIDs := make(map[string]bool)
 	for _, sb := range sessionBeads {
 		if sb.Status == "closed" {
 			continue
@@ -94,12 +99,11 @@ func computePoolDesiredStates(
 		if template != "" {
 			sessionBeadTemplate[sb.ID] = template
 		}
-		assigneeToSessionBeadID[sb.ID] = sb.ID
-		if sn := strings.TrimSpace(sb.Metadata["session_name"]); sn != "" {
-			assigneeToSessionBeadID[sn] = sb.ID
+		for _, id := range sessionBeadAssigneeIdentities(sb) {
+			assigneeToSessionBeadID[id] = sb.ID
 		}
-		if ni := strings.TrimSpace(sb.Metadata["configured_named_identity"]); ni != "" {
-			assigneeToSessionBeadID[ni] = sb.ID
+		if isNamedSessionBead(sb) {
+			namedSessionBeadIDs[sb.ID] = true
 		}
 	}
 
@@ -137,6 +141,15 @@ func computePoolDesiredStates(
 				continue
 			}
 			if sessionBeadID != "" {
+				// Named-session beads are materialized by the named-session
+				// loop in buildDesiredState, not by the pool path. Skipping
+				// here prevents realizePoolDesiredSessions from renaming the
+				// canonical named identity to a phantom "{name}-1" pool
+				// instance — which would create two desired sessions for the
+				// same agent even when max_active_sessions=1.
+				if namedSessionBeadIDs[sessionBeadID] {
+					continue
+				}
 				resumeRequests = append(resumeRequests, SessionRequest{
 					Template:      template,
 					BeadPriority:  beadPriority(wb),
