@@ -36,6 +36,27 @@ This proposal would also subsume the two legacy `gc pack` commands, `fetch` and
 All of this said, the main new concept in this proposal is a registry, so let's
 begin there.
 
+## Existing Registry-Related Artifacts
+
+This proposal is not claiming that the word `registry` is brand new inside the
+repo. The repo already contains a few registry-shaped concepts:
+
+- the machine-wide supervisor registry for cities and rigs under `~/.gc/`
+- bootstrap/internal pack artifacts named `import` and `registry`
+- older PackV2 docs that discuss implicit-import or local-registry ideas
+
+What does *not* exist yet is a clean, settled, user-facing package-registry
+contract for discovery and pack browsing. This proposal is about that public
+surface:
+
+- how registries are configured
+- how users search and inspect them
+- how registry results feed into the newer `gc pack` workflow
+
+So when this document says "registry", it means the proposed public package
+discovery model, not the pre-existing supervisor registry or bootstrap
+implementation artifacts.
+
 ## Registries
 
 A Gas City registry is simply a `registry.toml` file that is typically fetched
