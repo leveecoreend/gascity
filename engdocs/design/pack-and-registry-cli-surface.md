@@ -1,5 +1,5 @@
 ---
-title: "Pack and Registry CLI Surface"
+title: "Pack CLI and Pack Registry Surface"
 ---
 
 | Field | Value |
@@ -8,7 +8,7 @@ title: "Pack and Registry CLI Surface"
 | Date | 2026-04-16 |
 | Author(s) | D. Box |
 | Issue | — |
-| Scope | New pack/registry command surface and discovery model |
+| Scope | New pack CLI and pack registry discovery model |
 
 This proposal was originally drafted in a separate exploratory repository and
 is mirrored here so the design can be reviewed in the same repo that would
@@ -18,8 +18,8 @@ This document builds on the **PackV2** work from the 0.15.0 release and makes
 no change to package format or loader semantics.
 
 It does however do two things:
-1. Introduce the notion of a *registry* where Gas City packs can be published
-   and discovered.
+1. Introduce the notion of a *pack registry* where Gas City packs can be
+   published and discovered.
 2. Propose a coherent CLI interface across all package operations (discovery,
    import, upgrade, et al.)
 
@@ -33,8 +33,8 @@ path.
 This proposal would also subsume the two legacy `gc pack` commands, `fetch` and
 `list`, to land on a single coherent surface area.
 
-All of this said, the main new concept in this proposal is a registry, so let's
-begin there.
+All of this said, the main new concept in this proposal is a pack registry, so
+let's begin there.
 
 ## Existing Registry-Related Artifacts
 
@@ -45,7 +45,7 @@ repo. The repo already contains a few registry-shaped concepts:
 - bootstrap/internal pack artifacts named `import` and `registry`
 - older PackV2 docs that discuss implicit-import or local-registry ideas
 
-What does *not* exist yet is a clean, settled, user-facing package-registry
+What does *not* exist yet is a clean, settled, user-facing pack registry
 contract for discovery and pack browsing. This proposal is about that public
 surface:
 
@@ -53,14 +53,14 @@ surface:
 - how users search and inspect them
 - how registry results feed into the newer `gc pack` workflow
 
-So when this document says "registry", it means the proposed public package
+So when this document says "pack registry", it means the proposed public pack
 discovery model, not the pre-existing supervisor registry or bootstrap
 implementation artifacts.
 
 ## Registries
 
-A Gas City registry is simply a `registry.toml` file that is typically fetched
-over HTTP.
+A Gas City pack registry is simply a `registry.toml` file that is typically
+fetched over HTTP.
 
 A `registry.toml` file is a list of packages with a name, version info,
 description, and the URL of the source. Registries do not store packs; they are
@@ -160,7 +160,7 @@ This proposal keeps them under one top-level command surface:
 
 - `gc pack` owns package-to-package import graphs, fetched state, and upgrade
   flow
-- `gc pack registry` owns registry configuration and discovery
+- `gc pack registry` owns pack registry configuration and discovery
 
 The two sub-surfaces work in tandem: the result of a registry search is a
 qualified name that can be passed directly to the add command that creates the
