@@ -314,6 +314,7 @@ type AgentPatch struct {
 	SkillsAppend            *[]string         `json:"SkillsAppend"`
 	SleepAfterIdle          *string           `json:"SleepAfterIdle"`
 	StartCommand            *string           `json:"StartCommand"`
+	StartGate               *string           `json:"StartGate"`
 	Suspended               *bool             `json:"Suspended"`
 	WakeMode                *string           `json:"WakeMode"`
 	WorkDir                 *string           `json:"WorkDir"`
@@ -332,6 +333,9 @@ type AgentPatchSetInputBody struct {
 
 	// Scope Override agent scope.
 	Scope *string `json:"scope,omitempty"`
+
+	// StartGate Override start gate command.
+	StartGate *string `json:"start_gate,omitempty"`
 
 	// Suspended Override suspended state.
 	Suspended *bool `json:"suspended,omitempty"`

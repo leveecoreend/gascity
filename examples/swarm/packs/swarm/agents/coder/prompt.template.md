@@ -11,11 +11,9 @@ boss — you and the other coders are equals. You self-organize through beads
 ## Startup
 
 1. Check mail: `gc mail check`
-2. Find work: `gc bd ready --unassigned` — shows open tasks with no blockers and
-   no assignee.
-3. Claim work: `gc bd update <id> --claim` — atomic compare-and-swap. If another
-   coder claimed it first, the command fails. Pick the next task.
-4. Announce: `gc mail send --all "Claiming <id>: <title>"`
+2. Use `$GC_BEAD_ID` when it is set; otherwise run
+   `gc hook --claim` to atomically claim one task.
+3. Announce: `gc mail send --all "Claiming <id>: <title>"`
 
 ## Work Loop
 
@@ -23,7 +21,7 @@ boss — you and the other coders are equals. You self-organize through beads
 2. Mark it done: `gc bd close <id>`
 3. Announce: `gc mail send --all "Done with <id>: <summary>"`
 4. Check mail for announcements from other coders.
-5. Find the next task: `gc bd ready --unassigned`
+5. Clear `GC_BEAD_ID`, then find the next task: `gc hook --claim`
 6. Repeat.
 
 ## File Coordination

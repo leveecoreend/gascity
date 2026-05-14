@@ -64,6 +64,7 @@ func NewProviderWithConfig(cfg Config) *Provider {
 // being set; an agent with no startup hints gets fire-and-forget.
 func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) error {
 	var err error
+	cfg = runtime.SyncWorkDirEnv(cfg)
 	cfg.Env, err = ensureInstanceToken(cfg.Env)
 	if err != nil {
 		return fmt.Errorf("ensuring instance token: %w", err)
@@ -644,35 +645,46 @@ func (o *tmuxStartOps) setRemainOnExit(name string) error {
 }
 
 func (o *tmuxStartOps) runSetupCommand(ctx context.Context, cmd string, env map[string]string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	c := exec.CommandContext(ctx, "sh", "-c", cmd)
-	if workDir := strings.TrimSpace(env["GC_DIR"]); workDir != "" {
-		c.Dir = workDir
-	}
-	c.Env = os.Environ()
+	setupEnv := make(map[string]string, len(env)+1)
 	for k, v := range env {
-		c.Env = append(c.Env, k+"="+v)
+		setupEnv[k] = v
 	}
 	// Expose the tmux socket name so session_setup scripts can use
 	// "tmux -L $GC_TMUX_SOCKET" to reach the correct server.
 	if o.tm.cfg.SocketName != "" {
-		c.Env = append(c.Env, "GC_TMUX_SOCKET="+o.tm.cfg.SocketName)
+		setupEnv["GC_TMUX_SOCKET"] = o.tm.cfg.SocketName
 	}
-	return c.Run()
+	return runtime.RunSetupCommand(ctx, cmd, setupEnv, timeout)
 }
 
 // doStartSession is the pure startup orchestration logic.
 // Testable via fakeStartOps without a real tmux server.
 // The setupTimeout parameter controls the per-command timeout for
 // session_setup, session_setup_script, and pre_start commands.
-func doStartSession(ctx context.Context, ops startOps, name string, cfg runtime.Config, setupTimeout time.Duration) error {
+func doStartSession(ctx context.Context, ops startOps, name string, cfg runtime.Config, setupTimeout time.Duration) (err error) {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	startGateComplete := false
+	defer func() {
+		if err != nil && startGateComplete && !errors.Is(err, runtime.ErrStartGateDeclined) {
+			err = runtime.WithStartGateEnv(err, cfg.StartGateEnv)
+		}
+	}()
+
+	// Step 0: Run start_gate (generic admission check).
+	cfg, err = runtime.RunStartGate(ctx, cfg, setupTimeout, ops.runSetupCommand)
+	if err != nil {
+		return err
+	}
+	startGateComplete = true
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 
-	// Step 0: Run pre-start commands (directory/worktree preparation).
-	if err := runPreStart(ctx, ops, name, cfg, setupTimeout); err != nil {
+	// Step 0.5: Run pre-start commands (directory/worktree preparation).
+	cfg, err = runtime.RunPreStart(ctx, cfg, setupTimeout, ops.runSetupCommand)
+	if err != nil {
 		return fmt.Errorf("running pre_start: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -692,7 +704,7 @@ func doStartSession(ctx context.Context, ops startOps, name string, cfg runtime.
 
 	hasHints := cfg.ReadyPromptPrefix != "" || cfg.ReadyDelayMs > 0 ||
 		len(cfg.ProcessNames) > 0 || cfg.EmitsPermissionWarning ||
-		cfg.Nudge != "" || len(cfg.PreStart) > 0 || len(cfg.SessionSetup) > 0 || cfg.SessionSetupScript != "" ||
+		cfg.Nudge != "" || cfg.StartGate != "" || len(cfg.PreStart) > 0 || len(cfg.SessionSetup) > 0 || cfg.SessionSetupScript != "" ||
 		len(cfg.SessionLive) > 0
 
 	if !hasHints {
@@ -826,26 +838,6 @@ func runSessionLive(ctx context.Context, ops startOps, name string, cfg runtime.
 			_, _ = fmt.Fprintf(stderr, "gc: session_live[%d] warning: %v\n", i, err)
 		}
 	}
-}
-
-// runPreStart runs pre_start commands before session creation.
-// Used for directory/worktree preparation. Failures are fatal because
-// launching into an unprepared workDir can point agents at the wrong repo or
-// skip required bootstrap state entirely.
-func runPreStart(ctx context.Context, ops startOps, _ string, cfg runtime.Config, setupTimeout time.Duration) error {
-	if len(cfg.PreStart) == 0 {
-		return nil
-	}
-	setupEnv := make(map[string]string, len(cfg.Env))
-	for k, v := range cfg.Env {
-		setupEnv[k] = v
-	}
-	for i, cmd := range cfg.PreStart {
-		if err := ops.runSetupCommand(ctx, cmd, setupEnv, setupTimeout); err != nil {
-			return fmt.Errorf("pre_start[%d]: %w", i, err)
-		}
-	}
-	return nil
 }
 
 // ensureFreshSession creates a session, handling stale tmux state.

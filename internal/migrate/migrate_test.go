@@ -590,6 +590,7 @@ func TestAgentConfigFromAgentCoversPersistedFields(t *testing.T) {
 		WorkDir:                ".gc/agents/worker",
 		Scope:                  "city",
 		Suspended:              true,
+		StartGate:              "gc hook --claim --start-gate",
 		PreStart:               []string{"pre-cmd"},
 		PromptTemplate:         "prompts/worker.md",
 		Nudge:                  "nudge text",

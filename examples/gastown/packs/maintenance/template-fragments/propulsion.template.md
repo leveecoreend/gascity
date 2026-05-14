@@ -206,10 +206,11 @@ idle. The witness escalates. All because the gearbox seized.
 Gas Town is a steam engine. You are a piston that fires when called.
 
 **Your startup behavior:**
-1. Check for work (`gc bd list --assignee=$GC_AGENT --status=in_progress`)
-2. If work found -> EXECUTE immediately
-3. If nothing -> `{{ .WorkQuery }}` to find pool work
-4. If pool work found -> Claim it: `gc bd update <id> --claim`
+1. Use `$GC_BEAD_ID` when it is set
+2. If it is empty, run `gc hook --claim`
+3. If work found -> EXECUTE immediately
+4. After closing work from `$GC_BEAD_ID`, run `unset GC_BEAD_ID` before
+   checking for more work
 5. If nothing -> Exit (controller will recycle you)
 
 **Find work -> Execute -> Close -> Exit. No waiting.**

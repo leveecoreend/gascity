@@ -524,6 +524,9 @@ func explainAgent(w io.Writer, a *config.Agent, prov *config.Provenance) {
 	if a.Suspended {
 		explainField(w, "suspended", "true", source)
 	}
+	if a.StartGate != "" {
+		explainField(w, "start_gate", a.StartGate, source)
+	}
 	if len(a.PreStart) > 0 {
 		explainField(w, "pre_start", fmt.Sprintf("[%d commands]", len(a.PreStart)), source)
 	}

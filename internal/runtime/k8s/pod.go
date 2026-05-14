@@ -20,6 +20,20 @@ import (
 const (
 	podManagedDoltHost = "dolt.gc.svc.cluster.local"
 	podManagedDoltPort = "3307"
+
+	podStartGateDir          = "/tmp/gc-start-gate"
+	podStartGateEnvPath      = podStartGateDir + "/env"
+	podStartGateDeclinedPath = podStartGateDir + "/declined"
+	podStartGateFailedPath   = podStartGateDir + "/failed"
+	podStartGateTmuxEnvPath  = podStartGateDir + "/tmux-env"
+
+	podPreStartDir        = "/tmp/gc-pre-start"
+	podPreStartFailedPath = podPreStartDir + "/failed"
+)
+
+const (
+	podPersistGCBeadIDInTmux      = `case "${GC_BEAD_ID:-}" in ""|*[!A-Za-z0-9_.:-]*) ;; *) tmux set-environment -t main GC_BEAD_ID "$GC_BEAD_ID" ;; esac; `
+	podPersistGCBeadIDInTmuxForSu = `case \"${GC_BEAD_ID:-}\" in \"\"|*[!A-Za-z0-9_.:-]*) ;; *) tmux set-environment -t main GC_BEAD_ID \"$GC_BEAD_ID\" ;; esac; `
 )
 
 func controllerCityPath(cfgEnv map[string]string) string {
@@ -106,6 +120,66 @@ func projectControllerRuntimePathToPod(path, ctrlCity, ctrlRuntimeDir, podRuntim
 	return path
 }
 
+func buildPodStartGateCommand(startGate string, ctrlCity string) string {
+	startGate = strings.TrimSpace(startGate)
+	if startGate == "" {
+		return ""
+	}
+	if ctrlCity != "" {
+		startGate = strings.ReplaceAll(startGate, ctrlCity, "/workspace")
+	}
+	b64 := base64.StdEncoding.EncodeToString([]byte(startGate))
+	var cmd strings.Builder
+	fmt.Fprintf(&cmd, "mkdir -p %s && chmod 0755 %s && rm -f %s %s %s\n", podStartGateDir, podStartGateDir, podStartGateEnvPath, podStartGateDeclinedPath, podStartGateFailedPath)
+	fmt.Fprintf(&cmd, "GC_START_ENV=%s\nexport GC_START_ENV\n", podStartGateEnvPath)
+	cmd.WriteString(`rm -f "$GC_START_ENV"
+_gc_start_gate_status=0
+_gc_start_gate_wrote_env=0
+`)
+	fmt.Fprintf(&cmd, "echo '%s' | base64 -d | sh || _gc_start_gate_status=$?\n", b64)
+	fmt.Fprintf(&cmd, `if [ -s "$GC_START_ENV" ]; then
+  _gc_start_gate_env="$GC_START_ENV.sh"
+  rm -f "$_gc_start_gate_env"
+  if ! "${GC_BIN:-gc}" internal start-gate-env "$GC_START_ENV" > "$_gc_start_gate_env"; then
+    touch %s; sleep infinity
+  fi
+  . "$_gc_start_gate_env"
+  _gc_start_gate_wrote_env=1
+fi
+if [ "$_gc_start_gate_status" -eq 0 ]; then
+  :
+elif [ "$_gc_start_gate_status" -eq 1 ] && [ "$_gc_start_gate_wrote_env" -eq 0 ]; then
+  touch %s; sleep infinity
+else
+  touch %s; sleep infinity
+fi
+unset GC_START_ENV
+`, podStartGateFailedPath, podStartGateDeclinedPath, podStartGateFailedPath)
+	return cmd.String()
+}
+
+func buildPodPreStartCommands(preStart []string, ctrlCity string) string {
+	if len(preStart) == 0 {
+		return ""
+	}
+	var preStartCmds strings.Builder
+	fmt.Fprintf(&preStartCmds, "mkdir -p %s && chmod 0755 %s && rm -f %s\n", podPreStartDir, podPreStartDir, podPreStartFailedPath)
+	for i, cmd := range preStart {
+		c := cmd
+		if ctrlCity != "" {
+			c = strings.ReplaceAll(c, ctrlCity, "/workspace")
+		}
+		b64 := base64.StdEncoding.EncodeToString([]byte(c))
+		writePodPreStartCommand(&preStartCmds, i, b64)
+	}
+	return preStartCmds.String()
+}
+
+func writePodPreStartCommand(dst *strings.Builder, index int, commandB64 string) {
+	fmt.Fprintf(dst, "# pre_start[%d]\n", index)
+	fmt.Fprintf(dst, "echo '%s' | base64 -d | sh || { touch %s; sleep infinity; }\n", commandB64, podPreStartFailedPath)
+}
+
 // projectedPodDoltEnv adapts the controller projection to a pod-visible Dolt
 // target. Managed-local controller projections intentionally omit GC_DOLT_HOST
 // and use a host-local runtime port; pods translate that blank-host managed
@@ -188,18 +262,12 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 	}
 	cmdB64 := base64.StdEncoding.EncodeToString([]byte(agentCmd))
 
-	// Pod entrypoint: wait for workspace ready → pre_start → tmux → keepalive.
-	// Each pre_start command is base64-encoded and decoded at runtime to prevent
-	// shell metacharacter injection from user-supplied commands.
-	var preStartCmds string
-	for _, cmd := range cfg.PreStart {
-		c := cmd
-		if ctrlCity != "" {
-			c = strings.ReplaceAll(c, ctrlCity, "/workspace")
-		}
-		b64 := base64.StdEncoding.EncodeToString([]byte(c))
-		preStartCmds += fmt.Sprintf("echo '%s' | base64 -d | sh; ", b64)
-	}
+	// Pod entrypoint: wait for workspace ready → start_gate → pre_start →
+	// tmux → keepalive. User commands are base64-encoded and decoded at
+	// runtime to prevent shell metacharacter injection.
+	startGateCmds := buildPodStartGateCommand(cfg.StartGate, ctrlCity)
+	preStartCmds := buildPodPreStartCommands(cfg.PreStart, ctrlCity)
+	startupCmds := startGateCmds + preStartCmds
 
 	// Dynamic user creation: when LINUX_USERNAME is set, the container starts
 	// as root (see securityContext below), creates the user, sets up workspace
@@ -227,17 +295,37 @@ func buildPod(name string, cfg runtime.Config, p *Provider) (*corev1.Pod, error)
 	var tmuxCmd string
 	if linuxUsername != "" {
 		// Run tmux session as the dynamic user via su.
-		tmuxCmd = fmt.Sprintf(
-			"%s%s%s%sCMD=$(echo '%s' | base64 -d) && "+
-				`su - %s -c "cd %s && tmux new-session -d -s %s \"$CMD\" && sleep infinity"`,
-			userSetup, credCopy, wsWait, preStartCmds, cmdB64,
-			linuxUsername, podWorkDir, tmuxSession,
-		)
+		if startupCmds != "" {
+			tmuxEnvExport := fmt.Sprintf(
+				`rm -f %s; if [ -f %s.sh ]; then cp %s.sh %s && chmod 0644 %s; fi; `,
+				podStartGateTmuxEnvPath, podStartGateEnvPath, podStartGateEnvPath, podStartGateTmuxEnvPath, podStartGateTmuxEnvPath,
+			)
+			tmuxCmd = fmt.Sprintf(
+				"%s%s%s%s%sCMD=$(echo '%s' | base64 -d) && "+
+					`su - %s -c "cd %s && if [ -f %s ]; then . %s; fi; tmux new-session -d -s %s \"$CMD\" && %s" || { touch %s; sleep infinity; }; sleep infinity`,
+				userSetup, credCopy, wsWait, startupCmds, tmuxEnvExport, cmdB64,
+				linuxUsername, podWorkDir, podStartGateTmuxEnvPath, podStartGateTmuxEnvPath, tmuxSession, podPersistGCBeadIDInTmuxForSu, podPreStartFailedPath,
+			)
+		} else {
+			tmuxCmd = fmt.Sprintf(
+				"%s%s%s%sCMD=$(echo '%s' | base64 -d) && "+
+					`su - %s -c "cd %s && tmux new-session -d -s %s \"$CMD\" && sleep infinity"`,
+				userSetup, credCopy, wsWait, startupCmds, cmdB64,
+				linuxUsername, podWorkDir, tmuxSession,
+			)
+		}
 	} else {
-		tmuxCmd = fmt.Sprintf(
-			"%s%s%sCMD=$(echo '%s' | base64 -d) && tmux new-session -d -s %s \"$CMD\" && sleep infinity",
-			credCopy, wsWait, preStartCmds, cmdB64, tmuxSession,
-		)
+		if startupCmds != "" {
+			tmuxCmd = fmt.Sprintf(
+				"%s%s%sCMD=$(echo '%s' | base64 -d) && if tmux new-session -d -s %s \"$CMD\"; then %ssleep infinity; else touch %s; sleep infinity; fi",
+				credCopy, wsWait, startupCmds, cmdB64, tmuxSession, podPersistGCBeadIDInTmux, podPreStartFailedPath,
+			)
+		} else {
+			tmuxCmd = fmt.Sprintf(
+				"%s%s%sCMD=$(echo '%s' | base64 -d) && tmux new-session -d -s %s \"$CMD\" && sleep infinity",
+				credCopy, wsWait, startupCmds, cmdB64, tmuxSession,
+			)
+		}
 	}
 
 	// Build environment, remapping K8s-specific vars.

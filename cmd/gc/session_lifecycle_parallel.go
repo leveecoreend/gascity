@@ -38,6 +38,8 @@ const (
 	// before checking if it died immediately (stale resume key detection).
 	// Matches the same constant in internal/session/chat.go.
 	staleKeyDetectDelay = 2 * time.Second
+
+	startGateDeclinedRetryDelay = 15 * time.Second
 )
 
 type asyncStartLimiter struct {
@@ -957,12 +959,20 @@ func runPreparedStartCandidate(
 		}
 		if err != nil || !running || !alive {
 			err = fmt.Errorf("session %q died during startup", item.candidate.name())
+			err = withRuntimeStartGateEnv(err, sp, item.candidate.name())
 		}
 		phases.PostStartObserve = time.Since(postStartBegin)
 	}
 	finished := time.Now()
 	rollbackPending := err != nil && shouldRollbackPendingCreate(item.candidate.session)
 	rateLimitScreen := err != nil && startupRateLimitScreenDetected(item, cityPath, sp, store, cfg)
+	if errors.Is(err, runtime.ErrStartGateDeclined) {
+		rollbackPending = false
+		rateLimitScreen = false
+	}
+	if err != nil && (preparedStartHasActiveBead(item, err) || preparedStartHasAssignedWork(item, store)) {
+		rollbackPending = false
+	}
 	if err != nil && rollbackPending && !rateLimitScreen && runningSessionMatchesPendingCreate(item.candidate.session, item.candidate.name(), sp) {
 		return startResult{
 			prepared:        item,
@@ -979,6 +989,8 @@ func runPreparedStartCandidate(
 	case errors.Is(err, runtime.ErrSessionInitializing):
 		outcome = "session_initializing"
 		err = nil
+	case errors.Is(err, runtime.ErrStartGateDeclined):
+		outcome = "start_gate_declined"
 	case startCtxErr == context.DeadlineExceeded:
 		outcome = "deadline_exceeded"
 		if err == nil {
@@ -1019,6 +1031,62 @@ func runPreparedStartCandidate(
 		rateLimitScreen: rateLimitScreen,
 		phases:          phases,
 	}
+}
+
+func preparedStartHasActiveBead(item preparedStart, err error) bool {
+	if item.cfg.Env == nil {
+		return strings.TrimSpace(runtime.StartGateErrorEnv(err)["GC_BEAD_ID"]) != ""
+	}
+	if strings.TrimSpace(item.cfg.Env["GC_BEAD_ID"]) != "" {
+		return true
+	}
+	return strings.TrimSpace(runtime.StartGateErrorEnv(err)["GC_BEAD_ID"]) != ""
+}
+
+func preparedStartHasAssignedWork(item preparedStart, store beads.Store) bool {
+	if store == nil || item.candidate.session == nil {
+		return false
+	}
+	identities := []string{
+		strings.TrimSpace(item.candidate.session.ID),
+		strings.TrimSpace(item.candidate.session.Metadata["session_name"]),
+		strings.TrimSpace(item.candidate.name()),
+	}
+	for _, identity := range identities {
+		if identity == "" {
+			continue
+		}
+		for _, status := range []string{"in_progress", "open"} {
+			items, err := store.ListByAssignee(identity, status, 1)
+			if err != nil {
+				return true
+			}
+			for _, item := range items {
+				if item.Type == sessionBeadType || item.Status == "closed" {
+					continue
+				}
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func withRuntimeStartGateEnv(err error, sp runtime.Provider, name string) error {
+	if err == nil || sp == nil {
+		return err
+	}
+	if strings.TrimSpace(runtime.StartGateErrorEnv(err)["GC_BEAD_ID"]) != "" {
+		return err
+	}
+	beadID, metaErr := sp.GetMeta(name, "GC_BEAD_ID")
+	if metaErr != nil || strings.TrimSpace(beadID) == "" {
+		return err
+	}
+	if validateErr := runtime.ValidateStartGateEnv("GC_BEAD_ID", beadID); validateErr != nil {
+		return err
+	}
+	return runtime.WithStartGateEnv(err, map[string]string{"GC_BEAD_ID": beadID})
 }
 
 func startupRateLimitScreenDetected(
@@ -1401,6 +1469,24 @@ func commitStartResultTraced(
 		logLifecycleOutcome(stderr, "start", wave, name, tp.TemplateName, result.outcome, result.started, result.finished, nil, result.phases)
 		return false
 	}
+	if result.outcome == "start_gate_declined" || errors.Is(result.err, runtime.ErrStartGateDeclined) {
+		reason := "start_gate_declined"
+		metadata := sessionpkg.SleepPatch(clk.Now(), reason)
+		metadata["held_until"] = clk.Now().Add(startGateDeclinedRetryDelay).UTC().Format(time.RFC3339)
+		if err := store.SetMetadataBatch(session.ID, metadata); err != nil {
+			fmt.Fprintf(stderr, "session reconciler: recording start_gate decline for %s: %v\n", name, err) //nolint:errcheck
+			logLifecycleOutcome(stderr, "start", wave, name, tp.TemplateName, "start_gate_decline_metadata_failed", result.started, result.finished, err, result.phases)
+			return false
+		}
+		if session.Metadata == nil {
+			session.Metadata = make(map[string]string, len(metadata))
+		}
+		for key, value := range metadata {
+			session.Metadata[key] = value
+		}
+		logLifecycleOutcome(stderr, "start", wave, name, tp.TemplateName, "start_gate_declined", result.started, result.finished, nil, result.phases)
+		return false
+	}
 	if result.err != nil {
 		fmt.Fprintf(stderr, "session reconciler: starting %s: %s\n", name, formatLifecycleError(result.err)) //nolint:errcheck
 		if result.rateLimitScreen {
@@ -1655,7 +1741,7 @@ func rollbackPendingCreate(session *beads.Bead, store beads.Store, now time.Time
 			session.Metadata["session_name"] = ""
 		}
 	}
-	closeBead(store, session.ID, string(sessionpkg.StateFailedCreate), now, stderr)
+	closeBeadWithMetadata(store, session.ID, string(sessionpkg.StateFailedCreate), now, nil, stderr)
 }
 
 func executePlannedStarts(

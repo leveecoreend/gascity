@@ -113,6 +113,9 @@ func startupRuntimeConfigMaterializationResult(tc phase2ProviderCase, tp Templat
 	case cfg.Nudge != "nudge-"+tc.family:
 		return workertest.Fail(tc.profileID, workertest.RequirementStartupRuntimeConfigMaterialization,
 			fmt.Sprintf("cfg.Nudge = %q, want %q", cfg.Nudge, "nudge-"+tc.family)).WithEvidence(evidence)
+	case cfg.StartGate != "echo gate-"+tc.family:
+		return workertest.Fail(tc.profileID, workertest.RequirementStartupRuntimeConfigMaterialization,
+			fmt.Sprintf("cfg.StartGate = %q, want %q", cfg.StartGate, "echo gate-"+tc.family)).WithEvidence(evidence)
 	case !reflect.DeepEqual(cfg.PreStart, []string{"echo pre-" + tc.family}):
 		return workertest.Fail(tc.profileID, workertest.RequirementStartupRuntimeConfigMaterialization,
 			fmt.Sprintf("cfg.PreStart = %v, want %v", cfg.PreStart, []string{"echo pre-" + tc.family})).WithEvidence(evidence)
@@ -275,6 +278,7 @@ func phase2ConfigEvidence(tc phase2ProviderCase, tp TemplateParams, cfg runtime.
 	evidence["cfg_prompt_flag"] = cfg.PromptFlag
 	evidence["cfg_prompt_suffix"] = cfg.PromptSuffix
 	evidence["cfg_nudge"] = cfg.Nudge
+	evidence["cfg_start_gate"] = cfg.StartGate
 	evidence["cfg_ready_delay_ms"] = strconv.Itoa(cfg.ReadyDelayMs)
 	evidence["cfg_ready_prompt_prefix"] = cfg.ReadyPromptPrefix
 	evidence["cfg_process_names"] = strings.Join(cfg.ProcessNames, ",")

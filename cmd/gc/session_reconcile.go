@@ -749,7 +749,7 @@ func checkChurn(session *beads.Bead, cfg *config.City, alive bool, dt *drainTrac
 func isDeliberateSleepReason(reason string) bool {
 	switch strings.TrimSpace(reason) {
 	case "idle", "idle-timeout", "no-wake-reason", "config-drift", "drained",
-		sleepReasonCityStop, "user-hold", "wait-hold", "rate_limit":
+		sleepReasonCityStop, "user-hold", "wait-hold", "rate_limit", "start_gate_declined":
 		return true
 	default:
 		return false

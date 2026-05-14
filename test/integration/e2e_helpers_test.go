@@ -48,6 +48,7 @@ type e2eAgent struct {
 	PromptTemplate    string // path to prompt template
 	Env               map[string]string
 	InstallAgentHooks []string
+	StartGate         string
 	PreStart          []string
 	SessionSetup      []string
 	Pool              *e2ePool
@@ -227,6 +228,9 @@ func writeE2EAgentSections(b *strings.Builder, agents []e2eAgent) {
 		}
 		if len(a.InstallAgentHooks) > 0 {
 			fmt.Fprintf(b, "install_agent_hooks = [%s]\n", quoteSlice(a.InstallAgentHooks))
+		}
+		if a.StartGate != "" {
+			fmt.Fprintf(b, "start_gate = %s\n", quote(a.StartGate))
 		}
 		if len(a.PreStart) > 0 {
 			fmt.Fprintf(b, "pre_start = [%s]\n", quoteSlice(a.PreStart))

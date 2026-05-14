@@ -14,8 +14,8 @@ import (
 // the agent should be restarted (via drain when drain ops are available).
 //
 // Included: Command, Env, FingerprintExtra (pool config, etc.),
-// PreStart, SessionSetup, SessionSetupScript, OverlayDir, effective provider
-// overlay slots, CopyFiles, SessionLive.
+// StartGate, PreStart, SessionSetup, SessionSetupScript, OverlayDir,
+// effective provider overlay slots, CopyFiles, SessionLive.
 //
 // Excluded (observation-only hints): WorkDir, ReadyPromptPrefix,
 // ReadyDelayMs, ProcessNames, EmitsPermissionWarning.
@@ -134,6 +134,9 @@ func hashCoreFields(h hash.Hash, cfg Config) {
 		h.Write([]byte{0})    //nolint:errcheck // hash.Write never errors
 		hashSortedMap(h, cfg.FingerprintExtra)
 	}
+
+	h.Write([]byte(cfg.StartGate)) //nolint:errcheck // hash.Write never errors
+	h.Write([]byte{0})             //nolint:errcheck // hash.Write never errors
 
 	// PreStart
 	for _, ps := range cfg.PreStart {
@@ -290,6 +293,10 @@ func CoreFingerprintBreakdown(cfg Config) map[string]string {
 				hashSortedMap(h, cfg.FingerprintExtra)
 			}
 		}),
+		"StartGate": fieldHash(func(h hash.Hash) {
+			h.Write([]byte(cfg.StartGate))
+			h.Write([]byte{0})
+		}),
 		"PreStart": fieldHash(func(h hash.Hash) {
 			for _, ps := range cfg.PreStart {
 				h.Write([]byte(ps))
@@ -382,6 +389,8 @@ func LogCoreFingerprintDrift(w io.Writer, name string, storedBreakdown map[strin
 			fmt.Fprintf(w, "    MCPServers: %+v\n", NormalizeMCPServerConfigs(current.MCPServers)) //nolint:errcheck // best-effort diag
 		case "FPExtra":
 			fmt.Fprintf(w, "    FPExtra: %v (len=%d)\n", current.FingerprintExtra, len(current.FingerprintExtra)) //nolint:errcheck // best-effort diag
+		case "StartGate":
+			fmt.Fprintf(w, "    StartGate: %q\n", current.StartGate) //nolint:errcheck // best-effort diag
 		case "PreStart":
 			fmt.Fprintf(w, "    PreStart: %v\n", current.PreStart) //nolint:errcheck // best-effort diag
 		case "OverlayDir":

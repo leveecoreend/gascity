@@ -18,9 +18,9 @@ import (
 // a resolved template, optionally merged with overlay overrides. Only fields
 // that require a session restart when changed are included:
 //
-// Included: command, prompt content hash, sorted env, work_dir, pre_start,
-// session_setup, session_setup_script, session_live, overlay_dir, effective
-// provider overlay slots, copy_files.
+// Included: command, prompt content hash, sorted env, work_dir, start_gate,
+// pre_start, session_setup, session_setup_script, session_live, overlay_dir,
+// effective provider overlay slots, copy_files.
 //
 // Excluded: name, title, pool scaling, launch provider name outside overlay
 // fallback identity, rig name, and nudge. Nudge is treated as delivery-time
@@ -73,6 +73,10 @@ func canonicalConfigHash(params TemplateParams, overlay map[string]string) strin
 	}
 	h.Write([]byte(workDir)) //nolint:errcheck
 	h.Write([]byte{0})       //nolint:errcheck
+
+	// StartGate.
+	h.Write([]byte(params.Hints.StartGate)) //nolint:errcheck
+	h.Write([]byte{0})                      //nolint:errcheck
 
 	// PreStart.
 	for _, ps := range params.Hints.PreStart {

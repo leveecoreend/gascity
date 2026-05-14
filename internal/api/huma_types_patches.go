@@ -40,6 +40,7 @@ type AgentPatchSetInput struct {
 		WorkDir   *string           `json:"work_dir,omitempty" doc:"Override session working directory."`
 		Scope     *string           `json:"scope,omitempty" doc:"Override agent scope."`
 		Suspended *bool             `json:"suspended,omitempty" doc:"Override suspended state."`
+		StartGate *string           `json:"start_gate,omitempty" doc:"Override start gate command."`
 		Env       map[string]string `json:"env,omitempty" doc:"Override environment variables."`
 	}
 }

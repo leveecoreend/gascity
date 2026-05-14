@@ -233,7 +233,7 @@ sling_query = "bd update {} --assignee=worker"
 
 # Custom work query (the read side of dispatch).
 # Pool agents must set both sling_query and work_query, or neither.
-work_query = "bd ready --assignee=worker --limit=1"
+work_query = "bd ready --assignee=worker --json --limit=1"
 
 # Nudge text sent to wake the agent after routing.
 nudge = "Work slung. Check your hook."
@@ -246,7 +246,7 @@ Pool agents with default queries:
 name = "coder"
 pool = { min = 1, max = 3, check = "echo 2" }
 # Default sling_query: bd update {} --set-metadata gc.routed_to=coder
-# Default work_query:  bd ready --metadata-field gc.routed_to=coder --unassigned --limit=1
+# Default work_query:  bd ready --metadata-field gc.routed_to=coder --unassigned --json --limit=1
 ```
 
 System formulas are embedded in the `gc` binary and materialized to

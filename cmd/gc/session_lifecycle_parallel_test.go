@@ -3414,6 +3414,131 @@ func TestCommitStartResult_SessionInitializingClearsInFlightLease(t *testing.T) 
 	}
 }
 
+func TestCommitStartResult_StartGateDeclinedPreservesExistingClaim(t *testing.T) {
+	store := beads.NewMemStore()
+	clk := &clock.Fake{Time: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)}
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: creatingMeta(map[string]string{
+			"session_name":         "worker",
+			"template":             "worker",
+			"generation":           "2",
+			"continuation_epoch":   "1",
+			"instance_token":       "tok-worker",
+			"pending_create_claim": "true",
+			"last_woke_at":         clk.Now().Format(time.RFC3339),
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.Create(beads.Bead{
+		ID:       "bd-startgate-claimed",
+		Title:    "claimed before decline",
+		Type:     "task",
+		Assignee: session.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(claimed.ID, beads.UpdateOpts{Status: stringPtr("in_progress")}); err != nil {
+		t.Fatal(err)
+	}
+	result := startResult{
+		prepared: preparedStart{
+			candidate: startCandidate{
+				session: &session,
+				tp: TemplateParams{
+					Command:      "worker",
+					SessionName:  "worker",
+					TemplateName: "worker",
+				},
+			},
+		},
+		err:      runtime.ErrStartGateDeclined,
+		outcome:  "start_gate_declined",
+		started:  clk.Now(),
+		finished: clk.Now(),
+	}
+
+	if commitStartResult(result, store, clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
+		t.Fatal("start_gate decline should not count as a woke session")
+	}
+	updated, err := store.Get(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Status != "open" {
+		t.Fatalf("status = %q, want open", updated.Status)
+	}
+	if got := updated.Metadata["state"]; got != "asleep" {
+		t.Fatalf("state = %q, want asleep", got)
+	}
+	if got := updated.Metadata["sleep_reason"]; got != "start_gate_declined" {
+		t.Fatalf("sleep_reason = %q, want start_gate_declined", got)
+	}
+	if got := updated.Metadata["held_until"]; got != clk.Now().Add(startGateDeclinedRetryDelay).UTC().Format(time.RFC3339) {
+		t.Fatalf("held_until = %q, want start_gate decline retry delay", got)
+	}
+	if got := updated.Metadata["pending_create_claim"]; got != "" {
+		t.Fatalf("pending_create_claim = %q, want cleared", got)
+	}
+	updatedClaim, err := store.Get(claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedClaim.Status != "in_progress" || updatedClaim.Assignee != session.ID {
+		t.Fatalf("claimed work = status %q assignee %q, want preserved after declined start", updatedClaim.Status, updatedClaim.Assignee)
+	}
+}
+
+func TestCommitStartResult_StartGateDeclinedUsesStableSleepReason(t *testing.T) {
+	store := beads.NewMemStore()
+	clk := &clock.Fake{Time: time.Date(2026, 5, 12, 10, 0, 0, 0, time.UTC)}
+	session, err := store.Create(beads.Bead{
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: creatingMeta(map[string]string{
+			"session_name":         "worker",
+			"template":             "worker",
+			"pending_create_claim": "true",
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := startResult{
+		prepared: preparedStart{
+			candidate: startCandidate{
+				session: &session,
+				tp: TemplateParams{
+					Command:      "worker",
+					SessionName:  "worker",
+					TemplateName: "worker",
+				},
+			},
+		},
+		err:      runtime.ErrStartGateDeclined,
+		outcome:  "start_gate_declined",
+		started:  clk.Now(),
+		finished: clk.Now(),
+	}
+
+	if commitStartResult(result, store, clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
+		t.Fatal("start_gate decline should not count as a woke session")
+	}
+	updated, err := store.Get(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := updated.Metadata["sleep_reason"]; got != "start_gate_declined" {
+		t.Fatalf("sleep_reason = %q, want start_gate_declined", got)
+	}
+}
+
 func TestCommitStartResult_RollbackPendingErrorClearsInFlightLeaseWhenCloseFails(t *testing.T) {
 	store := &failingCloseStore{MemStore: beads.NewMemStore()}
 	clk := &clock.Fake{Time: time.Date(2026, 4, 28, 13, 0, 0, 0, time.UTC)}
@@ -3432,6 +3557,18 @@ func TestCommitStartResult_RollbackPendingErrorClearsInFlightLeaseWhenCloseFails
 		}),
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.Create(beads.Bead{
+		ID:       "bd-preserve-on-rollback-failure",
+		Title:    "claimed",
+		Type:     "task",
+		Assignee: session.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(claimed.ID, beads.UpdateOpts{Status: stringPtr("in_progress")}); err != nil {
 		t.Fatal(err)
 	}
 	result := startResult{
@@ -3470,6 +3607,465 @@ func TestCommitStartResult_RollbackPendingErrorClearsInFlightLeaseWhenCloseFails
 	}
 	if pendingCreateStartInFlight(updated, clk, 0) {
 		t.Fatal("rollback-pending error left the pending-create bead leased")
+	}
+	updatedClaim, err := store.Get(claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedClaim.Status != "in_progress" || updatedClaim.Assignee != session.ID {
+		t.Fatalf("claimed work = status %q assignee %q, want preserved while rollback failed", updatedClaim.Status, updatedClaim.Assignee)
+	}
+}
+
+func TestRunPreparedStartCandidate_PreservesClaimBeforeTerminalCommit(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	sp.StartErrors["worker"] = errors.New("provider unavailable")
+	clk := time.Date(2026, 5, 14, 9, 30, 0, 0, time.UTC)
+	session, err := store.Create(beads.Bead{
+		ID:     "gc-worker",
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: creatingMeta(map[string]string{
+			"session_name":         "worker",
+			"template":             "worker",
+			"instance_token":       "tok-worker",
+			"pending_create_claim": "true",
+			"last_woke_at":         clk.Format(time.RFC3339),
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.Create(beads.Bead{
+		ID:       "bd-retry",
+		Title:    "retry work",
+		Type:     "task",
+		Assignee: session.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(claimed.ID, beads.UpdateOpts{Status: stringPtr("in_progress")}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := runPreparedStartCandidate(context.Background(), preparedStart{
+		candidate: startCandidate{
+			session: &session,
+			tp: TemplateParams{
+				Command:      "worker",
+				SessionName:  "worker",
+				TemplateName: "worker",
+			},
+		},
+		cfg: runtime.Config{Command: "worker", Env: map[string]string{
+			"GC_SESSION_ID": session.ID,
+			"GC_BEAD_ID":    claimed.ID,
+		}},
+	}, "", sp, store, nil, time.Second)
+	if result.err == nil {
+		t.Fatal("runPreparedStartCandidate succeeded, want provider error")
+	}
+	if result.rollbackPending {
+		t.Fatal("rollbackPending = true, want active start_gate bead to keep the session retryable")
+	}
+	updatedClaim, err := store.Get(claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedClaim.Status != "in_progress" || updatedClaim.Assignee != session.ID {
+		t.Fatalf("claimed work = status %q assignee %q, want preserved before terminal commit", updatedClaim.Status, updatedClaim.Assignee)
+	}
+}
+
+func TestRunPreparedStartCandidate_PreservesClaimCarriedByStartGateEnv(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	clk := time.Date(2026, 5, 14, 9, 32, 0, 0, time.UTC)
+	session, err := store.Create(beads.Bead{
+		ID:     "gc-worker",
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: creatingMeta(map[string]string{
+			"session_name":         "worker",
+			"template":             "worker",
+			"instance_token":       "tok-worker",
+			"pending_create_claim": "true",
+			"last_woke_at":         clk.Format(time.RFC3339),
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.Create(beads.Bead{
+		ID:       "bd-startgate-error",
+		Title:    "claimed by start_gate",
+		Type:     "task",
+		Assignee: session.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(claimed.ID, beads.UpdateOpts{Status: stringPtr("in_progress")}); err != nil {
+		t.Fatal(err)
+	}
+	sp.StartErrors["worker"] = runtime.WithStartGateEnv(errors.New("provider unavailable"), map[string]string{
+		"GC_BEAD_ID": claimed.ID,
+	})
+
+	result := runPreparedStartCandidate(context.Background(), preparedStart{
+		candidate: startCandidate{
+			session: &session,
+			tp: TemplateParams{
+				Command:      "worker",
+				SessionName:  "worker",
+				TemplateName: "worker",
+			},
+		},
+		cfg: runtime.Config{Command: "worker", Env: map[string]string{
+			"GC_SESSION_ID": session.ID,
+		}},
+	}, "", sp, store, nil, time.Second)
+	if result.err == nil {
+		t.Fatal("runPreparedStartCandidate succeeded, want provider error")
+	}
+	if result.rollbackPending {
+		t.Fatal("rollbackPending = true, want start_gate env on provider error to keep the session retryable")
+	}
+}
+
+func TestRunPreparedStartCandidate_PreservesClaimDiscoveredFromAssignedWork(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	sp.StartErrors["worker"] = errors.New("provider unavailable")
+	clk := time.Date(2026, 5, 14, 9, 34, 0, 0, time.UTC)
+	session, err := store.Create(beads.Bead{
+		ID:     "gc-worker",
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: creatingMeta(map[string]string{
+			"session_name":         "worker",
+			"template":             "worker",
+			"instance_token":       "tok-worker",
+			"pending_create_claim": "true",
+			"last_woke_at":         clk.Format(time.RFC3339),
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.Create(beads.Bead{
+		ID:       "bd-assigned",
+		Title:    "claimed by start_gate",
+		Type:     "task",
+		Assignee: session.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(claimed.ID, beads.UpdateOpts{Status: stringPtr("in_progress")}); err != nil {
+		t.Fatal(err)
+	}
+
+	result := runPreparedStartCandidate(context.Background(), preparedStart{
+		candidate: startCandidate{
+			session: &session,
+			tp: TemplateParams{
+				Command:      "worker",
+				SessionName:  "worker",
+				TemplateName: "worker",
+			},
+		},
+		cfg: runtime.Config{Command: "worker", Env: map[string]string{
+			"GC_SESSION_ID": session.ID,
+		}},
+	}, "", sp, store, nil, time.Second)
+	if result.err == nil {
+		t.Fatal("runPreparedStartCandidate succeeded, want provider error")
+	}
+	if result.rollbackPending {
+		t.Fatal("rollbackPending = true, want assigned in-progress work to keep the session retryable")
+	}
+}
+
+func TestRunPreparedStartCandidate_PreservesPendingStartWhenAssignedWorkLookupFails(t *testing.T) {
+	sp := runtime.NewFake()
+	storeErr := errors.New("store unavailable")
+	clk := time.Date(2026, 5, 14, 9, 35, 0, 0, time.UTC)
+	session := beads.Bead{
+		ID:     "gc-worker",
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: creatingMeta(map[string]string{
+			"session_name":         "worker",
+			"template":             "worker",
+			"instance_token":       "tok-worker",
+			"pending_create_claim": "true",
+			"last_woke_at":         clk.Format(time.RFC3339),
+		}),
+	}
+
+	result := runPreparedStartCandidate(context.Background(), preparedStart{
+		candidate: startCandidate{
+			session: &session,
+			tp: TemplateParams{
+				Command:      "worker",
+				SessionName:  "worker",
+				TemplateName: "worker",
+			},
+		},
+		cfg: runtime.Config{Command: "worker", Env: map[string]string{
+			"GC_SESSION_ID": session.ID,
+		}},
+	}, "", sp, unavailableStore{err: storeErr}, nil, time.Second)
+	if result.err == nil {
+		t.Fatal("runPreparedStartCandidate succeeded, want store/provider error")
+	}
+	if result.rollbackPending {
+		t.Fatal("rollbackPending = true, want assigned-work lookup uncertainty to keep the session retryable")
+	}
+}
+
+func TestRunPreparedStartCandidate_PreservesClaimFromRuntimeAfterPostStartDeath(t *testing.T) {
+	sp := runtime.NewFake()
+	sp.Zombies["worker"] = true
+	if err := sp.SetMeta("worker", "GC_BEAD_ID", "bd-post-start"); err != nil {
+		t.Fatal(err)
+	}
+	session := beads.Bead{
+		ID:     "gc-worker",
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: creatingMeta(map[string]string{
+			"session_name":         "worker",
+			"template":             "worker",
+			"instance_token":       "tok-worker",
+			"pending_create_claim": "true",
+			"session_key":          "stale-provider-session",
+		}),
+	}
+
+	result := runPreparedStartCandidate(context.Background(), preparedStart{
+		candidate: startCandidate{
+			session: &session,
+			tp: TemplateParams{
+				Command:      "worker",
+				SessionName:  "worker",
+				TemplateName: "worker",
+			},
+		},
+		cfg: runtime.Config{
+			Command:      "worker",
+			ProcessNames: []string{"worker"},
+			Env: map[string]string{
+				"GC_SESSION_ID": session.ID,
+			},
+		},
+	}, "", sp, nil, nil, 5*time.Second)
+	if result.err == nil {
+		t.Fatal("runPreparedStartCandidate succeeded, want post-start death error")
+	}
+	if got := runtime.StartGateErrorEnv(result.err)["GC_BEAD_ID"]; got != "bd-post-start" {
+		t.Fatalf("StartGateErrorEnv GC_BEAD_ID = %q, want bd-post-start; err=%v", got, result.err)
+	}
+	if result.rollbackPending {
+		t.Fatal("rollbackPending = true, want runtime GC_BEAD_ID to keep the session retryable")
+	}
+}
+
+func TestCommitStartResult_RollbackPendingPreservesClaimAfterClose(t *testing.T) {
+	store := beads.NewMemStore()
+	clk := &clock.Fake{Time: time.Date(2026, 5, 14, 9, 35, 0, 0, time.UTC)}
+	session, err := store.Create(beads.Bead{
+		ID:     "gc-shortlived",
+		Title:  "shortlived",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: creatingMeta(map[string]string{
+			"session_name":         "shortlived",
+			"template":             "shortlived",
+			"instance_token":       "tok-shortlived",
+			"pending_create_claim": "true",
+			"last_woke_at":         clk.Now().Format(time.RFC3339),
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.Create(beads.Bead{
+		ID:       "bd-rollback-release",
+		Title:    "claimed",
+		Type:     "task",
+		Assignee: session.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(claimed.ID, beads.UpdateOpts{Status: stringPtr("in_progress")}); err != nil {
+		t.Fatal(err)
+	}
+	result := startResult{
+		prepared: preparedStart{
+			candidate: startCandidate{
+				session: &session,
+				tp: TemplateParams{
+					Command:      "exit 0",
+					SessionName:  "shortlived",
+					TemplateName: "shortlived",
+				},
+			},
+		},
+		err:             errors.New("session died during startup"),
+		outcome:         "provider_error",
+		started:         clk.Now(),
+		finished:        clk.Now(),
+		rollbackPending: true,
+	}
+
+	if commitStartResult(result, store, clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
+		t.Fatal("rollback-pending error should not count as committed")
+	}
+	updatedClaim, err := store.Get(claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedClaim.Status != "in_progress" || updatedClaim.Assignee != session.ID {
+		t.Fatalf("claimed work = status %q assignee %q, want preserved after rollback", updatedClaim.Status, updatedClaim.Assignee)
+	}
+}
+
+func TestCommitStartResult_RateLimitQuarantinePreservesClaim(t *testing.T) {
+	store := beads.NewMemStore()
+	clk := &clock.Fake{Time: time.Date(2026, 5, 14, 9, 40, 0, 0, time.UTC)}
+	session, err := store.Create(beads.Bead{
+		ID:     "gc-worker",
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: creatingMeta(map[string]string{
+			"session_name":         "worker",
+			"template":             "worker",
+			"pending_create_claim": "true",
+			"last_woke_at":         clk.Now().Format(time.RFC3339),
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.Create(beads.Bead{
+		ID:       "bd-rate-limit",
+		Title:    "claimed",
+		Type:     "task",
+		Assignee: session.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(claimed.ID, beads.UpdateOpts{Status: stringPtr("in_progress")}); err != nil {
+		t.Fatal(err)
+	}
+	result := startResult{
+		prepared: preparedStart{
+			candidate: startCandidate{
+				session: &session,
+				tp: TemplateParams{
+					Command:      "worker",
+					SessionName:  "worker",
+					TemplateName: "worker",
+				},
+			},
+		},
+		err:             errors.New("rate limited"),
+		outcome:         "provider_error",
+		started:         clk.Now(),
+		finished:        clk.Now(),
+		rollbackPending: true,
+		rateLimitScreen: true,
+	}
+
+	if commitStartResult(result, store, clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
+		t.Fatal("rate-limit start failure should not count as committed")
+	}
+	updatedClaim, err := store.Get(claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedClaim.Status != "in_progress" || updatedClaim.Assignee != session.ID {
+		t.Fatalf("claimed work = status %q assignee %q, want preserved after quarantine", updatedClaim.Status, updatedClaim.Assignee)
+	}
+}
+
+func TestCommitStartResult_RateLimitDoesNotStopRuntimeForClaimRelease(t *testing.T) {
+	store := beads.NewMemStore()
+	sp := runtime.NewFake()
+	clk := &clock.Fake{Time: time.Date(2026, 5, 14, 9, 42, 0, 0, time.UTC)}
+	session, err := store.Create(beads.Bead{
+		ID:     "gc-worker",
+		Title:  "worker",
+		Type:   sessionBeadType,
+		Labels: []string{sessionBeadLabel},
+		Metadata: creatingMeta(map[string]string{
+			"session_name":         "worker",
+			"template":             "worker",
+			"pending_create_claim": "true",
+			"last_woke_at":         clk.Now().Format(time.RFC3339),
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := store.Create(beads.Bead{
+		ID:       "bd-rate-limit",
+		Title:    "claimed",
+		Type:     "task",
+		Assignee: session.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(claimed.ID, beads.UpdateOpts{Status: stringPtr("in_progress")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sp.Start(context.Background(), "worker", runtime.Config{}); err != nil {
+		t.Fatal(err)
+	}
+	result := startResult{
+		prepared: preparedStart{
+			candidate: startCandidate{
+				session: &session,
+				tp: TemplateParams{
+					Command:      "worker",
+					SessionName:  "worker",
+					TemplateName: "worker",
+				},
+			},
+		},
+		err:             errors.New("rate limited"),
+		outcome:         "provider_error",
+		started:         clk.Now(),
+		finished:        clk.Now(),
+		rollbackPending: true,
+		rateLimitScreen: true,
+	}
+
+	if commitStartResult(result, store, clk, events.Discard, 0, ioDiscard{}, ioDiscard{}) {
+		t.Fatal("rate-limit start failure should not count as committed")
+	}
+	if !sp.IsRunning("worker") {
+		t.Fatal("worker runtime should not be stopped by claim cleanup")
+	}
+	updatedClaim, err := store.Get(claimed.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedClaim.Status != "in_progress" || updatedClaim.Assignee != session.ID {
+		t.Fatalf("claimed work = status %q assignee %q, want preserved", updatedClaim.Status, updatedClaim.Assignee)
 	}
 }
 
@@ -5234,6 +5830,7 @@ func TestPrepareStartCandidate_PreservesRuntimeConfigAndProviderEnv(t *testing.T
 			ProcessNames:           []string{"gemini", "node"},
 			EmitsPermissionWarning: true,
 			Nudge:                  "hello",
+			StartGate:              "gc hook --claim --start-gate",
 			PreStart:               []string{"echo pre"},
 			SessionSetup:           []string{"echo setup"},
 			SessionSetupScript:     "/tmp/setup.sh",

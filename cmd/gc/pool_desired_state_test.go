@@ -272,6 +272,27 @@ func TestComputePoolDesiredStates_MinFillsIdle(t *testing.T) {
 	}
 }
 
+func TestComputePoolDesiredStates_StartGateDeclinedReusesHeldSessionForMinFill(t *testing.T) {
+	cfg := &config.City{
+		Agents: []config.Agent{poolAgent("claude", "", nil, 1)},
+	}
+	session := poolSessionBeadWithState("gc-1", "asleep", "")
+	session.Metadata["sleep_reason"] = "start_gate_declined"
+
+	result := ComputePoolDesiredStates(cfg, nil, []beads.Bead{session}, nil)
+
+	if len(result) != 1 {
+		t.Fatalf("len(result) = %d, want existing start_gate-declined session request", len(result))
+	}
+	if len(result[0].Requests) != 1 {
+		t.Fatalf("len(requests) = %d, want existing start_gate-declined session request", len(result[0].Requests))
+	}
+	req := result[0].Requests[0]
+	if req.SessionBeadID != "gc-1" {
+		t.Fatalf("SessionBeadID = %q, want existing start_gate-declined session", req.SessionBeadID)
+	}
+}
+
 func TestComputePoolDesiredStates_MinRespectsMax(t *testing.T) {
 	cfg := &config.City{
 		Agents: []config.Agent{poolAgent("worker", "", intPtr(0), 5)},

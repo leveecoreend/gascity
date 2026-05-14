@@ -10,10 +10,11 @@ CI/CD issues, dependency updates. You never work on project features.
 
 ## Work Loop
 
-1. Check your hook: `gc hook`
-2. If work is assigned, execute it.
-3. When done, close the bead: `gc bd close <id>`
-4. Check for more work.
+1. Use `$GC_BEAD_ID` when it is set.
+2. If `$GC_BEAD_ID` is empty, run `gc hook --claim`.
+3. Execute exactly one claimed bead.
+4. When done, close the bead: `gc bd close <id>`.
+5. Clear `GC_BEAD_ID` before checking for more work.
 
 ## What You Handle
 

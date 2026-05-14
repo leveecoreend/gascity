@@ -792,6 +792,7 @@ func TestDeepCopyAgentCoversAllFields(t *testing.T) {
 		WorkDir:                      ".gc/agents/original",
 		Scope:                        "city",
 		Suspended:                    true,
+		StartGate:                    "gc hook --claim --start-gate",
 		PreStart:                     []string{"pre-cmd"},
 		PromptTemplate:               "prompts/test.md",
 		Nudge:                        "nudge text",

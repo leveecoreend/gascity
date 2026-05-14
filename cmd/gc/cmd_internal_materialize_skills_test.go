@@ -93,6 +93,85 @@ template = "mayor"
 	}
 }
 
+func TestInternalStartGateEnvRendersValidatedShellEnv(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), "start.env")
+	if err := os.WriteFile(envPath, []byte("GC_BEAD_ID=bd-1\nGC_ACTIVE_WORK_STATUS=claimed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"internal", "start-gate-env", envPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit %d: stderr=%q stdout=%q", code, stderr.String(), stdout.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"GC_BEAD_ID='bd-1'",
+		"export GC_BEAD_ID",
+		"GC_ACTIVE_WORK_STATUS='claimed'",
+		"export GC_ACTIVE_WORK_STATUS",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestInternalStartGateEnvRejectsInvalidEnvKey(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), "start.env")
+	if err := os.WriteFile(envPath, []byte("BAD-NAME=bd-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"internal", "start-gate-env", envPath}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("exit 0, want failure; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "" {
+		t.Fatalf("stdout = %q, want empty on validation failure", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "invalid env key") {
+		t.Fatalf("stderr = %q, want invalid env key error", stderr.String())
+	}
+}
+
+func TestInternalStartGateEnvAllowsReturnedMapToOverrideAmbientEnv(t *testing.T) {
+	t.Setenv("GC_BEAD_ID", "bd-1")
+	envPath := filepath.Join(t.TempDir(), "start.env")
+	if err := os.WriteFile(envPath, []byte("GC_BEAD_ID=bd-2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"internal", "start-gate-env", envPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit %d: stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "GC_BEAD_ID='bd-2'") {
+		t.Fatalf("stdout = %q, want returned env value", stdout.String())
+	}
+}
+
+func TestInternalStartGateEnvRejectsInvalidLine(t *testing.T) {
+	envPath := filepath.Join(t.TempDir(), "start.env")
+	if err := os.WriteFile(envPath, []byte("not-an-assignment\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"internal", "start-gate-env", envPath}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatalf("exit 0, want failure; stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "" {
+		t.Fatalf("stdout = %q, want empty on validation failure", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "expected KEY=VALUE") {
+		t.Fatalf("stderr = %q, want invalid line error", stderr.String())
+	}
+}
+
 func TestInternalMaterializeSkillsMaterializesImportedSharedSkills(t *testing.T) {
 	clearGCEnv(t)
 	rootDir := t.TempDir()

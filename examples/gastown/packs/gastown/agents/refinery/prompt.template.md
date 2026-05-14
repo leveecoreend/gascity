@@ -164,7 +164,7 @@ and then ignored by landing directly to the target branch.
 
 ```bash
 gc mail inbox                                          # Check for messages
-gc session nudge {{ .RigName }}/<polecat-name> "Run gc hook; it checks assigned work before routed pool work"
+gc session nudge {{ .RigName }}/<polecat-name> "Run gc hook --claim; it checks assigned work before routed pool work"
 gc mail send mayor/ -s "ESCALATION: ..." -m "..."      # Escalate (mail — must survive)
 ```
 

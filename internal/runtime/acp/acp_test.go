@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -115,6 +116,107 @@ func TestStart_HandshakeSuccess(t *testing.T) {
 
 	if !p.IsRunning(name) {
 		t.Error("IsRunning = false after Start, want true")
+	}
+}
+
+func TestStart_StartGateDeclineDoesNotLaunch(t *testing.T) {
+	p := newTestProvider(t)
+	name := testName()
+
+	err := p.Start(context.Background(), name, runtime.Config{
+		Command:   fakeACPShellCommand(),
+		StartGate: "exit 1",
+		WorkDir:   t.TempDir(),
+	})
+	if !errors.Is(err, runtime.ErrStartGateDeclined) {
+		t.Fatalf("Start error = %v, want ErrStartGateDeclined", err)
+	}
+	if p.IsRunning(name) {
+		t.Fatal("declined start created a running ACP session")
+	}
+}
+
+func TestStart_StartGateEnvPassedToProcess(t *testing.T) {
+	p := newTestProvider(t)
+	name := testName()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "bead.txt")
+
+	err := p.Start(context.Background(), name, runtime.Config{
+		Command:   "printf '%s' \"$GC_BEAD_ID\" > " + strconv.Quote(marker) + "; " + fakeACPShellCommand(),
+		StartGate: "printf 'GC_BEAD_ID=bd-acp\\n' > \"$GC_START_ENV\"",
+		WorkDir:   dir,
+		Env: map[string]string{
+			"GC_INSTANCE_TOKEN": "token-acp",
+			"GC_SESSION_ID":     "session-acp",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Stop(name) })
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(marker)
+		if err == nil && len(data) > 0 {
+			if got := string(data); got != "bd-acp" {
+				t.Fatalf("GC_BEAD_ID marker = %q, want bd-acp", got)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for start_gate env marker file")
+}
+
+func TestStart_StartGateEnvPersistsRuntimeMetadata(t *testing.T) {
+	p := newTestProvider(t)
+	name := testName()
+
+	err := p.Start(context.Background(), name, runtime.Config{
+		Command:   fakeACPShellCommand(),
+		StartGate: "printf 'GC_BEAD_ID=bd-acp\\n' > \"$GC_START_ENV\"",
+		WorkDir:   t.TempDir(),
+		Env: map[string]string{
+			"GC_INSTANCE_TOKEN": "token-acp",
+			"GC_SESSION_ID":     "session-acp",
+			"SECRET_TOKEN":      "do-not-persist",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Stop(name) })
+
+	for key, want := range map[string]string{
+		"GC_BEAD_ID":        "bd-acp",
+		"GC_INSTANCE_TOKEN": "token-acp",
+		"GC_SESSION_ID":     "session-acp",
+	} {
+		got, err := p.GetMeta(name, key)
+		if err != nil {
+			t.Fatalf("GetMeta(%q): %v", key, err)
+		}
+		if got != want {
+			t.Fatalf("GetMeta(%q) = %q, want %q", key, got, want)
+		}
+	}
+	for _, key := range []string{"SECRET_TOKEN"} {
+		got, err := p.GetMeta(name, key)
+		if err != nil {
+			t.Fatalf("GetMeta(%q): %v", key, err)
+		}
+		if got != "" {
+			t.Fatalf("GetMeta(%q) = %q, want empty", key, got)
+		}
+	}
+	info, err := os.Stat(p.metaPath(name, "GC_BEAD_ID"))
+	if err != nil {
+		t.Fatalf("stat GC_BEAD_ID metadata: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("GC_BEAD_ID metadata mode = %v, want 0600", got)
 	}
 }
 

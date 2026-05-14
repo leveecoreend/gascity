@@ -530,6 +530,8 @@ type AgentOverride struct {
 	Scope *string `toml:"scope,omitempty"`
 	// Suspended sets the agent's suspended state.
 	Suspended *bool `toml:"suspended,omitempty"`
+	// StartGate overrides the agent's start_gate command.
+	StartGate *string `toml:"start_gate,omitempty"`
 	// Pool overrides legacy [pool] fields that map to session scaling.
 	Pool *PoolOverride `toml:"pool,omitempty"`
 	// Env adds or overrides environment variables.
@@ -1744,6 +1746,10 @@ type Agent struct {
 	Scope string `toml:"scope,omitempty" jsonschema:"enum=city,enum=rig"`
 	// Suspended prevents the reconciler from spawning this agent. Toggle with gc agent suspend/resume.
 	Suspended bool `toml:"suspended,omitempty"`
+	// StartGate is a shell command run before pre_start. Exit 0 starts the
+	// session and may write validated env to $GC_START_ENV; exit 1 declines
+	// startup without quarantine; other exits are startup failures.
+	StartGate string `toml:"start_gate,omitempty"`
 	// PreStart is a list of shell commands run before session creation.
 	// Commands run on the target filesystem: locally for tmux, inside the
 	// pod/container for exec providers. Template variables same as session_setup.

@@ -15,7 +15,7 @@ These are required for any agent to do useful work.
 
 | Command | Description | Referenced in |
 |---------|-------------|---------------|
-| `gc hook` | **NEEDS IMPL:** Thin wrapper over bd protocol: (1) `bd list --assignee=$GC_AGENT --status=in_progress` (current work), (2) `bd ready --assignee=<pool>` (search pool), (3) `bd update <bead> --claim --assignee=$GC_AGENT` (atomic grab). Returns current/claimed bead or nothing. | All 8 prompts, most formulas |
+| ~~`gc hook --claim`~~ | **RESOLVED:** Runs the configured work query, atomically claims a bead with `bd update --claim`, and returns the current/claimed bead. Start-gate mode passes the claimed bead as `$GC_BEAD_ID`. | All 8 prompts, most formulas |
 | ~~`gc sling <bead> <rig>`~~ | **RESOLVED:** Use `bd update <bead> --assignee=<role>` + pool auto-scaling | mayor, deacon, convoy-feed, orphan-scan, session-gc |
 | ~~`gc done`~~ | **RESOLVED:** Push branch + `bd create --type=merge-request --assignee=refinery` + `bd close <work-bead>` + exit | polecat, dog |
 | ~~`gc nudge <target> "msg"`~~ | **RESOLVED:** Use `gc session nudge <name> <msg>` for message delivery. Scoped to health patrol (deacon/dog). Remove from mayor/crew/witness prompts. | mayor, deacon, witness, crew, refinery, boot-triage |

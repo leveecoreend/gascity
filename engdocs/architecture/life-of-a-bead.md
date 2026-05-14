@@ -111,14 +111,18 @@ operation" (forward compatible).
 A bead exists, but no agent knows about it yet. Discovery is how agents
 find work. Gas City uses the **pull model**: agents poll for available
 work rather than being pushed assignments. Routed agents normally discover
-work through the claim protocol rendered into the session startup prompt:
-the protocol calls `gc hook`, claims exactly one returned bead with
-`bd update --claim`, and then the agent works that claimed bead.
+work through the claim protocol. Session startup may run a generic
+`start_gate` such as `gc hook --claim --start-gate`; when it claims work, it
+writes env entries such as `GC_BEAD_ID=<id>` to `$GC_START_ENV` and the runtime
+starts the agent with that returned env map. The live prompt uses that bead
+first, and later calls `gc hook --claim` again after closing each item.
 
 ### The hook mechanism (gc hook)
 
 Every agent has a `work_query` config field. `gc hook`
-(`cmd/gc/cmd_hook.go`) runs that query for plain hook discovery. The flow:
+(`cmd/gc/cmd_hook.go`) runs that query for plain discovery; `gc hook --claim`
+runs the same query and atomically claims one item for the current session. The
+plain discovery flow:
 
 1. `cmdHook()` resolves the agent from `$GC_AGENT` or a positional arg
 2. Loads city config, checks suspension status
@@ -134,11 +138,18 @@ Both ultimately call `BdStore.Ready()` (`internal/beads/bdstore.go`, line
 385), which shells out to `bd ready --json --limit=0`. For pool agents,
 the bd CLI filters by label server-side.
 
-### The --inject mode
+### Claim mode and inject mode
+
+`gc hook --claim` is the active work pickup command. It first looks for work
+already assigned to `GC_SESSION_ID`, then runs the configured hook query and
+claims one claimable bead. In start-gate mode it writes the prompt-facing env
+handoff `GC_BEAD_ID=<id>` to `$GC_START_ENV`. Exit 1 means no claimable work and
+declines startup without quarantine; any other nonzero exit is a hard startup
+failure.
 
 `gc hook --inject` is legacy Stop-hook compatibility. It exits 0 without
 running the work query and emits no output. Routed discovery belongs in the
-session startup claim protocol or an explicit plain `gc hook` invocation.
+session startup claim protocol or an explicit `gc hook --claim` invocation.
 
 ### Ready() and GUPP
 
@@ -153,8 +164,9 @@ what to do.
 
 ## Phase 3: Claiming
 
-An agent has discovered a bead through its hook. Now it claims ownership.
-This is a status transition and assignee update.
+An agent has discovered and claimed a bead through `gc hook --claim`. Claiming
+is a status transition and assignee update, and the prompt-facing active bead is
+`GC_BEAD_ID`.
 
 ### Sling as the routing mechanism
 
@@ -171,11 +183,10 @@ matching `pool:<name>` can pick it up.
 
 ### The claiming act
 
-For pool agents, claiming happens at the prompt level. The agent runs
-`bd update <id> --claim` (or equivalent) to set itself as assignee and
-transition the status from `open` to `in_progress`. This is not enforced
-by Gas City Go code -- it is prescribed in the agent's prompt template.
-The bd CLI handles the atomic compare-and-swap.
+For pool agents, `gc hook --claim` runs the configured query and uses
+`bd update <id> --claim` under the hood to set the canonical session assignee
+and transition the status from `open` to `in_progress`. The bd CLI handles the
+atomic compare-and-swap.
 
 For fixed agents, the sling command already sets the assignee. The agent
 transitions status by running `bd update <id> --status=in_progress` (or

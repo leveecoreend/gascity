@@ -302,6 +302,14 @@ func TestConfigFingerprintIncludesPreStart(t *testing.T) {
 	}
 }
 
+func TestConfigFingerprintIncludesStartGate(t *testing.T) {
+	a := Config{Command: "claude"}
+	b := Config{Command: "claude", StartGate: "gc hook --claim --start-gate"}
+	if ConfigFingerprint(a) == ConfigFingerprint(b) {
+		t.Error("different StartGate should produce different hashes")
+	}
+}
+
 func TestConfigFingerprintIncludesSessionSetup(t *testing.T) {
 	a := Config{Command: "claude"}
 	b := Config{Command: "claude", SessionSetup: []string{"tmux set-option -t {{.Session}} remain-on-exit on"}}
@@ -400,6 +408,7 @@ func TestCoreFingerprintBreakdownConsistency(t *testing.T) {
 		{Command: "claude", Env: map[string]string{"GC_CITY": "/x"}},
 		{Command: "claude", CopyFiles: []CopyEntry{{Src: "/a", RelDst: "b"}}},
 		{Command: "claude", CopyFiles: []CopyEntry{{RelDst: "b", Probed: true, ContentHash: "h1"}}},
+		{Command: "claude", StartGate: "gc hook --claim --start-gate"},
 		{Command: "claude", PreStart: []string{"echo hi"}},
 		{Command: "claude", SessionSetup: []string{"set -x"}},
 		{Command: "claude", OverlayDir: "/overlay"},
@@ -734,6 +743,29 @@ func TestLogCoreFingerprintDriftCopyFiles(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(out), []byte("RelDst")) {
 		t.Errorf("expected RelDst detail in CopyFiles drift output, got: %s", out)
+	}
+}
+
+func TestLogCoreFingerprintDriftStartGate(t *testing.T) {
+	stored := map[string]string{
+		"StartGate": "oldhash",
+		"Command":   CoreFingerprintBreakdown(Config{Command: "claude"})["Command"],
+	}
+	current := Config{
+		Command:   "claude",
+		StartGate: "gc hook --claim --start-gate",
+	}
+	var buf bytes.Buffer
+	LogCoreFingerprintDrift(&buf, "test-agent", stored, current)
+	out := buf.String()
+	if out == "" {
+		t.Fatal("expected diagnostic output")
+	}
+	if !bytes.Contains([]byte(out), []byte("StartGate")) {
+		t.Errorf("expected StartGate in drift output, got: %s", out)
+	}
+	if !bytes.Contains([]byte(out), []byte("gc hook --claim --start-gate")) {
+		t.Errorf("expected StartGate detail in drift output, got: %s", out)
 	}
 }
 

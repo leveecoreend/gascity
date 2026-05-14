@@ -446,6 +446,12 @@
               "null"
             ]
           },
+          "StartGate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "Suspended": {
             "type": [
               "boolean",
@@ -471,6 +477,7 @@
           "WorkDir",
           "Scope",
           "Suspended",
+          "StartGate",
           "Pool",
           "Env",
           "EnvRemove",
@@ -534,6 +541,10 @@
           },
           "scope": {
             "description": "Override agent scope.",
+            "type": "string"
+          },
+          "start_gate": {
+            "description": "Override start gate command.",
             "type": "string"
           },
           "suspended": {

@@ -208,7 +208,7 @@ directly to another agent's Claude Code session via tmux.
 **Common patterns:**
 ```bash
 gc session nudge {{ .RigName }}/crew/alice "Check your mail - PR review waiting"
-gc session nudge {{ .RigName }}/<polecat-name> "Run gc hook; it checks assigned work before routed pool work"
+gc session nudge {{ .RigName }}/<polecat-name> "Run gc hook --claim; it checks assigned work before routed pool work"
 gc mail send {{ .RigName }}/alice -s "Urgent" -m "..." --notify
 ```
 

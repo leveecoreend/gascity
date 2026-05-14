@@ -28,6 +28,8 @@ type AgentPatch struct {
 	Scope *string `toml:"scope,omitempty"`
 	// Suspended overrides the agent's suspended state.
 	Suspended *bool `toml:"suspended,omitempty"`
+	// StartGate overrides the agent's start_gate command.
+	StartGate *string `toml:"start_gate,omitempty"`
 	// Pool overrides legacy [pool] fields that map to session scaling.
 	Pool *PoolOverride `toml:"pool,omitempty"`
 	// Env adds or overrides environment variables.
@@ -302,6 +304,9 @@ func applyAgentPatchFields(a *Agent, p *AgentPatch) {
 	}
 	if p.Suspended != nil {
 		a.Suspended = *p.Suspended
+	}
+	if p.StartGate != nil {
+		a.StartGate = *p.StartGate
 	}
 	if len(p.PreStart) > 0 {
 		a.PreStart = append([]string(nil), p.PreStart...)

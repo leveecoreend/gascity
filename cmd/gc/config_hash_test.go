@@ -13,6 +13,7 @@ func TestConfigHash_Canonical(t *testing.T) {
 		Prompt:  "You are a helpful agent.",
 		Env:     map[string]string{"FOO": "bar", "BAZ": "qux"},
 		Hints: agent.StartupHints{
+			StartGate:    "gc hook --claim --start-gate",
 			PreStart:     []string{"echo setup"},
 			SessionSetup: []string{"echo ready"},
 		},
@@ -63,6 +64,12 @@ func TestConfigHash_Behavioral(t *testing.T) {
 	envChanged.Env = map[string]string{"KEY": "different"}
 	if h := canonicalConfigHash(envChanged, nil); h == baseHash {
 		t.Error("env change should produce different hash")
+	}
+
+	startGateChanged := base
+	startGateChanged.Hints.StartGate = "gc hook --claim --start-gate"
+	if h := canonicalConfigHash(startGateChanged, nil); h == baseHash {
+		t.Error("start_gate change should produce different hash")
 	}
 }
 

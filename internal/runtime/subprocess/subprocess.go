@@ -75,7 +75,7 @@ func NewProviderWithDir(dir string) *Provider {
 // Returns an error if a session with that name is already running.
 // Startup hints (ReadyPromptPrefix, ProcessNames, etc.) are ignored —
 // all sessions are fire-and-forget.
-func (p *Provider) Start(_ context.Context, name string, cfg runtime.Config) error {
+func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) (err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -100,9 +100,27 @@ func (p *Provider) Start(_ context.Context, name string, cfg runtime.Config) err
 		delete(p.workDirs, name)
 	}
 
+	cfg = runtime.SyncWorkDirEnv(cfg)
 	if err := runtime.StageSessionWorkDir(cfg); err != nil {
 		clearWorkDir()
 		return fmt.Errorf("staging workdir for %q: %w", name, err)
+	}
+	startGateComplete := false
+	defer func() {
+		if err != nil && startGateComplete && !errors.Is(err, runtime.ErrStartGateDeclined) {
+			err = runtime.WithStartGateEnv(err, cfg.StartGateEnv)
+		}
+	}()
+	cfg, err = runtime.RunStartGate(ctx, cfg, runtime.DefaultSetupCommandTimeout, runtime.RunSetupCommand)
+	if err != nil {
+		clearWorkDir()
+		return err
+	}
+	startGateComplete = true
+	cfg, err = runtime.RunPreStart(ctx, cfg, runtime.DefaultSetupCommandTimeout, runtime.RunSetupCommand)
+	if err != nil {
+		clearWorkDir()
+		return fmt.Errorf("running pre_start: %w", err)
 	}
 
 	command := cfg.Command

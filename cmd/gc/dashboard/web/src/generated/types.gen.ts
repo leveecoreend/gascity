@@ -104,6 +104,7 @@ export type AgentPatch = {
     SkillsAppend: Array<string> | null;
     SleepAfterIdle: string | null;
     StartCommand: string | null;
+    StartGate: string | null;
     Suspended: boolean | null;
     WakeMode: string | null;
     WorkDir: string | null;
@@ -128,6 +129,10 @@ export type AgentPatchSetInputBody = {
      * Override agent scope.
      */
     scope?: string;
+    /**
+     * Override start gate command.
+     */
+    start_gate?: string;
     /**
      * Override suspended state.
      */

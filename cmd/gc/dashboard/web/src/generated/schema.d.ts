@@ -2007,6 +2007,7 @@ export interface components {
             SkillsAppend: string[] | null;
             SleepAfterIdle: string | null;
             StartCommand: string | null;
+            StartGate: string | null;
             Suspended: boolean | null;
             WakeMode: string | null;
             WorkDir: string | null;
@@ -2022,6 +2023,8 @@ export interface components {
             name?: string;
             /** @description Override agent scope. */
             scope?: string;
+            /** @description Override start gate command. */
+            start_gate?: string;
             /** @description Override suspended state. */
             suspended?: boolean;
             /** @description Override session working directory. */

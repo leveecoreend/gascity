@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -22,6 +23,12 @@ import (
 
 // Compile-time interface check.
 var _ runtime.Provider = (*Provider)(nil)
+
+var (
+	errPodStartGateFailed   = errors.New("pod start_gate failed before tmux started")
+	errPodStartGateEnvParse = errors.New("pod start_gate env parse error")
+	errPodPreStartFailed    = errors.New("pod pre_start failed before tmux started")
+)
 
 // Provider is a native Kubernetes session provider using client-go.
 // Eliminates subprocess overhead by making direct API calls over reused
@@ -227,6 +234,9 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 		return fmt.Errorf("waiting for pod %q: %w", podName, err)
 	}
 
+	// Ensure .beads/ inside the pod. This remains warning-only so older staged
+	// or prebaked workspaces can self-heal instead of failing session startup.
+	podWorkDir := projectedPodWorkDir(cfg)
 	if !p.prebaked {
 		// Initialize the city inside the pod.
 		if ctrlCity != "" {
@@ -234,25 +244,24 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 				fmt.Fprintf(p.stderr, "gc: warning: initCityInPod for %s: %v\n", podName, err) //nolint:errcheck
 			}
 		}
-
-		// Signal entrypoint to proceed.
+	}
+	if err := initBeadsInPod(ctx, p.ops, podName, cfg, podWorkDir, p.managedServiceHost, p.managedServicePort); err != nil {
+		fmt.Fprintf(p.stderr, "gc: warning: initBeadsInPod for %s: %v\n", podName, err) //nolint:errcheck
+	}
+	if !p.prebaked {
+		// Signal entrypoint to proceed after pod-local state is ready.
 		if _, err := p.ops.execInPod(ctx, podName, "agent",
 			[]string{"touch", "/workspace/.gc-workspace-ready"}, nil); err != nil {
 			fmt.Fprintf(p.stderr, "gc: warning: touch .gc-workspace-ready in %s: %v\n", podName, err) //nolint:errcheck
 		}
 	}
 
-	// Ensure .beads/ inside the pod. This remains warning-only so older staged
-	// or prebaked workspaces can self-heal instead of failing session startup.
-	podWorkDir := projectedPodWorkDir(cfg)
-	if err := initBeadsInPod(ctx, p.ops, podName, cfg, podWorkDir, p.managedServiceHost, p.managedServicePort); err != nil {
-		fmt.Fprintf(p.stderr, "gc: warning: initBeadsInPod for %s: %v\n", podName, err) //nolint:errcheck
-	}
-
 	// Wait for tmux session.
-	if err := waitForTmux(ctx, p.ops, podName, 60*time.Second); err != nil {
+	if err := p.waitForTmuxOrStartupGate(ctx, podName, 60*time.Second, cfg.StartGate != "", len(cfg.PreStart) > 0); err != nil {
+		startupErr := fmt.Errorf("waiting for tmux in pod %q: %w", podName, err)
+		startupErr = p.annotatePodStartGateFailure(podName, startupErr)
 		cleanup("tmux not ready")
-		return fmt.Errorf("waiting for tmux in pod %q: %w", podName, err)
+		return startupErr
 	}
 
 	// Enable pane logging for diagnostics.
@@ -297,9 +306,11 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	_, tmuxErr := p.ops.execInPod(ctx, podName, "agent",
 		[]string{"tmux", "has-session", "-t", tmuxSession}, nil)
 	if tmuxErr != nil {
-		cleanup("session died immediately after startup")
-		return fmt.Errorf("%w: session %q died immediately after startup: %w",
+		startupErr := fmt.Errorf("%w: session %q died immediately after startup: %w",
 			runtime.ErrSessionDiedDuringStartup, name, tmuxErr)
+		startupErr = p.annotatePodStartGateFailure(podName, startupErr)
+		cleanup("session died immediately after startup")
+		return startupErr
 	}
 
 	// Send initial nudge if configured (matches tmux adapter step 6).
@@ -308,6 +319,105 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 	}
 
 	return nil
+}
+
+func (p *Provider) annotatePodStartGateFailure(podName string, startupErr error) error {
+	env, ok, err := p.readPodStartGateEnv(podName)
+	if err != nil {
+		fmt.Fprintf(p.stderr, "gc: warning: reading pod start_gate env for %s: %v\n", podName, err) //nolint:errcheck
+		return startupErr
+	}
+	if !ok {
+		return startupErr
+	}
+	return runtime.WithStartGateEnv(startupErr, env)
+}
+
+func (p *Provider) readPodStartGateEnv(podName string) (map[string]string, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	readLimit := runtime.MaxStartGateEnvSize + 1
+	out, err := p.ops.execInPod(ctx, podName, "agent",
+		[]string{"sh", "-c", fmt.Sprintf("dd if=%s bs=%d count=1 2>/dev/null || true", podStartGateEnvPath, readLimit)}, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	if strings.TrimSpace(out) == "" {
+		return nil, false, nil
+	}
+	env, ok, err := runtime.ParseStartGateEnv([]byte(out), podStartGateEnvPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("%w: %w", errPodStartGateEnvParse, err)
+	}
+	return env, ok, nil
+}
+
+func (p *Provider) podStartGateFailed(podName string) (bool, error) {
+	return p.podMarkerExists(podName, podStartGateFailedPath)
+}
+
+func (p *Provider) podStartGateDeclined(podName string) (bool, error) {
+	return p.podMarkerExists(podName, podStartGateDeclinedPath)
+}
+
+func (p *Provider) podPreStartFailed(podName string) (bool, error) {
+	return p.podMarkerExists(podName, podPreStartFailedPath)
+}
+
+func (p *Provider) podMarkerExists(podName, markerPath string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	out, err := p.ops.execInPod(ctx, podName, "agent",
+		[]string{"sh", "-c", "test -f " + markerPath + " && printf found || true"}, nil)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) == "found", nil
+}
+
+func (p *Provider) waitForTmuxOrStartupGate(ctx context.Context, podName string, timeout time.Duration, watchStartGate, watchPreStart bool) error {
+	deadline := time.Now().Add(timeout)
+	var lastStartGateReadErr error
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		_, err := p.ops.execInPod(ctx, podName, "agent",
+			[]string{"tmux", "has-session", "-t", tmuxSession}, nil)
+		if err == nil {
+			return nil
+		}
+		if watchStartGate {
+			if failed, failedErr := p.podStartGateFailed(podName); failedErr == nil && failed {
+				return errPodStartGateFailed
+			}
+			if declined, declinedErr := p.podStartGateDeclined(podName); declinedErr == nil && declined {
+				return runtime.ErrStartGateDeclined
+			}
+			if _, _, readErr := p.readPodStartGateEnv(podName); readErr != nil {
+				if errors.Is(readErr, errPodStartGateEnvParse) {
+					return fmt.Errorf("reading pod start_gate env: %w", readErr)
+				}
+				lastStartGateReadErr = readErr
+			}
+		}
+		if watchPreStart {
+			if failed, failedErr := p.podPreStartFailed(podName); failedErr == nil && failed {
+				return errPodPreStartFailed
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
+	if lastStartGateReadErr != nil {
+		return fmt.Errorf("reading pod start_gate env before tmux readiness timeout: %w", lastStartGateReadErr)
+	}
+	return fmt.Errorf("tmux session not ready in pod %s after %s", podName, timeout)
 }
 
 // Stop deletes the pod for the named session. Idempotent.
@@ -480,17 +590,31 @@ func (p *Provider) GetMeta(name, key string) (string, error) {
 	output, err := p.ops.execInPod(ctx, podName, "agent",
 		[]string{"tmux", "show-environment", "-t", tmuxSession, key}, nil)
 	if err != nil {
-		return "", nil
+		return p.getMetaFromStartGateEnv(podName, key)
 	}
 	output = strings.TrimSpace(output)
 	// tmux output: "KEY=VALUE" (set), "-KEY" (unset).
 	if strings.HasPrefix(output, "-") {
-		return "", nil // explicitly unset
+		if value, fallbackErr := p.getMetaFromStartGateEnv(podName, key); fallbackErr == nil && strings.TrimSpace(value) != "" {
+			return value, nil
+		}
+		return "", nil
 	}
 	if _, val, ok := strings.Cut(output, "="); ok {
 		return val, nil
 	}
-	return "", nil
+	return p.getMetaFromStartGateEnv(podName, key)
+}
+
+func (p *Provider) getMetaFromStartGateEnv(podName, key string) (string, error) {
+	if key != "GC_BEAD_ID" {
+		return "", nil
+	}
+	env, ok, err := p.readPodStartGateEnv(podName)
+	if err != nil || !ok {
+		return "", nil
+	}
+	return env[key], nil
 }
 
 // RemoveMeta removes a metadata key from the tmux environment.
@@ -695,29 +819,6 @@ func waitForPodRunning(ctx context.Context, ops k8sOps, name string, timeout tim
 		}
 	}
 	return fmt.Errorf("pod %s not running after %s", name, timeout)
-}
-
-// waitForTmux waits for the tmux session to be available inside the pod.
-func waitForTmux(ctx context.Context, ops k8sOps, name string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		_, err := ops.execInPod(ctx, name, "agent",
-			[]string{"tmux", "has-session", "-t", tmuxSession}, nil)
-		if err == nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Second):
-		}
-	}
-	return fmt.Errorf("tmux session not ready in pod %s after %s", name, timeout)
 }
 
 // initCityInPod copies the city directory and runs gc init inside the pod.

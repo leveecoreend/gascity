@@ -120,8 +120,7 @@ gc session nudge {{"{{requester}}"}}/ "DOG_DONE: <target> — <outcome>"
 |------------|----------------|
 | Read formula steps | `gc bd show <wisp-id>` (shows formula ref) |
 | Read formula recipe | `gc bd formula show <formula-name>` (NOT `find /`) |
-| Find pool work | `{{ .WorkQuery }}` |
-| Claim pool work | `gc bd update <id> --claim` |
+| Claim pool work | `gc hook --claim` |
 | View work details | `gc bd show <id> --json` |
 | Close completed work | `gc bd close <id> --reason "..."` |
 | Request target restart | `gc session kill <target>` |

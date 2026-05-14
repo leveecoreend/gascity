@@ -1855,6 +1855,10 @@ func staleReapStartBoundary(b beads.Bead) (time.Time, bool) {
 // the bead is safe to retire (or the close reason is unrelated to work
 // ownership, such as failed-create cleanup).
 func closeBead(store beads.Store, id, reason string, now time.Time, stderr io.Writer) bool {
+	return closeBeadWithMetadata(store, id, reason, now, nil, stderr)
+}
+
+func closeBeadWithMetadata(store beads.Store, id, reason string, now time.Time, extra map[string]string, stderr io.Writer) bool {
 	// Idempotence: closeBead is reached from three reconciler paths
 	// (closeSessionBeadIfUnassigned, closeSessionBeadIfRuntimeStoppedAndUnassigned,
 	// closeSessionBeadIfReachableStoreUnassigned). On an already-closed
@@ -1868,7 +1872,11 @@ func closeBead(store beads.Store, id, reason string, now time.Time, stderr io.Wr
 	if existing, err := store.Get(id); err == nil && existing.Status == "closed" {
 		return false
 	}
-	if setMetaBatch(store, id, session.ClosePatch(now, reason), stderr) != nil {
+	patch := session.ClosePatch(now, reason)
+	for key, value := range extra {
+		patch[key] = value
+	}
+	if setMetaBatch(store, id, patch, stderr) != nil {
 		return false
 	}
 	if err := store.Close(id); err != nil {

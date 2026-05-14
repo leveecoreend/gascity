@@ -152,6 +152,7 @@ func TestApplyPatches_AgentScalars(t *testing.T) {
 				Name:           "worker",
 				PromptTemplate: ptrStr("new.md"),
 				Provider:       ptrStr("gemini"),
+				StartGate:      ptrStr("gc hook --claim --start-gate"),
 				PreStart:       []string{"echo setup"},
 			},
 		},
@@ -165,6 +166,9 @@ func TestApplyPatches_AgentScalars(t *testing.T) {
 	}
 	if a.Provider != "gemini" {
 		t.Errorf("Provider = %q, want %q", a.Provider, "gemini")
+	}
+	if a.StartGate != "gc hook --claim --start-gate" {
+		t.Errorf("StartGate = %q, want start gate command", a.StartGate)
 	}
 	if len(a.PreStart) != 1 || a.PreStart[0] != "echo setup" {
 		t.Errorf("PreStart = %v, want [echo setup]", a.PreStart)

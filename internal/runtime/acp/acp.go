@@ -106,7 +106,7 @@ func (p *Provider) SupportsTransport(transport string) bool {
 // Start spawns an ACP agent process, performs the JSON-RPC handshake, and
 // optionally sends the initial nudge. Returns an error if a session with
 // that name already exists or the handshake fails.
-func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) error {
+func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) (err error) {
 	p.mu.Lock()
 
 	// Check in-memory tracking first.
@@ -150,9 +150,27 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 		p.mu.Unlock()
 	}
 
+	cfg = runtime.SyncWorkDirEnv(cfg)
 	if err := runtime.StageSessionWorkDir(cfg); err != nil {
 		clearSentinel()
 		return fmt.Errorf("staging workdir for %q: %w", name, err)
+	}
+	startGateComplete := false
+	defer func() {
+		if err != nil && startGateComplete && !errors.Is(err, runtime.ErrStartGateDeclined) {
+			err = runtime.WithStartGateEnv(err, cfg.StartGateEnv)
+		}
+	}()
+	cfg, err = runtime.RunStartGate(ctx, cfg, runtime.DefaultSetupCommandTimeout, runtime.RunSetupCommand)
+	if err != nil {
+		clearSentinel()
+		return err
+	}
+	startGateComplete = true
+	cfg, err = runtime.RunPreStart(ctx, cfg, runtime.DefaultSetupCommandTimeout, runtime.RunSetupCommand)
+	if err != nil {
+		clearSentinel()
+		return fmt.Errorf("running pre_start: %w", err)
 	}
 
 	command := cfg.Command
@@ -293,6 +311,14 @@ func (p *Provider) Start(ctx context.Context, name string, cfg runtime.Config) e
 		<-sc.done
 		clearSentinel()
 		return fmt.Errorf("session %q was stopped during startup", name)
+	}
+
+	if err := p.persistStartMetadata(name, cfg.Env); err != nil {
+		_ = stdinPipe.Close()
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-sc.done
+		clearSentinel()
+		return fmt.Errorf("storing metadata for %q: %w", name, err)
 	}
 
 	p.mu.Lock()
@@ -583,7 +609,7 @@ func (p *Provider) Peek(name string, lines int) (string, error) {
 
 // SetMeta stores a key-value pair for the named session in a sidecar file.
 func (p *Provider) SetMeta(name, key, value string) error {
-	return os.WriteFile(p.metaPath(name, key), []byte(value), 0o644)
+	return os.WriteFile(p.metaPath(name, key), []byte(value), 0o600)
 }
 
 // GetMeta retrieves a metadata value from a sidecar file.
@@ -606,6 +632,21 @@ func (p *Provider) RemoveMeta(name, key string) error {
 		return nil
 	}
 	return err
+}
+
+func (p *Provider) persistStartMetadata(name string, env map[string]string) error {
+	p.cleanupMeta(name)
+	for _, key := range []string{"GC_BEAD_ID", "GC_SESSION_ID", "GC_INSTANCE_TOKEN", "GC_RUNTIME_EPOCH", "GC_PROVIDER"} {
+		value := env[key]
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		if err := p.SetMeta(name, key, value); err != nil {
+			p.cleanupMeta(name)
+			return err
+		}
+	}
+	return nil
 }
 
 // GetLastActivity returns the time of the last session/update notification.

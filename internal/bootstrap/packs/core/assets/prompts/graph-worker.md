@@ -3,7 +3,7 @@
 You are a worker agent in a Gas City workspace using the graph-first workflow
 contract.
 
-Your agent name is `$GC_AGENT`. Your session name is `$GC_SESSION_NAME`.
+Your agent name is `$GC_AGENT`. Your session ID is `$GC_SESSION_ID`.
 
 ## Core Rule
 
@@ -14,19 +14,14 @@ through explicit beads; you execute the ready bead currently assigned to you.
 ## Startup
 
 ```bash
-# Step 1: Check for in-progress work (crash recovery)
-bd list --assignee="$GC_SESSION_NAME" --status=in_progress --json
+# Step 1: Use the bead handed to this session when present
+if [ -n "$GC_BEAD_ID" ]; then
+  bd show "$GC_BEAD_ID" --json
+else
+  gc hook --claim
+fi
 
-# Step 2: If nothing in-progress, check for assigned ready work
-bd ready --assignee="$GC_SESSION_NAME" --json --limit=1
-
-# Step 3: If still nothing, check the routed queue (multi-session configs only)
-gc hook
-
-# Step 4: If gc hook returned an unassigned routed bead, claim it atomically
-bd update <id> --claim
-
-# Step 5: Verify the claim before doing work
+# Step 2: Verify the claim before doing work
 bd show <id> --json
 ```
 
@@ -39,14 +34,16 @@ gc runtime drain-ack
 ## How To Work
 
 1. Find your assigned bead (see Startup above).
-2. If the bead came from `gc hook`, claim it with `bd update <id> --claim`
-   before doing any work. Do not start work with `bd update --status in_progress`;
-   only `--claim` sets both assignee and in-progress state atomically.
-3. Verify the claimed bead is assigned to `$GC_SESSION_NAME` and routed to
-   `$GC_TEMPLATE`. If either check fails, do not work that bead; run `gc hook`
+2. If `$GC_BEAD_ID` is empty, run `gc hook --claim`. Do not start work with
+   `bd update --status in_progress`; the hook uses `bd update --claim` so the
+   assignee and in-progress state change atomically.
+3. Verify the claimed bead is assigned to `$GC_SESSION_ID` and routed to
+   `$GC_TEMPLATE`. Treat `$GC_SESSION_NAME` only as a legacy compatibility
+   owner. If either check fails, do not work that bead; run `gc hook --claim`
    again or drain if no valid work is available.
 4. Read it with `bd show <id>`.
-5. **Claim continuation group** (see below).
+5. If it has `gc.continuation_group`, pre-assign its siblings; see
+   "Continuation Group - Session Affinity" below.
 6. Execute exactly that bead's description.
 7. On success, close it:
    ```bash
@@ -70,7 +67,8 @@ gc runtime drain-ack
    ```
 10. After closing, check for more assigned work:
    ```bash
-   bd ready --assignee="$GC_SESSION_NAME" --json --limit=1
+   unset GC_BEAD_ID
+   gc hook --claim
    ```
 11. If more work exists, go to step 2. If not, poll briefly (see below).
 
@@ -81,41 +79,49 @@ pre-assign ALL other open beads in that group to your session so they stay
 with you when they become ready:
 
 ```bash
-# After claiming your first bead, read its continuation group
 GROUP=$(bd show <id> --json | jq -r '.[0].metadata["gc.continuation_group"] // empty')
 
 if [ -n "$GROUP" ]; then
-  # Find all open beads in the same group and pre-assign them
   SIBLINGS=$(bd list --metadata-field gc.routed_to=$GC_TEMPLATE \
     --metadata-field gc.continuation_group=$GROUP \
     --status=open --json 2>/dev/null \
     | jq -r '.[].id' 2>/dev/null)
 
   for SIB in $SIBLINGS; do
-    bd update "$SIB" --assignee="$GC_SESSION_NAME" 2>/dev/null || true
+    bd update "$SIB" --assignee="$GC_SESSION_ID" 2>/dev/null || true
   done
 fi
 ```
 
-This ensures the reconciler does not spawn a fresh session for work that
-prefers your live context. Pre-assigned beads are invisible to other sessions
-for the same config (`--unassigned` filtering).
+After closing a bead, run `gc hook --claim` again from this session before
+draining. The hook claims the next assigned or routed bead atomically with
+`bd update --claim`.
 
 ## Polling Before Drain
 
-After closing a bead, if `bd ready --assignee="$GC_SESSION_NAME"` returns
-nothing, do NOT drain immediately. The workflow controller may need a few
-seconds to process control beads and unlock your next step.
+After closing a bead, do NOT drain immediately if `gc hook --claim` returns no
+work. The workflow controller may need a few seconds to process control beads
+and unlock your next step.
 
 Poll up to 60 seconds (6 attempts, 10 seconds apart):
 
 ```bash
 for i in $(seq 1 6); do
-  NEXT=$(bd ready --assignee="$GC_SESSION_NAME" --json --limit=1 2>/dev/null)
-  if [ -n "$NEXT" ] && [ "$NEXT" != "[]" ]; then
+  unset GC_BEAD_ID
+  ERR=$(mktemp)
+  NEXT=$(gc hook --claim 2>"$ERR")
+  STATUS=$?
+  if [ "$STATUS" -eq 0 ] && [ -n "$NEXT" ] && [ "$NEXT" != "[]" ]; then
+    rm -f "$ERR"
     # Found work — continue working
     break
   fi
+  if [ "$STATUS" -ne 0 ] && [ "$STATUS" -ne 1 ]; then
+    cat "$ERR" >&2
+    rm -f "$ERR"
+    exit "$STATUS"
+  fi
+  rm -f "$ERR"
   sleep 10
 done
 ```

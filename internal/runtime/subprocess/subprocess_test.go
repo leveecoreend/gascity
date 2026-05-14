@@ -3,6 +3,7 @@ package subprocess
 import (
 	"bufio"
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -325,6 +326,55 @@ func TestEnvPassedToProcess(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for env marker file")
+}
+
+func TestStartGateDeclineDoesNotStartProcess(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "started")
+	p := newTestProvider(t)
+
+	err := p.Start(context.Background(), "decline-test", runtime.Config{
+		Command:   "touch " + strconv.Quote(marker) + "; sleep 3600",
+		StartGate: "exit 1",
+		WorkDir:   dir,
+	})
+	if !errors.Is(err, runtime.ErrStartGateDeclined) {
+		t.Fatalf("Start error = %v, want ErrStartGateDeclined", err)
+	}
+	if p.IsRunning("decline-test") {
+		t.Fatal("declined start created a running process")
+	}
+	if _, statErr := os.Stat(marker); !os.IsNotExist(statErr) {
+		t.Fatalf("started marker stat = %v, want not created", statErr)
+	}
+}
+
+func TestStartGateEnvPassedToProcess(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "bead.txt")
+	p := newTestProvider(t)
+	err := p.Start(context.Background(), "start-gate-env-test", runtime.Config{
+		Command:   "printf '%s' \"$GC_BEAD_ID\" > " + strconv.Quote(marker) + "; sleep 3600",
+		StartGate: "printf 'GC_BEAD_ID=bd-subprocess\\n' > \"$GC_START_ENV\"",
+		WorkDir:   dir,
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer p.Stop("start-gate-env-test") //nolint:errcheck
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(marker)
+		if err == nil && len(data) > 0 {
+			if got := string(data); got != "bd-subprocess" {
+				t.Fatalf("GC_BEAD_ID marker = %q, want bd-subprocess", got)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for start_gate env marker file")
 }
 
 func TestWorkDirSet(t *testing.T) {

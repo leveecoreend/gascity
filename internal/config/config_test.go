@@ -1252,6 +1252,7 @@ name = "test"
 [[agent]]
 name = "worker"
 dir = "/repo"
+start_gate = "gc hook --claim --start-gate"
 pre_start = ["mkdir -p /tmp/work", "git worktree add /tmp/work"]
 
 [[agent]]
@@ -1267,15 +1268,26 @@ name = "mayor"
 	if len(cfg.Agents[0].PreStart) != 2 {
 		t.Errorf("Agents[0].PreStart len = %d, want 2", len(cfg.Agents[0].PreStart))
 	}
+	if cfg.Agents[0].StartGate != "gc hook --claim --start-gate" {
+		t.Errorf("Agents[0].StartGate = %q, want start gate command", cfg.Agents[0].StartGate)
+	}
 	if len(cfg.Agents[1].PreStart) != 0 {
 		t.Errorf("Agents[1].PreStart len = %d, want 0", len(cfg.Agents[1].PreStart))
+	}
+	if cfg.Agents[1].StartGate != "" {
+		t.Errorf("Agents[1].StartGate = %q, want empty", cfg.Agents[1].StartGate)
 	}
 }
 
 func TestPreStartRoundTrip(t *testing.T) {
 	c := City{
 		Workspace: Workspace{Name: "test"},
-		Agents:    []Agent{{Name: "worker", Dir: "/repo", PreStart: []string{"echo hello"}}},
+		Agents: []Agent{{
+			Name:      "worker",
+			Dir:       "/repo",
+			StartGate: "gc hook --claim --start-gate",
+			PreStart:  []string{"echo hello"},
+		}},
 	}
 	data, err := c.Marshal()
 	if err != nil {
@@ -1287,6 +1299,9 @@ func TestPreStartRoundTrip(t *testing.T) {
 	}
 	if len(got.Agents[0].PreStart) != 1 || got.Agents[0].PreStart[0] != "echo hello" {
 		t.Errorf("PreStart after round-trip = %v, want [echo hello]", got.Agents[0].PreStart)
+	}
+	if got.Agents[0].StartGate != "gc hook --claim --start-gate" {
+		t.Errorf("StartGate after round-trip = %q, want start gate command", got.Agents[0].StartGate)
 	}
 }
 

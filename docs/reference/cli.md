@@ -1201,6 +1201,8 @@ gc help [command]
 Checks for available work using the agent's work_query config.
 
 Without --inject: prints raw output, exits 0 if work exists, 1 if empty.
+With --claim: atomically claims one work item for the current session and prints it as JSON.
+With --claim, exit 1 means no claimable work; exit 2 means a hard hook failure.
 With --inject: silent legacy Stop-hook compatibility; skips the work query and always exits 0.
 
 		The agent is determined from $GC_AGENT or a positional argument.
@@ -1211,7 +1213,9 @@ gc hook [agent] [flags]
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--claim` | bool |  | atomically claim one work item for the current session |
 | `--inject` | bool |  | silent legacy Stop-hook compatibility; skip work query and exit 0 |
+| `--start-gate` | bool |  | write claimed work env to $GC_START_ENV and use start_gate exit codes |
 
 ## gc import
 

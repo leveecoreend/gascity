@@ -14,6 +14,9 @@ type StartupHints struct {
 	// Nudge is text typed into the session after the agent is ready.
 	// Used for CLI agents that don't accept command-line prompts.
 	Nudge string
+	// StartGate is one shell command run before pre_start. Exit 0 starts,
+	// exit 1 declines without quarantine, and other exits fail startup.
+	StartGate string
 	// PreStart is a list of shell commands run before session creation.
 	// Already template-expanded by the caller. Failures abort startup.
 	PreStart []string

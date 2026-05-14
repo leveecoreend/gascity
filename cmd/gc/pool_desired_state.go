@@ -173,6 +173,29 @@ func computePoolDesiredStates(
 		}
 	}
 	inFlightNewRequests := poolInFlightNewRequests(cfg, sessionBeads, resumeSessionBeadIDs)
+	startGateDeclinedRequests := poolStartGateDeclinedRequests(cfg, sessionBeads, resumeSessionBeadIDs)
+	for i := range cfg.Agents {
+		agent := &cfg.Agents[i]
+		if agent.Suspended || !agent.SupportsGenericEphemeralSessions() {
+			continue
+		}
+		template := agent.QualifiedName()
+		requests := startGateDeclinedRequests[template]
+		reused := 0
+		for _, req := range requests {
+			if !usage.canAccept(req, limits) {
+				continue
+			}
+			allRequests = append(allRequests, req)
+			usage.accept(req, limits)
+			reused++
+		}
+		if reused > 0 && trace != nil {
+			trace.recordDecision("reconciler.pool.start_gate_declined_reuse", template, "", "start_gate_declined", "accepted", traceRecordPayload{
+				"reused": reused,
+			}, nil, "")
+		}
+	}
 
 	// Merge scale_check demand. In bead-backed reconciliation, scale_check is
 	// the authoritative signal for new unassigned demand only; resume requests
@@ -219,6 +242,44 @@ func computePoolDesiredStates(
 	}
 
 	return applyNestedCaps(cfg, allRequests, trace)
+}
+
+func poolStartGateDeclinedRequests(cfg *config.City, sessionBeads []beads.Bead, resumeSessionBeadIDs map[string]struct{}) map[string][]SessionRequest {
+	requests := make(map[string][]SessionRequest)
+	if cfg == nil {
+		return requests
+	}
+	for i := range cfg.Agents {
+		agent := &cfg.Agents[i]
+		if agent.Suspended || !agent.SupportsGenericEphemeralSessions() {
+			continue
+		}
+		template := agent.QualifiedName()
+		for _, sb := range sessionBeads {
+			if sb.ID == "" || sb.Status == "closed" {
+				continue
+			}
+			if _, ok := resumeSessionBeadIDs[sb.ID]; ok {
+				continue
+			}
+			if !isEphemeralSessionBeadForAgent(sb, agent) || !isPoolManagedSessionBead(sb) {
+				continue
+			}
+			if normalizedSessionTemplate(sb, cfg) != template {
+				continue
+			}
+			if strings.TrimSpace(sb.Metadata["state"]) != "asleep" ||
+				strings.TrimSpace(sb.Metadata["sleep_reason"]) != "start_gate_declined" {
+				continue
+			}
+			requests[template] = append(requests[template], SessionRequest{
+				Template:      template,
+				Tier:          "new",
+				SessionBeadID: sb.ID,
+			})
+		}
+	}
+	return requests
 }
 
 func poolInFlightNewRequests(cfg *config.City, sessionBeads []beads.Bead, resumeSessionBeadIDs map[string]struct{}) map[string][]SessionRequest {

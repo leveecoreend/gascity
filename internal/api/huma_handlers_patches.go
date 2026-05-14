@@ -61,6 +61,7 @@ func (s *Server) humaHandleAgentPatchSet(_ context.Context, input *AgentPatchSet
 		WorkDir:   input.Body.WorkDir,
 		Scope:     input.Body.Scope,
 		Suspended: input.Body.Suspended,
+		StartGate: input.Body.StartGate,
 		Env:       input.Body.Env,
 	}
 

@@ -45,7 +45,7 @@ gc bd show <id>                           # Show bead details
 ## Claiming and updating
 
 ```
-gc bd update <id> --claim                 # Claim a bead (sets assignee + in_progress)
+gc hook --claim                            # Find and atomically claim one bead for this session
 gc bd update <id> --status in_progress    # Update status
 gc bd update <id> --label <key>=<value>   # Add/update labels
 gc bd update <id> --note "progress..."    # Add a note
@@ -61,6 +61,6 @@ gc bd close <id> --reason "done"          # Close with reason
 ## Hooks
 
 ```
-gc hook show <agent>                   # Show what's on an agent's hook
-gc agent claim <agent> <id>            # Put a bead on an agent's hook
+gc hook --claim                        # Check routed work and claim one item
+gc hook                                # Plain discovery only; does not claim
 ```

@@ -7,10 +7,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/gastownhall/gascity/internal/config"
 	"github.com/gastownhall/gascity/internal/materialize"
+	gcruntime "github.com/gastownhall/gascity/internal/runtime"
+	"github.com/gastownhall/gascity/internal/shellquote"
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +29,7 @@ func newInternalCmd(stdout, stderr io.Writer) *cobra.Command {
 	}
 	cmd.AddCommand(newInternalMaterializeSkillsCmd(stdout, stderr))
 	cmd.AddCommand(newInternalProjectMCPCmd(stdout, stderr))
+	cmd.AddCommand(newInternalStartGateEnvCmd(stdout, stderr))
 	return cmd
 }
 
@@ -116,6 +120,41 @@ func newInternalMaterializeSkillsCmd(stdout, stderr io.Writer) *cobra.Command {
 	cmd.Flags().StringVar(&workdir, "workdir", "", "agent working directory (skills materialize into workdir/.<vendor>/skills/)")
 	cmd.Flags().StringVar(&sharedCatalogSnapshot, "shared-catalog-snapshot", "", "base64-encoded shared catalog snapshot from the controller")
 	cmd.Flags().StringVar(&sharedCatalogSnapshotFile, "shared-catalog-snapshot-file", "", "path to a file containing the base64-encoded shared catalog snapshot (preferred over --shared-catalog-snapshot for large catalogs to avoid argv/env limits)")
+	return cmd
+}
+
+func newInternalStartGateEnvCmd(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:    "start-gate-env <env-file>",
+		Short:  "Render validated start_gate env for pod startup",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(_ *cobra.Command, args []string) error {
+			updates, ok, err := gcruntime.ReadStartGateEnvFile(args[0])
+			if err != nil {
+				fmt.Fprintf(stderr, "gc internal start-gate-env: %v\n", err) //nolint:errcheck // best-effort stderr
+				return errExit
+			}
+			if !ok {
+				return nil
+			}
+			env := map[string]string{}
+			if err := gcruntime.ApplyStartGateEnv(env, updates); err != nil {
+				fmt.Fprintf(stderr, "gc internal start-gate-env: %v\n", err) //nolint:errcheck // best-effort stderr
+				return errExit
+			}
+			keys := make([]string, 0, len(env))
+			for key := range env {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				fmt.Fprintf(stdout, "%s=%s\n", key, shellquote.Quote(env[key])) //nolint:errcheck // best-effort stdout
+				fmt.Fprintf(stdout, "export %s\n", key)                         //nolint:errcheck // best-effort stdout
+			}
+			return nil
+		},
+	}
 	return cmd
 }
 

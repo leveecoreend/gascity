@@ -74,6 +74,10 @@
           "type": "boolean",
           "description": "Suspended prevents the reconciler from spawning this agent. Toggle with gc agent suspend/resume."
         },
+        "start_gate": {
+          "type": "string",
+          "description": "StartGate is a shell command run before pre_start. Exit 0 starts the\nsession and may write validated env to $GC_START_ENV; exit 1 declines\nstartup without quarantine; other exits are startup failures."
+        },
         "pre_start": {
           "items": {
             "type": "string"
@@ -396,6 +400,10 @@
           "type": "boolean",
           "description": "Suspended sets the agent's suspended state."
         },
+        "start_gate": {
+          "type": "string",
+          "description": "StartGate overrides the agent's start_gate command."
+        },
         "pool": {
           "$ref": "#/$defs/PoolOverride",
           "description": "Pool overrides legacy [pool] fields that map to session scaling."
@@ -646,6 +654,10 @@
         "suspended": {
           "type": "boolean",
           "description": "Suspended overrides the agent's suspended state."
+        },
+        "start_gate": {
+          "type": "string",
+          "description": "StartGate overrides the agent's start_gate command."
         },
         "pool": {
           "$ref": "#/$defs/PoolOverride",

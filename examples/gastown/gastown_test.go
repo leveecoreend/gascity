@@ -1646,6 +1646,44 @@ func TestPackUsesIsolatedWorkDirs(t *testing.T) {
 	}
 }
 
+func TestOnDemandPoolAgentsClaimInStartGate(t *testing.T) {
+	var polecat *config.Agent
+	agents := discoverPackAgents(t, filepath.Join("packs", "gastown"))
+	for i := range agents {
+		a := &agents[i]
+		if a.Name == "polecat" {
+			polecat = a
+			break
+		}
+	}
+	if polecat == nil {
+		t.Fatal("expected polecat agent")
+	}
+	if polecat.StartGate != "gc hook --claim --start-gate" {
+		t.Fatalf("polecat start_gate = %q, want hook claim", polecat.StartGate)
+	}
+	if len(polecat.PreStart) != 1 {
+		t.Fatalf("polecat pre_start = %v, want worktree setup only", polecat.PreStart)
+	}
+	if !strings.Contains(polecat.PreStart[0], "worktree-setup.sh") {
+		t.Fatalf("polecat pre_start[0] = %q, want worktree setup after claim", polecat.PreStart[0])
+	}
+
+	for _, a := range discoverPackAgents(t, filepath.Join("packs", "maintenance")) {
+		if a.Name != "dog" {
+			continue
+		}
+		if a.StartGate != "gc hook --claim --start-gate" {
+			t.Fatalf("dog start_gate = %q, want hook claim", a.StartGate)
+		}
+		if len(a.PreStart) != 0 {
+			t.Fatalf("dog pre_start = %v, want no setup commands", a.PreStart)
+		}
+		return
+	}
+	t.Fatal("expected dog agent")
+}
+
 func TestPackPromptFilesExist(t *testing.T) {
 	for _, a := range discoverPackAgents(t, filepath.Join("packs", "gastown")) {
 		if a.PromptTemplate == "" {
@@ -1708,6 +1746,12 @@ func TestExpandedCityUsesGastownDogOverride(t *testing.T) {
 	}
 	if len(dog.SessionLive) != 2 {
 		t.Fatalf("dog session_live has %d entries, want 2 gastown theming commands", len(dog.SessionLive))
+	}
+	if dog.StartGate != "gc hook --claim --start-gate" {
+		t.Fatalf("dog start_gate = %q, want maintenance hook claim", dog.StartGate)
+	}
+	if len(dog.PreStart) != 0 {
+		t.Fatalf("dog pre_start = %v, want no setup commands", dog.PreStart)
 	}
 	if !strings.Contains(dog.SessionLive[0], "tmux-theme.sh") {
 		t.Errorf("dog session_live[0] = %q, want tmux-theme.sh", dog.SessionLive[0])

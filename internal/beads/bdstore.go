@@ -46,6 +46,24 @@ func ExecCommandRunner() CommandRunner {
 // applies the provided environment overrides. Explicit keys replace any
 // inherited values from the parent process.
 func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
+	if len(env) == 0 {
+		return execCommandRunnerWithEnviron(nil)
+	}
+	overrides := maps.Clone(env)
+	return func(dir, name string, args ...string) ([]byte, error) {
+		environ := mergeEnv(os.Environ(), overrides)
+		return execCommandRunnerWithEnviron(environ)(dir, name, args...)
+	}
+}
+
+// ExecCommandRunnerWithEnviron returns a CommandRunner that uses os/exec and
+// runs commands with the exact provided process environment. A nil environment
+// inherits the parent process environment.
+func ExecCommandRunnerWithEnviron(environ []string) CommandRunner {
+	return execCommandRunnerWithEnviron(environ)
+}
+
+func execCommandRunnerWithEnviron(environ []string) CommandRunner {
 	return func(dir, name string, args ...string) ([]byte, error) {
 		start := time.Now()
 		trace := func(status string, err error) {
@@ -76,8 +94,8 @@ func ExecCommandRunnerWithEnv(env map[string]string) CommandRunner {
 		cmd.Cancel = func() error {
 			return killCommandTree(cmd)
 		}
-		if len(env) > 0 {
-			cmd.Env = mergeEnv(os.Environ(), env)
+		if environ != nil {
+			cmd.Env = append([]string(nil), environ...)
 		}
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
@@ -713,6 +731,45 @@ func (s *BdStore) Update(id string, opts UpdateOpts) error {
 		return fmt.Errorf("updating bead %q: %w", id, err)
 	}
 	return nil
+}
+
+// Claim atomically assigns a bead to the current BEADS_ACTOR and marks it
+// in-progress using bd's claim operation.
+func (s *BdStore) Claim(id string) (Bead, error) {
+	if strings.TrimSpace(id) == "" {
+		return Bead{}, fmt.Errorf("claiming bead: empty id")
+	}
+	if _, err := s.runner(s.dir, "bd", "update", "--json", id, "--claim"); err != nil {
+		if isBdNotFound(err) {
+			return Bead{}, fmt.Errorf("claiming bead %q: %w", id, ErrNotFound)
+		}
+		return Bead{}, fmt.Errorf("claiming bead %q: %w", id, err)
+	}
+	claimed, err := s.Get(id)
+	if err != nil {
+		return Bead{}, claimReadError{id: id, err: err}
+	}
+	return claimed, nil
+}
+
+type claimReadError struct {
+	id  string
+	err error
+}
+
+func (e claimReadError) Error() string {
+	return fmt.Sprintf("claiming bead %q: reading claimed bead: %v", e.id, e.err)
+}
+
+func (e claimReadError) Unwrap() error {
+	return e.err
+}
+
+// IsClaimReadError reports whether err came from reading a bead after bd had
+// accepted the atomic claim update.
+func IsClaimReadError(err error) bool {
+	var target claimReadError
+	return errors.As(err, &target)
 }
 
 // WaitForParentProjection blocks until bd's parent-child listing projection

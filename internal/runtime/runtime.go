@@ -35,6 +35,10 @@ var ErrInteractionUnsupported = errors.New("session interaction is unsupported")
 // process, but it exited before startup completed successfully.
 var ErrSessionDiedDuringStartup = errors.New("session died during startup")
 
+// ErrStartGateDeclined reports that start_gate determined this session should
+// not start, without treating the decision as a startup failure.
+var ErrStartGateDeclined = errors.New("start_gate declined")
+
 // ErrSessionNotFound reports that an operation targeted a session the
 // runtime does not know about. Benign for Stop() — the session was
 // already gone — but fatal for Attach/Send. Providers wrap their own
@@ -394,6 +398,10 @@ type Config struct {
 	// Env is additional environment variables set in the session.
 	Env map[string]string
 
+	// StartGateEnv is the validated env map emitted by StartGate. Providers use
+	// it only for startup-failure bookkeeping; Env is the process environment.
+	StartGateEnv map[string]string
+
 	// MCPServers is the effective ACP session/new MCP server list for this
 	// session. Non-ACP providers ignore it.
 	MCPServers []MCPServerConfig
@@ -415,6 +423,11 @@ type Config struct {
 	// Nudge is text typed into the session after the agent is ready.
 	// Used for CLI agents that don't accept command-line prompts.
 	Nudge string
+
+	// StartGate is one shell command run before pre_start. Exit 0 starts the
+	// session and may pass validated env through $GC_START_ENV. Exit 1 declines
+	// startup without quarantine. Any other exit is a startup failure.
+	StartGate string
 
 	// PreStart is a list of shell commands run before session creation,
 	// on the target filesystem. Used for directory/worktree preparation.

@@ -220,7 +220,7 @@ is exactly why an LLM does it, not Go code. Consider:
 **Step 3: For flagged sessions, nudge first, then warrant:**
 
 ```bash
-gc session nudge "$STUCK_SESSION" "Queue has $ASSIGNED open beads, no bead activity for <duration>. Run gc hook."
+gc session nudge "$STUCK_SESSION" "Queue has $ASSIGNED open beads, no bead activity for <duration>. Run gc hook --claim."
 ```
 
 If the nudge doesn't unstick within the next patrol cycle, escalate

@@ -578,6 +578,318 @@ func TestStartCreatesPodsAndWaits(t *testing.T) {
 	}
 }
 
+func TestStartInitializesBeadsBeforeWorkspaceReadySignal(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	p.postStartSettle = 0
+	fake.setExecResult("gc-test-agent",
+		[]string{"tmux", "has-session", "-t", "main"}, "", nil)
+
+	cfg := runtime.Config{
+		Command: "claude --settings .gc/settings.json",
+		WorkDir: "/city",
+		Env: map[string]string{
+			"GC_AGENT":        "rig/polecat",
+			"GC_CITY":         "/city",
+			"GC_STORE_ROOT":   "/city",
+			"GC_BEADS_PREFIX": "cs",
+			"GC_DOLT_PORT":    "31364",
+		},
+	}
+	if err := p.Start(context.Background(), "gc-test-agent", cfg); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	beadsInitIndex := -1
+	readyIndex := -1
+	for i, call := range fake.calls {
+		if call.method != "execInPod" {
+			continue
+		}
+		if len(call.cmd) >= 3 && call.cmd[0] == "sh" && call.cmd[1] == "-c" && containsStr(call.cmd[2], "bd init --server") {
+			beadsInitIndex = i
+		}
+		if len(call.cmd) == 2 && call.cmd[0] == "touch" && call.cmd[1] == "/workspace/.gc-workspace-ready" {
+			readyIndex = i
+		}
+	}
+	if beadsInitIndex < 0 {
+		t.Fatal("Start did not invoke pod .beads initialization")
+	}
+	if readyIndex < 0 {
+		t.Fatal("Start did not signal .gc-workspace-ready")
+	}
+	if beadsInitIndex > readyIndex {
+		t.Fatalf("pod .beads initialization ran after workspace ready signal: beads=%d ready=%d", beadsInitIndex, readyIndex)
+	}
+}
+
+func TestStartReturnsStartGateDeclinedFromPodMarker(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	p.postStartSettle = 0
+	fake.execFunc = func(_ string, cmd []string) (string, error) {
+		if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" && containsStr(cmd[2], podStartGateDeclinedPath) {
+			return "found", nil
+		}
+		if len(cmd) >= 3 && cmd[0] == "tmux" && cmd[1] == "has-session" {
+			return "", fmt.Errorf("tmux not ready")
+		}
+		return "", nil
+	}
+
+	err := p.Start(context.Background(), "gc-test-agent", runtime.Config{
+		Command:   "claude",
+		StartGate: "gc hook --claim --start-gate",
+		Env:       map[string]string{"GC_AGENT": "worker", "GC_CITY": "/workspace"},
+	})
+	if !errors.Is(err, runtime.ErrStartGateDeclined) {
+		t.Fatalf("Start error = %v, want ErrStartGateDeclined", err)
+	}
+}
+
+func TestStartWithoutStartupHooksSkipsStartGateAndPreStartProbes(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	p.postStartSettle = 0
+	tmuxChecks := 0
+	fake.execFunc = func(_ string, cmd []string) (string, error) {
+		if len(cmd) >= 3 && cmd[0] == "tmux" && cmd[1] == "has-session" {
+			tmuxChecks++
+			if tmuxChecks == 1 {
+				return "", fmt.Errorf("tmux not ready")
+			}
+			return "", nil
+		}
+		if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" &&
+			(containsStr(cmd[2], podPreStartFailedPath) || containsStr(cmd[2], podStartGateEnvPath) || containsStr(cmd[2], podStartGateDeclinedPath) || containsStr(cmd[2], podStartGateFailedPath)) {
+			t.Fatalf("unexpected startup probe without startup hooks: %v", cmd)
+		}
+		return "", nil
+	}
+
+	err := p.Start(context.Background(), "gc-test-agent", runtime.Config{
+		Command: "claude",
+		Env:     map[string]string{"GC_AGENT": "worker", "GC_CITY": "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if tmuxChecks < 2 {
+		t.Fatalf("tmuxChecks = %d, want retry before success", tmuxChecks)
+	}
+}
+
+func TestStartToleratesTransientPodStartGateEnvReadError(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	p.postStartSettle = 0
+	tmuxChecks := 0
+	envReads := 0
+	fake.execFunc = func(_ string, cmd []string) (string, error) {
+		if len(cmd) >= 3 && cmd[0] == "tmux" && cmd[1] == "has-session" {
+			tmuxChecks++
+			if tmuxChecks == 1 {
+				return "", fmt.Errorf("tmux not ready")
+			}
+			return "", nil
+		}
+		if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" && containsStr(cmd[2], podStartGateEnvPath) {
+			envReads++
+			if envReads == 1 {
+				return "", fmt.Errorf("temporary exec failure")
+			}
+			return "", nil
+		}
+		return "", nil
+	}
+
+	err := p.Start(context.Background(), "gc-test-agent", runtime.Config{
+		Command:   "claude",
+		StartGate: "gc hook --claim --start-gate",
+		Env:       map[string]string{"GC_AGENT": "worker", "GC_CITY": "/workspace"},
+	})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if tmuxChecks < 2 {
+		t.Fatalf("tmuxChecks = %d, want retry after transient env read error", tmuxChecks)
+	}
+	if envReads != 1 {
+		t.Fatalf("envReads = %d, want one transient read before tmux readiness", envReads)
+	}
+}
+
+func TestStartCarriesPodStartGateEnvOnStartupFailure(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	p.postStartSettle = 0
+	fake.execFunc = func(_ string, cmd []string) (string, error) {
+		if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" && containsStr(cmd[2], podStartGateEnvPath) {
+			return "GC_BEAD_ID=gc-123\n", nil
+		}
+		if len(cmd) >= 3 && cmd[0] == "tmux" && cmd[1] == "has-session" {
+			return "", fmt.Errorf("tmux not ready")
+		}
+		return "", nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err := p.Start(ctx, "gc-test-agent", runtime.Config{
+		Command:   "claude",
+		StartGate: "gc hook --claim --start-gate",
+		Env:       map[string]string{"GC_AGENT": "worker", "GC_CITY": "/workspace"},
+	})
+	if err == nil {
+		t.Fatal("Start succeeded, want startup failure")
+	}
+	if errors.Is(err, runtime.ErrStartGateDeclined) {
+		t.Fatalf("Start error = %v, want startup failure", err)
+	}
+	if got := runtime.StartGateErrorEnv(err)["GC_BEAD_ID"]; got != "gc-123" {
+		t.Fatalf("StartGateErrorEnv GC_BEAD_ID = %q, want gc-123; err=%v", got, err)
+	}
+}
+
+func TestGetMetaFallsBackToPodStartGateEnvForGCBeadID(t *testing.T) {
+	fake := newFakeK8sOps()
+	addRunningPod(fake, "gc-test-agent", SanitizeLabel("gc-test-agent"))
+	p := newProviderWithOps(fake)
+	fake.execFunc = func(_ string, cmd []string) (string, error) {
+		if len(cmd) >= 4 && cmd[0] == "tmux" && cmd[1] == "show-environment" && cmd[3] == "GC_BEAD_ID" {
+			return "", fmt.Errorf("no server running")
+		}
+		if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" && containsStr(cmd[2], podStartGateEnvPath) {
+			return "GC_BEAD_ID=gc-123\n", nil
+		}
+		return "", nil
+	}
+
+	got, err := p.GetMeta("gc-test-agent", "GC_BEAD_ID")
+	if err != nil {
+		t.Fatalf("GetMeta: %v", err)
+	}
+	if got != "gc-123" {
+		t.Fatalf("GetMeta GC_BEAD_ID = %q, want gc-123", got)
+	}
+}
+
+func TestStartReturnsMarkedPodStartGateFailureWithoutWaitingForTimeout(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	p.postStartSettle = 0
+	fake.execFunc = func(_ string, cmd []string) (string, error) {
+		if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" && containsStr(cmd[2], podStartGateFailedPath) {
+			return "found", nil
+		}
+		if len(cmd) >= 3 && cmd[0] == "tmux" && cmd[1] == "has-session" {
+			return "", fmt.Errorf("tmux not ready")
+		}
+		return "", nil
+	}
+
+	err := p.Start(context.Background(), "gc-test-agent", runtime.Config{
+		Command:   "claude",
+		StartGate: "gc hook --claim --start-gate",
+		Env:       map[string]string{"GC_AGENT": "worker", "GC_CITY": "/workspace"},
+	})
+	if err == nil {
+		t.Fatal("Start succeeded, want marked startup failure")
+	}
+	if strings.Contains(err.Error(), "after 60s") {
+		t.Fatalf("Start error = %v, want marked failure before timeout", err)
+	}
+}
+
+func TestStartReturnsMarkedPodPreStartFailureWithoutWaitingForTimeout(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	p.postStartSettle = 0
+	fake.execFunc = func(_ string, cmd []string) (string, error) {
+		if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" && containsStr(cmd[2], podPreStartFailedPath) {
+			return "found", nil
+		}
+		if len(cmd) >= 3 && cmd[0] == "tmux" && cmd[1] == "has-session" {
+			return "", fmt.Errorf("tmux not ready")
+		}
+		return "", nil
+	}
+
+	err := p.Start(context.Background(), "gc-test-agent", runtime.Config{
+		Command:  "claude",
+		PreStart: []string{"setup-worktree"},
+		Env:      map[string]string{"GC_AGENT": "worker", "GC_CITY": "/workspace"},
+	})
+	if err == nil {
+		t.Fatal("Start succeeded, want marked startup failure")
+	}
+	if strings.Contains(err.Error(), "after 60s") {
+		t.Fatalf("Start error = %v, want marked failure before timeout", err)
+	}
+}
+
+func TestStartReturnsMalformedPodStartGateEnvBeforeTimeout(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	p.postStartSettle = 0
+	fake.execFunc = func(_ string, cmd []string) (string, error) {
+		if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" && containsStr(cmd[2], podStartGateEnvPath) {
+			return "not-an-assignment\n", nil
+		}
+		if len(cmd) >= 3 && cmd[0] == "tmux" && cmd[1] == "has-session" {
+			return "", fmt.Errorf("tmux not ready")
+		}
+		return "", nil
+	}
+
+	err := p.Start(context.Background(), "gc-test-agent", runtime.Config{
+		Command:   "claude",
+		StartGate: "gc hook --claim --start-gate",
+		Env:       map[string]string{"GC_AGENT": "worker", "GC_CITY": "/workspace"},
+	})
+	if err == nil {
+		t.Fatal("Start succeeded, want malformed start_gate env failure")
+	}
+	if strings.Contains(err.Error(), "after 60s") {
+		t.Fatalf("Start error = %v, want malformed env before timeout", err)
+	}
+	if !strings.Contains(err.Error(), "expected KEY=VALUE") {
+		t.Fatalf("Start error = %v, want parsing error", err)
+	}
+}
+
+func TestStartRejectsOversizedPodStartGateEnvBeforeTimeout(t *testing.T) {
+	fake := newFakeK8sOps()
+	p := newProviderWithOps(fake)
+	p.postStartSettle = 0
+	oversized := strings.Repeat("x", runtime.MaxStartGateEnvSize+1)
+	fake.execFunc = func(_ string, cmd []string) (string, error) {
+		if len(cmd) >= 3 && cmd[0] == "sh" && cmd[1] == "-c" && containsStr(cmd[2], podStartGateEnvPath) {
+			return oversized, nil
+		}
+		if len(cmd) >= 3 && cmd[0] == "tmux" && cmd[1] == "has-session" {
+			return "", fmt.Errorf("tmux not ready")
+		}
+		return "", nil
+	}
+
+	err := p.Start(context.Background(), "gc-test-agent", runtime.Config{
+		Command:   "claude",
+		StartGate: "gc hook --claim --start-gate",
+		Env:       map[string]string{"GC_AGENT": "worker", "GC_CITY": "/workspace"},
+	})
+	if err == nil {
+		t.Fatal("Start succeeded, want oversized start_gate env failure")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("Start error = %v, want too-large env error", err)
+	}
+	if strings.Contains(err.Error(), "after 60s") {
+		t.Fatalf("Start error = %v, want oversized env before timeout", err)
+	}
+}
+
 func TestStartDetectsStalePod(t *testing.T) {
 	fake := newFakeK8sOps()
 	p := newProviderWithOps(fake)

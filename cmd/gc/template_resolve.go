@@ -392,6 +392,11 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 		expanded := expandSessionSetup([]string{command}, setupCtx)
 		command = expanded[0]
 	}
+	expandedStartGate := ""
+	if cfgAgent.StartGate != "" {
+		expanded := expandSessionSetup([]string{cfgAgent.StartGate}, setupCtx)
+		expandedStartGate = expanded[0]
+	}
 	expandedSetup := expandSessionSetup(cfgAgent.SessionSetup, setupCtx)
 	resolvedScript := resolveSetupScript(cfgAgent.SessionSetupScript, cfgAgent.SourceDir, p.cityPath)
 	expandedPreStart := expandSessionSetup(cfgAgent.PreStart, setupCtx)
@@ -516,6 +521,7 @@ func resolveTemplate(p *agentBuildParams, cfgAgent *config.Agent, qualifiedName 
 		ProcessNames:           resolved.ProcessNames,
 		EmitsPermissionWarning: resolved.EmitsPermissionWarning,
 		Nudge:                  cfgAgent.Nudge,
+		StartGate:              expandedStartGate,
 		PreStart:               expandedPreStart,
 		SessionSetup:           expandedSetup,
 		SessionSetupScript:     resolvedScript,
@@ -632,6 +638,7 @@ func templateParamsToConfig(tp TemplateParams) runtime.Config {
 		ProcessNames:           tp.Hints.ProcessNames,
 		EmitsPermissionWarning: tp.Hints.EmitsPermissionWarning,
 		Nudge:                  nudge,
+		StartGate:              tp.Hints.StartGate,
 		PreStart:               tp.Hints.PreStart,
 		SessionSetup:           tp.Hints.SessionSetup,
 		SessionSetupScript:     tp.Hints.SessionSetupScript,

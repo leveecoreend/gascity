@@ -43,22 +43,23 @@ type fakeStartOps struct {
 	createErrs []error
 	createIdx  int
 
-	isSessionRunningResult   *bool
-	isRuntimeRunningResult   bool
-	killErr                  error
-	waitCommandErr           error
-	acceptStartupDialogsErr  error
-	waitReadyErr             error
-	waitCommandHook          func()
-	acceptStartupDialogsHook func()
-	waitReadyHook            func()
-	hasSessionHook           func()
-	sendKeysHook             func()
-	runSetupCommandHook      func(string)
-	hasSessionResult         bool
-	hasSessionErr            error
-	setRemainOnExitErr       error
-	runSetupCommandErr       error
+	isSessionRunningResult       *bool
+	isRuntimeRunningResult       bool
+	killErr                      error
+	waitCommandErr               error
+	acceptStartupDialogsErr      error
+	waitReadyErr                 error
+	waitCommandHook              func()
+	acceptStartupDialogsHook     func()
+	waitReadyHook                func()
+	hasSessionHook               func()
+	sendKeysHook                 func()
+	runSetupCommandHook          func(string, map[string]string)
+	hasSessionResult             bool
+	hasSessionErr                error
+	setRemainOnExitErr           error
+	runSetupCommandErr           error
+	runSetupCommandErrForCommand map[string]error
 }
 
 type errReader struct{}
@@ -66,6 +67,20 @@ type errReader struct{}
 func (errReader) Read(_ []byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF
 }
+
+type fakeExitError struct {
+	code int
+	msg  string
+}
+
+func (e fakeExitError) Error() string {
+	if e.msg != "" {
+		return e.msg
+	}
+	return fmt.Sprintf("exit status %d", e.code)
+}
+
+func (e fakeExitError) ExitCode() int { return e.code }
 
 func (f *fakeStartOps) createSession(name, workDir, command string, env map[string]string) error {
 	f.calls = append(f.calls, startCall{
@@ -170,10 +185,15 @@ func (f *fakeStartOps) runSetupCommand(_ context.Context, cmd string, env map[st
 		timeout: timeout,
 	})
 	if f.runSetupCommandHook != nil {
-		f.runSetupCommandHook(cmd)
+		f.runSetupCommandHook(cmd, env)
 	}
 	if f.runSetupCommandErr != nil {
 		return f.runSetupCommandErr
+	}
+	if f.runSetupCommandErrForCommand != nil {
+		if err := f.runSetupCommandErrForCommand[cmd]; err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -391,7 +411,7 @@ func TestDoStartSession_DoesNotNudgeAfterCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	ops := &fakeStartOps{
 		hasSessionResult:    true,
-		runSetupCommandHook: func(_ string) { cancel() },
+		runSetupCommandHook: func(_ string, _ map[string]string) { cancel() },
 	}
 
 	cfg := runtime.Config{
@@ -1020,6 +1040,252 @@ func TestDoStartSession_PreStartFailureIsFatal(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "running pre_start") {
 		t.Fatalf("error = %q, want running pre_start", err)
+	}
+
+	assertCallSequence(t, ops, []string{"runSetupCommand"})
+}
+
+func TestDoStartSession_StartGateAddsGCBeadIDBeforeCreate(t *testing.T) {
+	ops := &fakeStartOps{
+		hasSessionResult: true,
+		runSetupCommandHook: func(cmd string, env map[string]string) {
+			if cmd != "claim-work" {
+				return
+			}
+			envPath := env[runtime.StartGateEnv]
+			if envPath == "" {
+				t.Fatal("start_gate command did not receive GC_START_ENV")
+			}
+			if err := os.WriteFile(envPath, []byte("GC_BEAD_ID=bd-1\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile(%s): %v", envPath, err)
+			}
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:   "claude",
+		WorkDir:   "/proj",
+		StartGate: "claim-work",
+		Env:       map[string]string{"GC_SESSION_NAME": "session-1"},
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got := ops.calls[1].env["GC_BEAD_ID"]; got != "bd-1" {
+		t.Fatalf("createSession GC_BEAD_ID = %q, want bd-1; env=%v", got, ops.calls[1].env)
+	}
+}
+
+func TestDoStartSession_StartGateDeclineSkipsCreate(t *testing.T) {
+	ops := &fakeStartOps{
+		runSetupCommandErrForCommand: map[string]error{
+			"claim-work": fakeExitError{code: runtime.StartGateDeclinedExitCode},
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:   "claude",
+		WorkDir:   "/proj",
+		StartGate: "claim-work",
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if !errors.Is(err, runtime.ErrStartGateDeclined) {
+		t.Fatalf("doStartSession() error = %v, want ErrStartGateDeclined", err)
+	}
+
+	assertCallSequence(t, ops, []string{"runSetupCommand"})
+}
+
+func TestDoStartSession_StartGateDeclineWithEnvIsFailure(t *testing.T) {
+	ops := &fakeStartOps{
+		runSetupCommandHook: func(cmd string, env map[string]string) {
+			if cmd != "claim-work" {
+				return
+			}
+			if err := os.WriteFile(env[runtime.StartGateEnv], []byte("GC_BEAD_ID=bd-1\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+		},
+		runSetupCommandErrForCommand: map[string]error{
+			"claim-work": fakeExitError{code: runtime.StartGateDeclinedExitCode},
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:   "claude",
+		WorkDir:   "/proj",
+		StartGate: "claim-work",
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if err == nil {
+		t.Fatal("doStartSession succeeded, want startup failure")
+	}
+	if errors.Is(err, runtime.ErrStartGateDeclined) {
+		t.Fatalf("doStartSession() error = %v, should not be ErrStartGateDeclined when env was written", err)
+	}
+	if got := runtime.StartGateErrorEnv(err)["GC_BEAD_ID"]; got != "bd-1" {
+		t.Fatalf("StartGateErrorEnv GC_BEAD_ID = %q, want bd-1; err=%v", got, err)
+	}
+}
+
+func TestDoStartSession_CarriesStartGateEnvOnStartupFailure(t *testing.T) {
+	ops := &fakeStartOps{
+		createErrs: []error{errors.New("tmux unavailable")},
+		runSetupCommandHook: func(cmd string, env map[string]string) {
+			if cmd != "claim-work" {
+				return
+			}
+			if err := os.WriteFile(env[runtime.StartGateEnv], []byte("GC_BEAD_ID=bd-1\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:   "claude",
+		WorkDir:   "/proj",
+		StartGate: "claim-work",
+		Env:       map[string]string{"GC_SESSION_NAME": "session-1"},
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if err == nil {
+		t.Fatal("doStartSession succeeded, want startup failure")
+	}
+	if got := runtime.StartGateErrorEnv(err)["GC_BEAD_ID"]; got != "bd-1" {
+		t.Fatalf("StartGateErrorEnv GC_BEAD_ID = %q, want bd-1; err=%v", got, err)
+	}
+}
+
+func TestDoStartSession_StartGateFailureDoesNotMutateCallerEnv(t *testing.T) {
+	ops := &fakeStartOps{
+		runSetupCommandHook: func(cmd string, env map[string]string) {
+			if cmd != "claim-work" {
+				return
+			}
+			if err := os.WriteFile(env[runtime.StartGateEnv], []byte("GC_BEAD_ID=bd-1\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+		},
+		runSetupCommandErrForCommand: map[string]error{
+			"claim-work": fakeExitError{code: 2, msg: "claim store unavailable"},
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:   "claude",
+		WorkDir:   "/proj",
+		StartGate: "claim-work",
+		Env:       map[string]string{"GC_SESSION_ID": "session-1"},
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if err == nil {
+		t.Fatal("expected start_gate command failure")
+	}
+	if got := cfg.Env["GC_BEAD_ID"]; got != "" {
+		t.Fatalf("caller cfg.Env GC_BEAD_ID = %q, want unset after failed start_gate", got)
+	}
+	if got := runtime.StartGateErrorEnv(err)["GC_BEAD_ID"]; got != "bd-1" {
+		t.Fatalf("StartGateErrorEnv GC_BEAD_ID = %q, want bd-1", got)
+	}
+
+	assertCallSequence(t, ops, []string{"runSetupCommand"})
+}
+
+func TestDoStartSession_CarriesStartGateEnvOnLaterPreStartFailure(t *testing.T) {
+	ops := &fakeStartOps{
+		runSetupCommandHook: func(cmd string, env map[string]string) {
+			if cmd != "claim-work" {
+				return
+			}
+			if err := os.WriteFile(env[runtime.StartGateEnv], []byte("GC_BEAD_ID=bd-1\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+		},
+		runSetupCommandErrForCommand: map[string]error{
+			"setup-worktree": errors.New("worktree setup failed"),
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:   "claude",
+		WorkDir:   "/proj",
+		StartGate: "claim-work",
+		PreStart:  []string{"setup-worktree"},
+		Env:       map[string]string{"GC_SESSION_ID": "session-1"},
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if err == nil {
+		t.Fatal("expected later pre_start failure")
+	}
+	if got := runtime.StartGateErrorEnv(err)["GC_BEAD_ID"]; got != "bd-1" {
+		t.Fatalf("StartGateErrorEnv GC_BEAD_ID = %q, want bd-1; err=%v", got, err)
+	}
+
+	assertCallSequence(t, ops, []string{"runSetupCommand", "runSetupCommand"})
+}
+
+func TestDoStartSession_RejectsOversizedStartGateEnv(t *testing.T) {
+	ops := &fakeStartOps{
+		runSetupCommandHook: func(cmd string, env map[string]string) {
+			if cmd != "claim-work" {
+				return
+			}
+			data := strings.Repeat("x", runtime.MaxStartGateEnvSize+1)
+			if err := os.WriteFile(env[runtime.StartGateEnv], []byte(data), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:   "claude",
+		WorkDir:   "/proj",
+		StartGate: "claim-work",
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if err == nil {
+		t.Fatal("expected oversized start_gate env error")
+	}
+	if !strings.Contains(err.Error(), runtime.StartGateEnv+" is too large") {
+		t.Fatalf("error = %q, want oversized env error", err)
+	}
+
+	assertCallSequence(t, ops, []string{"runSetupCommand"})
+}
+
+func TestDoStartSession_RejectsInvalidStartGateEnvKey(t *testing.T) {
+	ops := &fakeStartOps{
+		runSetupCommandHook: func(cmd string, env map[string]string) {
+			if cmd != "claim-work" {
+				return
+			}
+			if err := os.WriteFile(env[runtime.StartGateEnv], []byte("BAD-NAME=value\n"), 0o644); err != nil {
+				t.Fatalf("WriteFile: %v", err)
+			}
+		},
+	}
+
+	cfg := runtime.Config{
+		Command:   "claude",
+		WorkDir:   "/proj",
+		StartGate: "claim-work",
+	}
+
+	err := doStartSession(context.Background(), ops, "test", cfg, DefaultConfig().SetupTimeout)
+	if err == nil {
+		t.Fatal("expected invalid env key error")
+	}
+	if !strings.Contains(err.Error(), "invalid env key") {
+		t.Fatalf("error = %q, want invalid env key", err)
 	}
 
 	assertCallSequence(t, ops, []string{"runSetupCommand"})
@@ -1734,5 +2000,46 @@ func TestTmuxStartOpsRunSetupCommandUsesGC_DIRAsWorkingDirectory(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(tmpDir, "prestart-marker")); err != nil {
 		t.Fatalf("prestart-marker not created in GC_DIR: %v", err)
+	}
+}
+
+func TestTmuxStartOpsRunSetupCommandAllowsMissingStartGateGC_DIR(t *testing.T) {
+	tmpDir := t.TempDir()
+	missingDir := filepath.Join(tmpDir, "worktree")
+	markerPath := filepath.Join(tmpDir, "start-gate-marker")
+	ops := &tmuxStartOps{tm: &Tmux{cfg: DefaultConfig()}}
+
+	if err := ops.runSetupCommand(context.Background(), `printf ok > "$MARKER_PATH"`, map[string]string{
+		"GC_DIR":             missingDir,
+		"MARKER_PATH":        markerPath,
+		runtime.StartGateEnv: filepath.Join(tmpDir, "start.env"),
+	}, time.Second); err != nil {
+		t.Fatalf("runSetupCommand: %v", err)
+	}
+
+	if _, err := os.Stat(markerPath); err != nil {
+		t.Fatalf("start_gate marker not created: %v", err)
+	}
+	if _, statErr := os.Stat(missingDir); !os.IsNotExist(statErr) {
+		t.Fatalf("missing GC_DIR stat = %v, want not created by start_gate", statErr)
+	}
+}
+
+func TestTmuxStartOpsRunSetupCommandRejectsMissingNonPreStartGC_DIR(t *testing.T) {
+	tmpDir := t.TempDir()
+	missingDir := filepath.Join(tmpDir, "worktree")
+	ops := &tmuxStartOps{tm: &Tmux{cfg: DefaultConfig()}}
+
+	err := ops.runSetupCommand(context.Background(), "touch setup-marker", map[string]string{
+		"GC_DIR": missingDir,
+	}, time.Second)
+	if err == nil {
+		t.Fatal("runSetupCommand succeeded, want missing GC_DIR error")
+	}
+	if !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("error = %q, want missing GC_DIR error", err)
+	}
+	if _, statErr := os.Stat(missingDir); !os.IsNotExist(statErr) {
+		t.Fatalf("missing GC_DIR stat = %v, want not created", statErr)
 	}
 }

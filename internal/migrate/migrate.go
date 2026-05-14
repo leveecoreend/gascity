@@ -60,6 +60,7 @@ type agentFile struct {
 	WorkDir                string            `toml:"work_dir,omitempty"`
 	Scope                  string            `toml:"scope,omitempty"`
 	Suspended              bool              `toml:"suspended,omitempty"`
+	StartGate              string            `toml:"start_gate,omitempty"`
 	PreStart               []string          `toml:"pre_start,omitempty"`
 	Nudge                  string            `toml:"nudge,omitempty"`
 	Session                string            `toml:"session,omitempty"`
@@ -806,6 +807,7 @@ func agentConfigFromAgent(agent config.Agent) agentFile {
 		WorkDir:                agent.WorkDir,
 		Scope:                  agent.Scope,
 		Suspended:              agent.Suspended,
+		StartGate:              agent.StartGate,
 		PreStart:               agent.PreStart,
 		Nudge:                  agent.Nudge,
 		Session:                agent.Session,
@@ -854,6 +856,7 @@ func isZeroAgentConfig(cfg agentFile) bool {
 		cfg.WorkDir == "" &&
 		cfg.Scope == "" &&
 		!cfg.Suspended &&
+		cfg.StartGate == "" &&
 		len(cfg.PreStart) == 0 &&
 		cfg.Nudge == "" &&
 		cfg.Session == "" &&

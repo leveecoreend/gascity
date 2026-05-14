@@ -2344,6 +2344,9 @@ func applyAgentOverride(a *Agent, ov *AgentOverride) {
 	if ov.Suspended != nil {
 		a.Suspended = *ov.Suspended
 	}
+	if ov.StartGate != nil {
+		a.StartGate = *ov.StartGate
+	}
 	if len(ov.PreStart) > 0 {
 		a.PreStart = append([]string(nil), ov.PreStart...)
 	}

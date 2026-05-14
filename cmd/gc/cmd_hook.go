@@ -15,28 +15,49 @@ import (
 	"github.com/gastownhall/gascity/internal/config"
 )
 
+type claimFlagConflictError struct{}
+
+func (claimFlagConflictError) Error() string { return "claim flag conflict" }
+
 func newHookCmd(stdout, stderr io.Writer) *cobra.Command {
 	var inject bool
 	var hookFormat string
+	var claim bool
+	var startGate bool
 	cmd := &cobra.Command{
 		Use:   "hook [agent]",
 		Short: "Check for available work",
 		Long: `Checks for available work using the agent's work_query config.
 
 Without --inject: prints raw output, exits 0 if work exists, 1 if empty.
+With --claim: atomically claims one work item for the current session and prints it as JSON.
+With --claim, exit 1 means no claimable work; exit 2 means a hard hook failure.
 With --inject: silent legacy Stop-hook compatibility; skips the work query and always exits 0.
 
 		The agent is determined from $GC_AGENT or a positional argument.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
-			if cmdHookWithFormat(args, inject, hookFormat, stdout, stderr) != 0 {
-				return errExit
+			if inject && claim {
+				fmt.Fprintln(stderr, "gc hook: --inject and --claim cannot be used together") //nolint:errcheck // best-effort stderr
+				return claimFlagConflictError{}
 			}
-			return nil
+			if startGate && !claim {
+				fmt.Fprintln(stderr, "gc hook: --start-gate requires --claim") //nolint:errcheck // best-effort stderr
+				return claimFlagConflictError{}
+			}
+			code := cmdHookWithOptions(args, hookCommandOptions{
+				Inject:     inject,
+				HookFormat: hookFormat,
+				Claim:      claim,
+				StartGate:  startGate,
+			}, stdout, stderr)
+			return exitForCode(code)
 		},
 	}
 	cmd.Flags().BoolVar(&inject, "inject", false, "silent legacy Stop-hook compatibility; skip work query and exit 0")
 	cmd.Flags().StringVar(&hookFormat, "hook-format", "", "format hook output for a provider")
+	cmd.Flags().BoolVar(&claim, "claim", false, "atomically claim one work item for the current session")
+	cmd.Flags().BoolVar(&startGate, "start-gate", false, "write claimed work env to $GC_START_ENV and use start_gate exit codes")
 	if flag := cmd.Flags().Lookup("hook-format"); flag != nil {
 		flag.Hidden = true
 	}
@@ -51,23 +72,42 @@ func cmdHook(args []string, stdout, stderr io.Writer) int {
 }
 
 func cmdHookWithFormat(args []string, inject bool, hookFormat string, stdout, stderr io.Writer) int {
-	if inject {
+	return cmdHookWithOptions(args, hookCommandOptions{Inject: inject, HookFormat: hookFormat}, stdout, stderr)
+}
+
+type hookCommandOptions struct {
+	Inject     bool
+	HookFormat string
+	Claim      bool
+	StartGate  bool
+}
+
+func cmdHookWithOptions(args []string, opts hookCommandOptions, stdout, stderr io.Writer) int {
+	if opts.Inject {
 		return 0
 	}
 	// Accepted for compatibility with installed hook commands; non-inject
 	// gc hook output is intentionally raw regardless of provider format.
-	_ = hookFormat
+	_ = opts.HookFormat
 
 	agentName := os.Getenv("GC_ALIAS")
 	if agentName == "" {
 		agentName = os.Getenv("GC_AGENT")
 	}
+	runtimeSessionName := strings.TrimSpace(os.Getenv("GC_SESSION_NAME"))
+	runtimeSessionID := strings.TrimSpace(os.Getenv("GC_SESSION_ID"))
+	runtimeSessionAssignee := runtimeSessionID
+	if runtimeSessionAssignee == "" {
+		runtimeSessionAssignee = runtimeSessionName
+	}
+	runtimeSessionForQuery := runtimeSessionName
+	if runtimeSessionForQuery == "" {
+		runtimeSessionForQuery = runtimeSessionAssignee
+	}
 	sessionTemplateContext := false
 	if len(args) == 0 {
 		template := strings.TrimSpace(os.Getenv("GC_TEMPLATE"))
-		hasSessionContext := strings.TrimSpace(os.Getenv("GC_SESSION_NAME")) != "" ||
-			strings.TrimSpace(os.Getenv("GC_SESSION_ID")) != ""
-		if template != "" && hasSessionContext {
+		if template != "" && runtimeSessionAssignee != "" {
 			agentName = template
 			sessionTemplateContext = true
 		}
@@ -111,6 +151,10 @@ func cmdHookWithFormat(args []string, inject bool, hookFormat string, stdout, st
 		fmt.Fprintf(stderr, "gc hook: agent %q is suspended\n", agentName) //nolint:errcheck // best-effort stderr
 		return 1
 	}
+	if opts.Claim && runtimeSessionAssignee == "" {
+		fmt.Fprintln(stderr, "gc hook: --claim requires runtime session context ($GC_SESSION_NAME or $GC_SESSION_ID)") //nolint:errcheck // best-effort stderr
+		return hookClaimExitFailure
+	}
 
 	cityName := loadedCityName(cfg, cityPath)
 	workQuery := a.EffectiveWorkQuery()
@@ -130,32 +174,97 @@ func cmdHookWithFormat(args []string, inject bool, hookFormat string, stdout, st
 	resolvedAgentName := a.QualifiedName()
 	agentForQuery := resolvedAgentName
 	sessionForQuery := ""
-	if sessionTemplateContext {
+	switch {
+	case sessionTemplateContext:
 		agentForQuery = os.Getenv("GC_ALIAS")
 		if agentForQuery == "" {
-			agentForQuery = os.Getenv("GC_SESSION_NAME")
+			agentForQuery = runtimeSessionName
 		}
 		if agentForQuery == "" {
 			agentForQuery = os.Getenv("GC_AGENT")
 		}
-		sessionForQuery = os.Getenv("GC_SESSION_NAME")
-	} else {
+		sessionForQuery = runtimeSessionForQuery
+	case opts.Claim:
+		sessionForQuery = runtimeSessionForQuery
+	default:
 		sessionForQuery = cliSessionName(cityPath, cityName, resolvedAgentName, cfg.Workspace.SessionTemplate)
+	}
+	if opts.Claim {
+		workQuery = prependHookClaimSessionWorkQuery(workQuery)
 	}
 	overrides := hookQueryEnv(cityPath, cfg, &a)
 	overrides["GC_AGENT"] = agentForQuery
 	overrides["GC_SESSION_NAME"] = sessionForQuery
+	if opts.Claim || sessionTemplateContext {
+		overrides["GC_SESSION_ID"] = runtimeSessionID
+	}
 	if sessionTemplateContext {
 		overrides["GC_ALIAS"] = os.Getenv("GC_ALIAS")
-		overrides["GC_SESSION_ID"] = os.Getenv("GC_SESSION_ID")
 		overrides["GC_SESSION_ORIGIN"] = os.Getenv("GC_SESSION_ORIGIN")
 		overrides["GC_TEMPLATE"] = os.Getenv("GC_TEMPLATE")
+	}
+	if opts.Claim && a.WorkQuery == "" {
+		// Claim mode only owns runtime session identities; keep the default
+		// query's alias tiers from surfacing work we must not adopt.
+		overrides["GC_ALIAS"] = ""
 	}
 	queryEnv := mergeRuntimeEnv(os.Environ(), overrides)
 	runner := func(command, dir string) (string, error) {
 		return shellWorkQueryWithEnv(command, dir, queryEnv)
 	}
-	return doHook(workQuery, workDir, inject, runner, stdout, stderr)
+	if opts.Claim {
+		startGateEnvPath := ""
+		if opts.StartGate {
+			startGateEnvPath = strings.TrimSpace(os.Getenv(hookStartGateEnv))
+		}
+		identities := hookClaimOwnerIdentities(runtimeSessionID, runtimeSessionName, sessionForQuery)
+		return doHookClaim(workQuery, workDir, runner, shellHookClaimExecutor{env: queryEnv}, hookClaimOptions{
+			Assignee:         runtimeSessionAssignee,
+			Identities:       identities,
+			StartGate:        opts.StartGate,
+			StartGateEnvPath: startGateEnvPath,
+		}, stdout, stderr)
+	}
+	return doHook(workQuery, workDir, false, runner, stdout, stderr)
+}
+
+func prependHookClaimSessionWorkQuery(workQuery string) string {
+	return `_gc_hook_claim_check_work() { ` +
+		`[ -n "$1" ] || return 1; ` +
+		`[ "$1" != "[]" ] || return 1; ` +
+		`case "$1" in \[*) return 0;; esac; ` +
+		`case "$1" in *"No ready work found"*) return 1;; esac; ` +
+		`return 2; ` +
+		`}; ` +
+		`if [ -n "$GC_SESSION_ID" ]; then set -- "$GC_SESSION_ID" "$GC_SESSION_NAME"; else set -- "$GC_SESSION_NAME"; fi; ` +
+		`for id do ` +
+		`[ -z "$id" ] && continue; ` +
+		`r=$(bd list --status in_progress --assignee="$id" --exclude-type=epic --json 2>/dev/null) || exit 2; ` +
+		`_gc_hook_claim_check_work "$r"; rc=$?; [ "$rc" -eq 0 ] && printf "%s" "$r" && exit 0; [ "$rc" -eq 2 ] && exit 2; ` +
+		`r=$(bd ready --assignee="$id" --exclude-type=epic --json 2>/dev/null) || exit 2; ` +
+		`_gc_hook_claim_check_work "$r"; rc=$?; [ "$rc" -eq 0 ] && printf "%s" "$r" && exit 0; [ "$rc" -eq 2 ] && exit 2; ` +
+		`done; set --; ` + workQuery
+}
+
+func hookClaimOwnerIdentities(runtimeSessionID, runtimeSessionName, sessionForQuery string) []string {
+	if strings.TrimSpace(runtimeSessionID) != "" {
+		return hookIdentityCandidates(runtimeSessionID, runtimeSessionName, sessionForQuery)
+	}
+	return hookIdentityCandidates(runtimeSessionName, sessionForQuery)
+}
+
+func hookIdentityCandidates(values ...string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 // hookQueryEnv returns the full work-query environment for a hook subprocess.

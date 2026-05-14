@@ -151,6 +151,7 @@ func resolvePhase2Template(t *testing.T, tc phase2ProviderCase) TemplateParams {
 		Provider:           tc.family,
 		WorkDir:            filepath.Join(".gc", "agents", "phase2", tc.family),
 		Nudge:              "nudge-" + tc.family,
+		StartGate:          "echo gate-" + tc.family,
 		PreStart:           []string{"echo pre-" + tc.family},
 		SessionSetup:       []string{"echo setup-" + tc.family},
 		SessionSetupScript: filepath.Join("scripts", tc.family+".sh"),

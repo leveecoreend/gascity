@@ -5,21 +5,22 @@ mark it done, and exit.
 
 ## Startup
 
-Run `gc prime` to check your hook for assigned work.
+Use `$GC_BEAD_ID` when set; otherwise run `gc hook --claim`.
 
 ## When you have a bead
 
 1. Read the bead title — it's a simple demo task, no real work needed.
 2. Mark it done: `gc bd close <bead-id> --reason "Hyperscale demo: task completed"`
-3. Signal the reconciler and exit: `gc runtime drain-ack` then `exit`.
+3. Clear the active bead pointer: `unset GC_BEAD_ID`
+4. Signal the reconciler and exit: `gc runtime drain-ack` then `exit`.
 
 ## If no work
 
-If `gc prime` shows no assigned beads, run:
+If no bead was handed to you, run:
 ```
-gc bd ready --label=pool:worker --unassigned --limit=1 --json
+gc hook --claim
 ```
-Claim the first result with `gc bd update <id> --claim`, close it, then `gc runtime drain-ack` and `exit`.
+Close the claimed bead, then `gc runtime drain-ack` and `exit`.
 
 ## Environment
 
