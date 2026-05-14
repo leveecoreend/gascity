@@ -152,36 +152,36 @@ not a git-specific concept. A source may be:
 
 This proposal does not otherwise tie registries to GitHub or git semantics.
 
-## CLI Command Trees
+## CLI Surface
 
 The operations one wants to do when managing imports from one package to
-another have *some* overlap with the operations one wants to do on a registry;
-however, there are enough differences to warrant two command trees:
+another have *some* overlap with the operations one wants to do on a registry.
+This proposal keeps them under one top-level command surface:
 
-- `gc pack` which is focused exclusively on managing package-to-package import
-  graphs
-- `gc registry` which is focused on discovery of packages based on name,
-  description, or version
+- `gc pack` owns package-to-package import graphs, fetched state, and upgrade
+  flow
+- `gc pack registry` owns registry configuration and discovery
 
-The two work in tandem: the result of a registry search is a qualified name
-that can be passed directly to the add command that creates the import.
+The two sub-surfaces work in tandem: the result of a registry search is a
+qualified name that can be passed directly to the add command that creates the
+import.
 
 This design is silent with respect to *where* packages are stored:
 
 - Registries are index only
 - Caches are largely opaque and contain fetched content only based on a pack's
   `[import]` declarations.
-- `gc pack show` inspects local imports; `gc registry show` inspects exact
+- `gc pack show` inspects local imports; `gc pack registry show` inspects exact
   catalog entries
 
-### `gc registry`
+### `gc pack registry`
 
 ```text
-gc registry list
-gc registry add <registry-name> <source>
-gc registry remove <registry-name>
-gc registry search [query] [--registry <name>]
-gc registry show <qualified-pack-name>
+gc pack registry list
+gc pack registry add <registry-name> <source>
+gc pack registry remove <registry-name>
+gc pack registry search [query] [--registry <name>]
+gc pack registry show <qualified-pack-name>
 ```
 
 ### `gc pack`
@@ -391,26 +391,27 @@ gc pack upgrade [<import-name>] [--pack <path>] [--rig <name-or-path>]
   data; the exact caching policy for `registry.toml` itself remains a parked
   question
 
-## `gc registry`
+## `gc pack registry`
 
-`gc registry` owns machine-known registry configuration and catalog browsing.
+`gc pack registry` owns machine-known registry configuration and catalog
+browsing.
 
 ### Surface area
 
 | Command | Meaning |
 |---|---|
-| `gc registry list` | List configured registries from `~/.gc/registries.toml`. |
-| `gc registry add <registry-name> <source>` | Add one configured registry entry. |
-| `gc registry remove <registry-name>` | Remove one configured registry entry. |
-| `gc registry search [query] [--registry <name>]` | Search pack entries across all registries by default; with no query, return everything. |
-| `gc registry show <qualified-pack-name>` | Show one exact pack catalog entry from a registry. |
+| `gc pack registry list` | List configured registries from `~/.gc/registries.toml`. |
+| `gc pack registry add <registry-name> <source>` | Add one configured registry entry. |
+| `gc pack registry remove <registry-name>` | Remove one configured registry entry. |
+| `gc pack registry search [query] [--registry <name>]` | Search pack entries across all registries by default; with no query, return everything. |
+| `gc pack registry show <qualified-pack-name>` | Show one exact pack catalog entry from a registry. |
 
 ### Signatures and semantics
 
-#### `gc registry list`
+#### `gc pack registry list`
 
 ```text
-gc registry list
+gc pack registry list
 ```
 
 - lists configured registries from `~/.gc/registries.toml`
@@ -424,10 +425,10 @@ main   https://registries.gascity.example/main/registry.toml
 acme   https://registries.acme.example/catalog/registry.toml
 ```
 
-#### `gc registry add`
+#### `gc pack registry add`
 
 ```text
-gc registry add <registry-name> <source>
+gc pack registry add <registry-name> <source>
 ```
 
 - adds one configured registry entry
@@ -436,19 +437,19 @@ gc registry add <registry-name> <source>
   registry itself; each registry owns and manages its own published
   `registry.toml`
 
-#### `gc registry remove`
+#### `gc pack registry remove`
 
 ```text
-gc registry remove <registry-name>
+gc pack registry remove <registry-name>
 ```
 
 - removes one configured registry entry
 - edits `~/.gc/registries.toml`
 
-#### `gc registry search`
+#### `gc pack registry search`
 
 ```text
-gc registry search [query] [--registry <name>]
+gc pack registry search [query] [--registry <name>]
 ```
 
 - uses a plain text query, not regex
@@ -466,10 +467,10 @@ main      lighthouse   1.2.0   Harbor-watch checks and incident response workflo
 acme      lighthouse   2.0.1   Acme-flavored harbor patrol and response tooling.
 ```
 
-#### `gc registry show`
+#### `gc pack registry show`
 
 ```text
-gc registry show <qualified-pack-name>
+gc pack registry show <qualified-pack-name>
 ```
 
 - exact-address lookup for one pack catalog entry
@@ -512,7 +513,7 @@ These are the file-format rules.
 This is the machine-known registry config.
 
 - lives under `~/.gc/registries.toml`
-- is edited by `gc registry add` / `gc registry remove`
+- is edited by `gc pack registry add` / `gc pack registry remove`
 - does not carry pack descriptions
 - does not define a default registry
 
