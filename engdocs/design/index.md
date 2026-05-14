@@ -23,5 +23,6 @@ lives in the [Architecture](../architecture/index.md) section.
 | `beads-dolt-contract-redesign` | Accepted | Canonical bd+Dolt contract, topology commands, migration, and provider-boundary redesign |
 | `idle-session-sleep` | Accepted | Idle-sleep policy, precedence, and wake mechanics |
 | `named-configured-sessions` | Accepted | Explicit canonical named sessions backed by reusable templates |
+| `pack-import-export-surface` | Proposed | Replace `transitive` / `export` with explicit imports plus exports |
 | `external-messaging-fabric` | Implemented | Provider-neutral external conversation bindings, delivery context, and group sessions |
 | `external-messaging-shared-threads` | Implemented | Transcript-backed shared-thread model with membership replay and speaker-only group routing |
