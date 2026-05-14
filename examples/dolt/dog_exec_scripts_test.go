@@ -1255,7 +1255,7 @@ func TestPhantomDBScriptEscalatesAndPreservesAllDatabases(t *testing.T) {
 	cityPath := t.TempDir()
 	dataDir := filepath.Join(cityPath, "dolt-data")
 	binDir := t.TempDir()
-	_ = writeDogFakeGC(t, binDir)
+	gcLogPath := writeDogFakeGC(t, binDir)
 
 	for _, path := range []string{
 		filepath.Join(dataDir, "valid", ".dolt", "noms"),
@@ -1288,6 +1288,23 @@ func TestPhantomDBScriptEscalatesAndPreservesAllDatabases(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("quarantine directory non-empty: got %d entries: %v", len(matches), matches)
+	}
+	gcLogData, err := os.ReadFile(gcLogPath)
+	if err != nil {
+		t.Fatalf("read gc log: %v", err)
+	}
+	gcLog := string(gcLogData)
+	if !strings.Contains(gcLog, "unservable database directories") {
+		t.Fatalf("escalation should use neutral unservable wording:\n%s", gcLog)
+	}
+	if !strings.Contains(gcLog, "Phantoms missing noms/manifest: 1 phantom") {
+		t.Fatalf("escalation should report phantom directories separately:\n%s", gcLog)
+	}
+	if !strings.Contains(gcLog, "Retired replacement directories: 1 orders.replaced-20260509T010203Z") {
+		t.Fatalf("escalation should report retired replacements separately:\n%s", gcLog)
+	}
+	if strings.Contains(gcLog, "phantom database(s)") {
+		t.Fatalf("escalation should not label all unservables as phantoms:\n%s", gcLog)
 	}
 }
 

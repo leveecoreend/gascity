@@ -22,6 +22,8 @@ fi
 
 SCANNED=0
 UNSERVABLES=""
+PHANTOMS=""
+RETIRED_REPLACEMENTS=""
 PHANTOM_COUNT=0
 RETIRED_COUNT=0
 UNSERVABLE_COUNT=0
@@ -38,11 +40,13 @@ for dir in "$DATA_DIR"/*/; do
     if [ -d "$dir/.dolt" ]; then
         if [ ! -f "$dir/.dolt/noms/manifest" ]; then
             PHANTOM_COUNT=$((PHANTOM_COUNT + 1))
+            PHANTOMS="$PHANTOMS $db_name"
             is_unservable=1
         fi
         case "$db_name" in
             *.replaced-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z)
                 RETIRED_COUNT=$((RETIRED_COUNT + 1))
+                RETIRED_REPLACEMENTS="$RETIRED_REPLACEMENTS $db_name"
                 is_unservable=1
                 ;;
         esac
@@ -66,11 +70,15 @@ fi
 
 gc mail send mayor/ \
     -s "ESCALATION: Unservable Dolt databases detected [HIGH]" \
-    -m "Dolt: detected $UNSERVABLE_COUNT phantom database(s) in $DATA_DIR:$UNSERVABLES — requires Dolt server restart to resolve.
+    -m "Dolt: detected $UNSERVABLE_COUNT unservable database directories in $DATA_DIR:$UNSERVABLES.
 
-On the next server start, Dolt's ListDatabases skips phantom directories
-with a stderr warning; restarting is sufficient to clear the immediate
-crash risk. To reclaim disk space after the restart:
+Phantoms missing noms/manifest: $PHANTOM_COUNT${PHANTOMS:- (none)}
+Retired replacement directories: $RETIRED_COUNT${RETIRED_REPLACEMENTS:- (none)}
+
+This order is read-only and did not move or delete any database directory.
+Operator remediation is required. Stop the Dolt server before removing
+phantom directories manually. For retired replacement directories that Dolt
+still lists after restart, verify they are no longer needed and use:
 
   dolt sql -q 'DROP DATABASE \`<db_name>\`;'
 
