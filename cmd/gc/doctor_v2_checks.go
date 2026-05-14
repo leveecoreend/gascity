@@ -29,14 +29,26 @@ func (v2AgentFormatCheck) Name() string                     { return "v2-agent-f
 func (v2AgentFormatCheck) CanFix() bool                     { return false }
 func (v2AgentFormatCheck) Fix(_ *doctor.CheckContext) error { return nil }
 func (v2AgentFormatCheck) Run(ctx *doctor.CheckContext) *doctor.CheckResult {
-	files := legacyAgentFiles(ctx.CityPath)
-	if len(files) == 0 {
+	cityHasLegacy, packHasLegacy := legacyAgentFiles(ctx.CityPath)
+	switch {
+	case !cityHasLegacy && !packHasLegacy:
 		return okCheck("v2-agent-format", "no legacy [[agent]] tables found")
+	case cityHasLegacy && packHasLegacy:
+		return errorCheck("v2-agent-format",
+			"unsupported PackV1 [[agent]] tables found in city.toml; pack.toml also still uses deferred legacy [[agent]] tables",
+			"move each city.toml [[agent]] definition into agents/<name>/agent.toml; pack.toml [[agent]] enforcement remains deferred until doctor/remediation support exists",
+			[]string{"city.toml", "pack.toml"})
+	case cityHasLegacy:
+		return errorCheck("v2-agent-format",
+			"unsupported PackV1 [[agent]] tables found in city.toml",
+			"move each city.toml [[agent]] definition into agents/<name>/agent.toml; gc doctor does not rewrite inline agents automatically in this wave",
+			[]string{"city.toml"})
+	default:
+		return warnCheck("v2-agent-format",
+			"legacy [[agent]] tables still present in pack.toml; enforcement is deferred until doctor/remediation support exists",
+			"leave this as-is for now or migrate to agents/<name>/agent.toml ahead of the follow-on enforcement pass",
+			[]string{"pack.toml"})
 	}
-	return warnCheck("v2-agent-format",
-		fmt.Sprintf("legacy [[agent]] tables found in %s", strings.Join(files, ", ")),
-		v2MigrationHint(),
-		files)
 }
 
 type v2ImportFormatCheck struct{}
@@ -49,9 +61,9 @@ func (v2ImportFormatCheck) Run(ctx *doctor.CheckContext) *doctor.CheckResult {
 	if !ok || len(cfg.Workspace.Includes) == 0 {
 		return okCheck("v2-import-format", "workspace.includes already migrated")
 	}
-	return warnCheck("v2-import-format",
-		"workspace.includes is deprecated; migrate this city to [imports] before gc can load it from pack.toml and city.toml",
-		v2MigrationHint(),
+	return errorCheck("v2-import-format",
+		"unsupported PackV1 workspace.includes found; migrate this city to [imports] before gc can load it",
+		"replace workspace.includes with [imports.<binding>] entries; gc doctor does not rewrite import bindings automatically in this wave",
 		cfg.Workspace.Includes)
 }
 
@@ -65,8 +77,8 @@ func (v2DefaultRigImportFormatCheck) Run(ctx *doctor.CheckContext) *doctor.Check
 	if !ok || len(cfg.Workspace.DefaultRigIncludes) == 0 {
 		return okCheck("v2-default-rig-import-format", "workspace.default_rig_includes already migrated")
 	}
-	return warnCheck("v2-default-rig-import-format",
-		"workspace.default_rig_includes is deprecated; migrate to root pack.toml [defaults.rig.imports.<binding>]",
+	return errorCheck("v2-default-rig-import-format",
+		"unsupported PackV1 workspace.default_rig_includes found; migrate to root pack.toml [defaults.rig.imports.<binding>]",
 		`move each entry into root pack.toml [defaults.rig.imports.<binding>]`,
 		cfg.Workspace.DefaultRigIncludes)
 }
@@ -229,6 +241,12 @@ func (v2RigPathSiteBindingCheck) Run(ctx *doctor.CheckContext) *doctor.CheckResu
 	}
 	if len(messages) == 0 {
 		return okCheck("v2-rig-path-site-binding", "rig paths already managed in .gc/site.toml")
+	}
+	if len(legacy) > 0 {
+		return errorCheck("v2-rig-path-site-binding",
+			strings.Join(messages, "; "),
+			strings.Join(hints, "; "),
+			details)
 	}
 	return warnCheck("v2-rig-path-site-binding",
 		strings.Join(messages, "; "),
@@ -402,7 +420,7 @@ func (v2WorkspaceNameCheck) Run(ctx *doctor.CheckContext) *doctor.CheckResult {
 	if rawPrefix != "" {
 		details = append(details, "workspace.prefix="+rawPrefix)
 	}
-	return warnCheck("v2-workspace-name",
+	return errorCheck("v2-workspace-name",
 		"workspace identity still lives in city.toml",
 		"run `gc doctor --fix` to migrate workspace.name/workspace.prefix into .gc/site.toml",
 		details)
@@ -438,8 +456,14 @@ func warnCheck(name, message, hint string, details []string) *doctor.CheckResult
 	}
 }
 
-func v2MigrationHint() string {
-	return `run "gc doctor --fix" to rewrite safe mechanical cases, then rerun "gc doctor"`
+func errorCheck(name, message, hint string, details []string) *doctor.CheckResult {
+	return &doctor.CheckResult{
+		Name:    name,
+		Status:  doctor.StatusError,
+		Message: message,
+		FixHint: hint,
+		Details: details,
+	}
 }
 
 func parseCityConfig(path string) (*config.City, bool) {
@@ -454,10 +478,9 @@ func parseCityConfig(path string) (*config.City, bool) {
 	return cfg, true
 }
 
-func legacyAgentFiles(cityPath string) []string {
-	var files []string
+func legacyAgentFiles(cityPath string) (cityHasLegacy, packHasLegacy bool) {
 	if cfg, ok := parseCityConfig(filepath.Join(cityPath, "city.toml")); ok && len(cfg.Agents) > 0 {
-		files = append(files, "city.toml")
+		cityHasLegacy = true
 	}
 	type rawPack struct {
 		Agents []config.Agent `toml:"agent"`
@@ -466,10 +489,10 @@ func legacyAgentFiles(cityPath string) []string {
 	if data, err := os.ReadFile(packPath); err == nil {
 		var pack rawPack
 		if _, err := toml.Decode(string(data), &pack); err == nil && len(pack.Agents) > 0 {
-			files = append(files, "pack.toml")
+			packHasLegacy = true
 		}
 	}
-	return files
+	return cityHasLegacy, packHasLegacy
 }
 
 func templatedMarkdownPrompts(cityPath string) []string {

@@ -45,8 +45,8 @@ func IsLegacyV1SurfaceWarning(warning string) bool {
 //
 // Stable ordering: agent → packs → workspace.includes →
 // workspace.default_rig_includes. Each warning is prefixed with the
-// provided source (typically the city.toml path) and names a concrete
-// migration command.
+// provided source (typically the city.toml path) and points callers at
+// gc doctor as the remediation entrypoint.
 func DetectLegacyV1Surfaces(cfg *City, source string) []string {
 	if cfg == nil {
 		return nil
@@ -55,27 +55,78 @@ func DetectLegacyV1Surfaces(cfg *City, source string) []string {
 	if len(cfg.Agents) > 0 {
 		warnings = append(warnings, fmt.Sprintf(
 			"%s: [[agent]] tables are deprecated in v2; use directory-based "+
-				"agents under agents/<name>/. Run `gc import migrate` to migrate.",
+				"agents under agents/<name>/. Run `gc doctor` for migration guidance; "+
+				"PackV1 city config is no longer upgraded in place.",
 			source))
 	}
 	if len(cfg.Packs) > 0 {
 		warnings = append(warnings, fmt.Sprintf(
 			"%s: [packs] is deprecated in v2; use [imports] + packs.lock. "+
-				"Run `gc import migrate` to migrate.",
+				"Run `gc doctor` for migration guidance; PackV1 city config is no "+
+				"longer upgraded in place.",
 			source))
 	}
 	if len(cfg.Workspace.Includes) > 0 {
 		warnings = append(warnings, fmt.Sprintf(
-			"%s: workspace.includes is deprecated in v2; use [imports]. "+
-				"Run `gc import migrate` to migrate.",
+			"%s: workspace.includes is deprecated in v2; use [imports]. Run "+
+				"`gc doctor` for migration guidance; PackV1 city config is no "+
+				"longer upgraded in place.",
 			source))
 	}
 	if len(cfg.Workspace.DefaultRigIncludes) > 0 {
 		warnings = append(warnings, fmt.Sprintf(
 			"%s: workspace.default_rig_includes is deprecated in v2; use "+
-				"root pack.toml [defaults.rig.imports.<binding>]. Run "+
-				"`gc import migrate` to migrate.",
+				"root pack.toml [defaults.rig.imports.<binding>]. Run `gc doctor` "+
+				"for migration guidance; PackV1 city config is no longer upgraded "+
+				"in place.",
 			source))
 	}
 	return warnings
+}
+
+// LegacyV1SurfaceErrors returns hard-error diagnostics for legacy PackV1
+// surfaces that are no longer supported in Wave 2 enforcement paths.
+//
+// This intentionally does not replace DetectLegacyV1Surfaces: callers like
+// doctor and strict-warning filters still need stable warning strings while
+// the broader remediation messaging stays aligned. Load paths that are ready
+// to enforce should call LegacyV1SurfaceError instead.
+func LegacyV1SurfaceErrors(cfg *City, source string) []string {
+	if cfg == nil {
+		return nil
+	}
+
+	var errors []string
+	if len(cfg.Agents) > 0 {
+		errors = append(errors, fmt.Sprintf(
+			"%s: unsupported PackV1 [[agent]] tables; move each agent to agents/<name>/agent.toml",
+			source))
+	}
+	if len(cfg.Packs) > 0 {
+		errors = append(errors, fmt.Sprintf(
+			"%s: unsupported PackV1 [packs] entries; replace them with [imports] and regenerate packs.lock",
+			source))
+	}
+	if len(cfg.Workspace.Includes) > 0 {
+		errors = append(errors, fmt.Sprintf(
+			"%s: unsupported PackV1 workspace.includes; replace it with [imports.<binding>] entries",
+			source))
+	}
+	if len(cfg.Workspace.DefaultRigIncludes) > 0 {
+		errors = append(errors, fmt.Sprintf(
+			"%s: unsupported PackV1 workspace.default_rig_includes; move defaults into root pack.toml [defaults.rig.imports.<binding>]",
+			source))
+	}
+	return errors
+}
+
+// LegacyV1SurfaceError aggregates legacy PackV1 surface violations into one
+// load-time error for Wave 2 enforcement paths.
+func LegacyV1SurfaceError(cfg *City, source string) error {
+	violations := LegacyV1SurfaceErrors(cfg, source)
+	if len(violations) == 0 {
+		return nil
+	}
+	return fmt.Errorf("PackV1 config surfaces are no longer supported:\n  - %s",
+		strings.Join(violations, "\n  - "))
 }

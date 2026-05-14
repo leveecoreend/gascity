@@ -1,4 +1,4 @@
-# gc import migrate rewrites legacy layouts via the CLI.
+# gc import migrate is now a deprecated shim that points users at gc doctor.
 
 env GC_SESSION=fake
 env GC_BEADS=file
@@ -6,34 +6,25 @@ env GC_DOLT=skip
 
 cd $WORK/legacy-city
 
-# Dry-run reports changes without writing files.
-exec gc import migrate --dry-run
-stdout 'Planned changes for'
-stdout 'rewrite city.toml'
-stdout 'rewrite pack.toml'
-stdout 'No side effects executed \x28--dry-run\x29\.'
+# Dry-run no longer migrates in place; it fails with doctor guidance.
+! exec gc import migrate --dry-run
+stderr 'retired as a PackV1 migration path'
+stderr 'Run `gc doctor` to inventory legacy PackV1 surfaces'
+stderr 'Run `gc doctor --fix` only for safe mechanical remediation'
 ! exists $WORK/legacy-city/pack.toml
 ! exists $WORK/legacy-city/agents
 exec grep '\[\[agent\]\]' $WORK/legacy-city/city.toml
 
-# Real migration rewrites config and moves assets.
-exec gc import migrate
-stdout 'Applied changes for'
-stdout 'warning: dropped fallback field'
-exists $WORK/legacy-city/pack.toml
-exists $WORK/legacy-city/agents/mayor/agent.toml
-exists $WORK/legacy-city/agents/mayor/prompt.template.md
-exists $WORK/legacy-city/agents/mayor/overlay/CLAUDE.md
-exists $WORK/legacy-city/agents/mayor/namepool.txt
-! exists $WORK/legacy-city/prompts/mayor.md
-! exists $WORK/legacy-city/overlays/mayor
-! exists $WORK/legacy-city/namepools/mayor.txt
-exec grep '\[imports.gastown\]' $WORK/legacy-city/pack.toml
-exec grep '\[defaults.rig.imports.default-rig\]' $WORK/legacy-city/pack.toml
-exec grep 'source = "../packs/default rig"' $WORK/legacy-city/pack.toml
-! exec grep '\[\[agent\]\]' $WORK/legacy-city/city.toml
-! exec grep '^includes =' $WORK/legacy-city/city.toml
-! exec grep 'default_rig_includes = \["../packs/default rig"\]' $WORK/legacy-city/city.toml
+# Real invocation is the same shim.
+! exec gc import migrate
+stderr 'retired as a PackV1 migration path'
+stderr 'Run `gc doctor` to inventory legacy PackV1 surfaces'
+stderr 'Run `gc doctor --fix` only for safe mechanical remediation'
+! exists $WORK/legacy-city/pack.toml
+! exists $WORK/legacy-city/agents
+exec grep '\[\[agent\]\]' $WORK/legacy-city/city.toml
+exec grep '^includes =' $WORK/legacy-city/city.toml
+exec grep 'default_rig_includes = \["../packs/default rig"\]' $WORK/legacy-city/city.toml
 
 -- legacy-city/city.toml --
 [workspace]
