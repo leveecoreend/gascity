@@ -1460,6 +1460,29 @@ func TestEffectiveWorkQueryDefault(t *testing.T) {
 	}
 }
 
+func TestEffectiveWorkQueryClaimsSlingAssignedWorkBeforeUnassignedRoute(t *testing.T) {
+	a := Agent{Name: "deep-investigator"}
+	out := runEffectiveWorkQuery(t, a, map[string]string{
+		"GC_ALIAS": "deep-investigator",
+	}, `#!/bin/sh
+set -eu
+case "$*" in
+  "ready --assignee=deep-investigator --json --limit=1")
+    printf '[{"id":"ga-assigned","assignee":"deep-investigator","metadata":{"gc.routed_to":"deep-investigator"}}]'
+    ;;
+  "ready --metadata-field gc.routed_to=deep-investigator --unassigned --json --limit=1")
+    printf '[{"id":"ga-unassigned","metadata":{"gc.routed_to":"deep-investigator"}}]'
+    ;;
+  *)
+    printf '[]'
+    ;;
+esac
+`)
+	if got, want := strings.TrimSpace(out), `[{"id":"ga-assigned","assignee":"deep-investigator","metadata":{"gc.routed_to":"deep-investigator"}}]`; got != want {
+		t.Fatalf("assigned routed work query output = %q, want %q", got, want)
+	}
+}
+
 func TestEffectiveWorkQueryCustom(t *testing.T) {
 	a := Agent{Name: "mayor", WorkQuery: "bd ready --label=pool:polecats"}
 	got := a.EffectiveWorkQuery()
