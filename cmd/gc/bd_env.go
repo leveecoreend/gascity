@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -54,6 +55,80 @@ func bdStoreForRig(rigDir, cityPath string, cfg *config.City, knownPrefix ...str
 		}
 	}
 	return beads.NewBdStoreWithPrefix(rigDir, bdCommandRunnerForRig(cityPath, cfg, rigDir), prefix)
+}
+
+func useBeadsLibStore(scopeRoot, cityPath string) bool {
+	driver, explicit := configuredBeadsDriverForCity(cityPath)
+	switch driver {
+	case "bd":
+		return false
+	case "beadslib":
+		return explicit || scopeHasBeadsLibServerMode(scopeRoot)
+	case "":
+		return scopeHasBeadsLibServerMode(scopeRoot)
+	default:
+		return false
+	}
+}
+
+func openBeadsLibStoreAt(scopeRoot, cityPath string) (beads.Store, error) {
+	if err := ensureBeadsLibServerMode(scopeRoot); err != nil {
+		return nil, err
+	}
+	cfg, err := loadCityConfig(cityPath, io.Discard)
+	if err != nil {
+		cfg = nil
+	}
+	prefix := issuePrefixForScope(scopeRoot, cityPath, cfg)
+	store, err := beads.NewBeadsLibStore(scopeRoot, prefix)
+	if err != nil {
+		return nil, err
+	}
+	return store, nil
+}
+
+type beadsLibMetadata struct {
+	Backend  string `json:"backend"`
+	DoltMode string `json:"dolt_mode"`
+	Project  string `json:"project_id"`
+}
+
+func readBeadsLibMetadata(scopeRoot string) (beadsLibMetadata, error) {
+	data, err := os.ReadFile(filepath.Join(scopeRoot, ".beads", "metadata.json"))
+	if err != nil {
+		return beadsLibMetadata{}, err
+	}
+	var meta beadsLibMetadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return beadsLibMetadata{}, err
+	}
+	return meta, nil
+}
+
+func scopeHasBeadsLibServerMode(scopeRoot string) bool {
+	meta, err := readBeadsLibMetadata(scopeRoot)
+	return err == nil &&
+		strings.TrimSpace(meta.Backend) == "dolt" &&
+		strings.TrimSpace(meta.DoltMode) == "server" &&
+		strings.TrimSpace(meta.Project) != ""
+}
+
+func ensureBeadsLibServerMode(scopeRoot string) error {
+	meta, err := readBeadsLibMetadata(scopeRoot)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("beadslib driver requires a server-mode .beads database; initialize %s with bd init --server", scopeRoot)
+		}
+		var syntaxErr *json.SyntaxError
+		if errors.As(err, &syntaxErr) {
+			return fmt.Errorf("parse beads metadata for beadslib driver: %w", err)
+		}
+		return fmt.Errorf("read beads metadata for beadslib driver: %w", err)
+	}
+	if strings.TrimSpace(meta.Backend) != "dolt" || strings.TrimSpace(meta.DoltMode) != "server" {
+		return fmt.Errorf("beadslib driver requires server-mode Dolt beads at %s; run bd init --server or set [backend].driver = \"bd\"", scopeRoot)
+	}
+	return nil
 }
 
 func controlBdStoreForCity(dir, cityPath string, cfg *config.City) *beads.BdStore {

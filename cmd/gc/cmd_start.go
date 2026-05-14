@@ -166,6 +166,10 @@ var noStrictMode bool
 // dryRunMode previews what agents would start without actually starting them.
 var dryRunMode bool
 
+// beadsDriverOverride selects the controller-side beads driver for this
+// process. Empty means use city.toml/defaults.
+var beadsDriverOverride string
+
 // buildIdleTracker creates an idleTracker from the config, populating
 // timeouts for agents that have idle_timeout set. Returns nil if no
 // agents use idle timeout (disabled).
@@ -292,6 +296,11 @@ Use "gc supervisor run" for foreground operation.`,
   gc supervisor run`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			if strings.TrimSpace(beadsDriverOverride) != "" {
+				if err := os.Setenv("GC_BEADS_DRIVER", strings.TrimSpace(beadsDriverOverride)); err != nil {
+					return err
+				}
+			}
 			if doStart(args, foregroundMode, stdout, stderr) != 0 {
 				return errExit
 			}
@@ -312,6 +321,8 @@ Use "gc supervisor run" for foreground operation.`,
 	cmd.Flags().MarkHidden("no-strict") //nolint:errcheck // flag always exists
 	cmd.Flags().BoolVarP(&dryRunMode, "dry-run", "n", false,
 		"preview what agents would start without starting them")
+	cmd.Flags().StringVar(&beadsDriverOverride, "beads-driver", "",
+		"override [backend].driver for this start (beadslib or bd)")
 	return cmd
 }
 

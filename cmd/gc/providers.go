@@ -504,6 +504,27 @@ func rawBeadsProviderFromConfig(cityPath string) string {
 	return "bd"
 }
 
+func beadsDriverForCity(cityPath string) string {
+	if driver, ok := configuredBeadsDriverForCity(cityPath); ok {
+		return driver
+	}
+	return "beadslib"
+}
+
+func configuredBeadsDriverForCity(cityPath string) (string, bool) {
+	if driver := strings.TrimSpace(beadsDriverOverride); driver != "" {
+		return strings.ToLower(driver), true
+	}
+	if driver := strings.TrimSpace(os.Getenv("GC_BEADS_DRIVER")); driver != "" {
+		return strings.ToLower(driver), true
+	}
+	driver := strings.TrimSpace(peekBackendDriver(filepath.Join(cityPath, "city.toml")))
+	if driver == "" {
+		return "", false
+	}
+	return strings.ToLower(driver), true
+}
+
 func providerUsesBdStoreContract(provider string) bool {
 	provider = strings.TrimSpace(provider)
 	if provider == "" || provider == "bd" {

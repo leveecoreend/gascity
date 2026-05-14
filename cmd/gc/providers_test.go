@@ -83,6 +83,61 @@ func TestRawBeadsProviderPreservesCustomExecOverride(t *testing.T) {
 	}
 }
 
+func TestBeadsDriverForCityDefaultIsBeadsLib(t *testing.T) {
+	resetBeadsDriverSelection(t)
+	cityDir := t.TempDir()
+	writeMinimalCityToml(t, cityDir)
+
+	if got := beadsDriverForCity(cityDir); got != "beadslib" {
+		t.Fatalf("beadsDriverForCity() = %q, want beadslib", got)
+	}
+}
+
+func TestUseBeadsLibStoreDefaultRequiresServerMode(t *testing.T) {
+	resetBeadsDriverSelection(t)
+	cityDir := t.TempDir()
+	writeMinimalCityToml(t, cityDir)
+
+	if useBeadsLibStore(cityDir, cityDir) {
+		t.Fatal("useBeadsLibStore() = true without metadata, want false")
+	}
+
+	if err := os.MkdirAll(filepath.Join(cityDir, ".beads"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cityDir, ".beads", "metadata.json"), []byte(`{"backend":"dolt","dolt_mode":"embedded"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if useBeadsLibStore(cityDir, cityDir) {
+		t.Fatal("useBeadsLibStore() = true for embedded metadata, want false")
+	}
+
+	if err := os.WriteFile(filepath.Join(cityDir, ".beads", "metadata.json"), []byte(`{"backend":"dolt","dolt_mode":"server"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if useBeadsLibStore(cityDir, cityDir) {
+		t.Fatal("useBeadsLibStore() = true for server metadata without project_id, want false")
+	}
+
+	if err := os.WriteFile(filepath.Join(cityDir, ".beads", "metadata.json"), []byte(`{"backend":"dolt","dolt_mode":"server","project_id":"project-1"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !useBeadsLibStore(cityDir, cityDir) {
+		t.Fatal("useBeadsLibStore() = false for server metadata with project_id, want true")
+	}
+}
+
+func TestUseBeadsLibStoreExplicitDriverRefusesFallback(t *testing.T) {
+	resetBeadsDriverSelection(t)
+	cityDir := t.TempDir()
+	writeMinimalCityToml(t, cityDir)
+	t.Setenv("GC_BEADS_DRIVER", "beadslib")
+
+	if !useBeadsLibStore(cityDir, cityDir) {
+		t.Fatal("useBeadsLibStore() = false for explicit beadslib driver, want true")
+	}
+}
+
 func TestRawBeadsProviderForScopePreservesExplicitEnvOverride(t *testing.T) {
 	cityDir := t.TempDir()
 	rigDir := filepath.Join(cityDir, "frontend")
@@ -211,6 +266,16 @@ provider = "file"
 	if got := rawBeadsProviderForScope(rigDir, cityDir); got != "bd" {
 		t.Fatalf("rawBeadsProviderForScope() = %q, want bd metadata to outrank stale file marker", got)
 	}
+}
+
+func resetBeadsDriverSelection(t *testing.T) {
+	t.Helper()
+	old := beadsDriverOverride
+	beadsDriverOverride = ""
+	t.Cleanup(func() {
+		beadsDriverOverride = old
+	})
+	t.Setenv("GC_BEADS_DRIVER", "")
 }
 
 func TestConfiguredACPSessionNames_UsesProvidedSnapshot(t *testing.T) {

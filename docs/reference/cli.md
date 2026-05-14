@@ -2745,6 +2745,7 @@ gc start
 
 | Flag | Type | Default | Description |
 |------|------|---------|-------------|
+| `--beads-driver` | string |  | override [backend].driver for this start (beadslib or bd) |
 | `-n`, `--dry-run` | bool |  | preview what agents would start without starting them |
 
 ## gc status

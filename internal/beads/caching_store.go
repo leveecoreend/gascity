@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-// CachingStore wraps a BdStore with an in-memory cache.
+// CachingStore wraps a prefix-aware Store with an in-memory cache.
 // Reads are served from memory when the cache is live. Writes pass
 // through to the backing store and update the cache on success.
 //
@@ -22,10 +22,8 @@ import (
 // event bus delivers bead.created/updated/closed events. The background
 // reconciler acts as a watchdog and only performs a full scan once the
 // cache has gone stale or degraded.
-//
-// Only wraps BdStore because the event hook path requires dolt/bd.
 type CachingStore struct {
-	backing  Store // runtime: always *BdStore; tests may use MemStore
+	backing  Store
 	idPrefix string
 
 	mu              sync.RWMutex
@@ -154,14 +152,11 @@ func computeAutoStagger(agentID string) time.Duration {
 	return time.Duration(int64(h.Sum32())%modMs) * time.Millisecond
 }
 
-// NewCachingStore wraps a BdStore with an in-memory read cache.
+// NewCachingStore wraps a prefix-aware Store with an in-memory read cache.
 // Call Prime() before serving reads, then StartReconciler() for
 // watchdog reconciliation. The onChange callback (optional) is called for
 // each detected external change with event type and bead JSON.
-//
-// Only BdStore is supported because the event hook path (bd hooks ->
-// gc event emit -> event bus -> ApplyEvent) requires dolt infrastructure.
-func NewCachingStore(backing *BdStore, onChange func(eventType, beadID string, payload json.RawMessage)) *CachingStore {
+func NewCachingStore(backing StoreWithPrefix, onChange func(eventType, beadID string, payload json.RawMessage)) *CachingStore {
 	prefix := ""
 	if backing != nil {
 		prefix = backing.IDPrefix()
@@ -174,7 +169,7 @@ func NewCachingStore(backing *BdStore, onChange func(eventType, beadID string, p
 }
 
 // NewCachingStoreForTest wraps any Store for testing. Production code
-// must use NewCachingStore with a *BdStore.
+// must use NewCachingStore with a StoreWithPrefix.
 func NewCachingStoreForTest(backing Store, onChange func(eventType, beadID string, payload json.RawMessage)) *CachingStore {
 	return newCachingStore(backing, "", onChange)
 }

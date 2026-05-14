@@ -877,6 +877,22 @@
       ],
       "description": "AgentPatch modifies an existing agent identified by (Dir, Name)."
     },
+    "BackendConfig": {
+      "properties": {
+        "driver": {
+          "type": "string",
+          "enum": [
+            "bd",
+            "beadslib"
+          ],
+          "description": "Driver selects the in-process store implementation for bd-backed scopes:\n\"beadslib\" (default) or \"bd\" for the subprocess fallback.",
+          "default": "beadslib"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "BackendConfig holds low-level controller backend settings."
+    },
     "BeadsConfig": {
       "properties": {
         "provider": {
@@ -962,6 +978,10 @@
         "beads": {
           "$ref": "#/$defs/BeadsConfig",
           "description": "Beads configures the bead store backend."
+        },
+        "backend": {
+          "$ref": "#/$defs/BackendConfig",
+          "description": "Backend configures controller-side store implementation details."
         },
         "session": {
           "$ref": "#/$defs/SessionConfig",

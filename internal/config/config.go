@@ -185,6 +185,8 @@ type City struct {
 	Patches Patches `toml:"patches,omitempty"`
 	// Beads configures the bead store backend.
 	Beads BeadsConfig `toml:"beads,omitempty"`
+	// Backend configures controller-side store implementation details.
+	Backend BackendConfig `toml:"backend,omitempty"`
 	// Session configures the session provider backend.
 	Session SessionConfig `toml:"session,omitempty"`
 	// Mail configures the mail provider backend.
@@ -916,6 +918,13 @@ type BeadsConfig struct {
 	// Provider selects the bead store backend: "bd" (default), "file",
 	// or "exec:<script>" for a user-supplied script.
 	Provider string `toml:"provider,omitempty" jsonschema:"default=bd"`
+}
+
+// BackendConfig holds low-level controller backend settings.
+type BackendConfig struct {
+	// Driver selects the in-process store implementation for bd-backed scopes:
+	// "beadslib" (default) or "bd" for the subprocess fallback.
+	Driver string `toml:"driver,omitempty" jsonschema:"default=beadslib,enum=bd,enum=beadslib"`
 }
 
 // SessionConfig holds session provider settings.

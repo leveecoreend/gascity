@@ -297,6 +297,24 @@ func peekBeadsProvider(tomlPath string) string {
 	return peek.Beads.Provider
 }
 
+// peekBackendDriver reads just the backend.driver field from a city.toml
+// without doing full config parsing. Returns "" if not set or on error.
+func peekBackendDriver(tomlPath string) string {
+	data, err := os.ReadFile(tomlPath)
+	if err != nil {
+		return ""
+	}
+	var peek struct {
+		Backend struct {
+			Driver string `toml:"driver"`
+		} `toml:"backend"`
+	}
+	if _, err := toml.Decode(string(data), &peek); err != nil {
+		return ""
+	}
+	return peek.Backend.Driver
+}
+
 // materializeFS walks an embed.FS rooted at root, writes all files to dstDir,
 // and returns the relative file paths that belong in the generated directory.
 func materializeFS(embedded fs.FS, root, dstDir string) (map[string]struct{}, error) {

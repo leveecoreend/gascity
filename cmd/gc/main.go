@@ -908,6 +908,8 @@ func openStoreAtForCity(storePath, cityPath string) (beads.Store, error) {
 		return store, nil
 	}
 	switch provider {
+	case "beadslib":
+		return openBeadsLibStoreAt(scopeRoot, runtimeCityPath)
 	case "file":
 		return openCompatibleFileStore(scopeRoot, runtimeCityPath)
 	default: // "bd" or unrecognized → use bd
@@ -937,6 +939,9 @@ func resolveStoreScopeRoot(cityPath, storePath string) string {
 }
 
 func openBdStoreAt(storePath, cityPath string) (beads.Store, error) {
+	if useBeadsLibStore(storePath, cityPath) {
+		return openBeadsLibStoreAt(storePath, cityPath)
+	}
 	if filepath.Clean(storePath) == filepath.Clean(cityPath) {
 		return bdStoreForCity(storePath, cityPath), nil
 	}

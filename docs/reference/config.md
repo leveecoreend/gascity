@@ -20,6 +20,7 @@ City is the top-level configuration for a Gas City instance.
 | `rigs` | []Rig |  |  | Rigs lists external projects registered in the city. |
 | `patches` | Patches |  |  | Patches holds targeted modifications applied after fragment merge. |
 | `beads` | BeadsConfig |  |  | Beads configures the bead store backend. |
+| `backend` | BackendConfig |  |  | Backend configures controller-side store implementation details. |
 | `session` | SessionConfig |  |  | Session configures the session provider backend. |
 | `mail` | MailConfig |  |  | Mail configures the mail provider backend. |
 | `events` | EventsConfig |  |  | Events configures the events provider backend. |
@@ -232,6 +233,14 @@ AgentPatch modifies an existing agent identified by (Dir, Name).
 | `min_active_sessions` | integer |  |  | MinActiveSessions overrides the minimum number of sessions to keep alive. |
 | `scale_check` | string |  |  | ScaleCheck overrides the command template whose output reports new unassigned session demand for bead-backed reconciliation. Supports the same Go template placeholders as Agent.scale_check. |
 | `option_defaults` | map[string]string |  |  | OptionDefaults adds or overrides provider option defaults for this agent. Keys are option keys, values are choice values. Merges additively (patch keys win over existing agent keys). Example: option_defaults = &#123; model = "sonnet" &#125; |
+
+## BackendConfig
+
+BackendConfig holds low-level controller backend settings.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `driver` | string |  | `beadslib` | Driver selects the in-process store implementation for bd-backed scopes: "beadslib" (default) or "bd" for the subprocess fallback. Enum: `bd`, `beadslib` |
 
 ## BeadsConfig
 

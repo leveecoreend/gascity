@@ -237,6 +237,14 @@ type Store interface {
 	DepList(id, direction string) ([]Dep, error)
 }
 
+// StoreWithPrefix is implemented by stores that know their owned bead ID
+// prefix. CachingStore uses this to ignore events for beads owned by other
+// rig stores.
+type StoreWithPrefix interface {
+	Store
+	IDPrefix() string
+}
+
 // ParentProjectionWaiter is an optional capability for stores whose
 // parent-child listing path may lag a successful parent update. Callers that
 // need strict read-after-write semantics for parent projections can type-assert

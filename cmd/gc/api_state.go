@@ -109,10 +109,11 @@ func newControllerState(
 	return cs
 }
 
-// wrapWithCachingStore wraps a BdStore with a CachingStore that primes
-// and starts a background reconciler. Non-BdStore stores are returned as-is.
+// wrapWithCachingStore wraps a prefix-aware store with a CachingStore that
+// primes and starts a background reconciler. Stores without an owned prefix are
+// returned as-is.
 func wrapWithCachingStore(ctx context.Context, store beads.Store, ep events.Provider) beads.Store {
-	bdStore, ok := store.(*beads.BdStore)
+	prefixStore, ok := store.(beads.StoreWithPrefix)
 	if !ok {
 		return store
 	}
@@ -133,7 +134,7 @@ func wrapWithCachingStore(ctx context.Context, store beads.Store, ep events.Prov
 			})
 		}
 	}
-	cs := beads.NewCachingStore(bdStore, onChange)
+	cs := beads.NewCachingStore(prefixStore, onChange)
 	// Pre-prime active beads synchronously (~1-2s, indexed queries).
 	// Loads open + in_progress beads — enough for the startup path
 	// (adoption, session snapshot, desired state) so the city can
@@ -215,6 +216,12 @@ func (cs *controllerState) openRigStore(provider, rigName, rigPath, prefix strin
 		return s
 	}
 	switch provider {
+	case "beadslib":
+		store, err := openBeadsLibStoreAt(scopeRoot, cs.cityPath)
+		if err != nil {
+			return unavailableStore{err: err}
+		}
+		return store
 	case "file":
 		store, err := openCompatibleFileStore(scopeRoot, cs.cityPath)
 		if err != nil {
@@ -222,6 +229,13 @@ func (cs *controllerState) openRigStore(provider, rigName, rigPath, prefix strin
 		}
 		return store
 	default: // "bd" or unrecognized
+		if useBeadsLibStore(scopeRoot, cs.cityPath) {
+			store, err := openBeadsLibStoreAt(scopeRoot, cs.cityPath)
+			if err != nil {
+				return unavailableStore{err: err}
+			}
+			return store
+		}
 		return bdStoreForRig(scopeRoot, cs.cityPath, cfg, prefix)
 	}
 }
