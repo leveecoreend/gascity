@@ -5401,7 +5401,7 @@ func TestDryRunMultiSessionConfig(t *testing.T) {
 	if !strings.Contains(out, "Session config: hw/polecat (min=1 max=3)") {
 		t.Errorf("stdout missing multi-session config info: %s", out)
 	}
-	if !strings.Contains(out, "bd update {} --assignee hw/polecat --set-metadata gc.routed_to=hw/polecat") {
+	if !strings.Contains(out, "bd update {} --set-metadata gc.routed_to=hw/polecat") {
 		t.Errorf("stdout missing sling query: %s", out)
 	}
 	if !strings.Contains(out, "Multi-session configs share a routed work queue via gc.routed_to") {
@@ -7445,13 +7445,10 @@ func TestSlingStdinWithExtraArg(t *testing.T) {
 	}
 }
 
-// TestCliBeadRouter_BuiltinPathSetsAssigneeAndMetadata pins the bug fix:
-// when a slung bead falls through the built-in fast path (no custom
-// sling_query), the bead must end up with BOTH the assignee and the
-// gc.routed_to metadata. Without the assignee, the supervisor's
-// assignedWorkBeads query (which filters by Bead.Assignee) cannot see
-// the bead, and on_demand agents like deep-investigator never materialize.
-func TestCliBeadRouter_BuiltinPathSetsAssigneeAndMetadata(t *testing.T) {
+// TestCliBeadRouter_BuiltinPathSetsSingletonAssigneeAndMetadata pins the
+// singleton fast path: non-expanding sessions can claim directly through their
+// Tier-2 ready-assigned lookup, while multi-instance pools stay metadata-only.
+func TestCliBeadRouter_BuiltinPathSetsSingletonAssigneeAndMetadata(t *testing.T) {
 	store := beads.NewMemStore()
 	bead, err := store.Create(beads.Bead{
 		ID:     "BL-99",
@@ -7467,7 +7464,7 @@ func TestCliBeadRouter_BuiltinPathSetsAssigneeAndMetadata(t *testing.T) {
 		Agents: []config.Agent{
 			// Default sling query (no SlingQuery override) — the built-in
 			// fast path should be selected for this agent.
-			{Name: "deep-investigator"},
+			{Name: "deep-investigator", MaxActiveSessions: intPtr(1)},
 		},
 	}
 	router := cliBeadRouter{deps: &slingDeps{Cfg: cfg, Store: store}}
@@ -7482,7 +7479,7 @@ func TestCliBeadRouter_BuiltinPathSetsAssigneeAndMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := updated.Assignee; got != "deep-investigator" {
-		t.Errorf("Assignee = %q, want %q (without this the supervisor cannot see the slung bead)", got, "deep-investigator")
+		t.Errorf("Assignee = %q, want %q", got, "deep-investigator")
 	}
 	if got := updated.Metadata["gc.routed_to"]; got != "deep-investigator" {
 		t.Errorf("gc.routed_to = %q, want %q", got, "deep-investigator")

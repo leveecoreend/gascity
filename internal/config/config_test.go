@@ -1467,10 +1467,13 @@ func TestEffectiveWorkQueryClaimsSlingAssignedWorkBeforeUnassignedRoute(t *testi
 	}, `#!/bin/sh
 set -eu
 case "$*" in
-  "ready --assignee=deep-investigator --json --limit=1")
+  "list --status in_progress --assignee=deep-investigator --exclude-type=epic --json --limit=1")
+    printf '[]'
+    ;;
+  "ready --assignee=deep-investigator --exclude-type=epic --json --limit=1")
     printf '[{"id":"ga-assigned","assignee":"deep-investigator","metadata":{"gc.routed_to":"deep-investigator"}}]'
     ;;
-  "ready --metadata-field gc.routed_to=deep-investigator --unassigned --json --limit=1")
+  "ready --metadata-field gc.routed_to=deep-investigator --unassigned --exclude-type=epic --json --limit=1")
     printf '[{"id":"ga-unassigned","metadata":{"gc.routed_to":"deep-investigator"}}]'
     ;;
   *)
@@ -1512,7 +1515,7 @@ func TestEffectiveWorkQueryPoolDefault(t *testing.T) {
 }
 
 func TestEffectiveSlingQueryFixedAgent(t *testing.T) {
-	a := Agent{Name: "mayor"}
+	a := Agent{Name: "mayor", MaxActiveSessions: ptrInt(1)}
 	got := a.EffectiveSlingQuery()
 	want := "bd update {} --assignee mayor --set-metadata gc.routed_to=mayor"
 	if got != want {
@@ -1521,7 +1524,7 @@ func TestEffectiveSlingQueryFixedAgent(t *testing.T) {
 }
 
 func TestEffectiveSlingQueryFixedAgentWithDir(t *testing.T) {
-	a := Agent{Name: "refinery", Dir: "hello-world"}
+	a := Agent{Name: "refinery", Dir: "hello-world", MaxActiveSessions: ptrInt(1)}
 	got := a.EffectiveSlingQuery()
 	want := "bd update {} --assignee hello-world/refinery --set-metadata gc.routed_to=hello-world/refinery"
 	if got != want {
@@ -1532,7 +1535,7 @@ func TestEffectiveSlingQueryFixedAgentWithDir(t *testing.T) {
 func TestEffectiveSlingQueryPoolDefault(t *testing.T) {
 	a := Agent{Name: "polecat", Dir: "hello-world", MinActiveSessions: ptrInt(1), MaxActiveSessions: ptrInt(3)}
 	got := a.EffectiveSlingQuery()
-	want := "bd update {} --assignee hello-world/polecat --set-metadata gc.routed_to=hello-world/polecat"
+	want := "bd update {} --set-metadata gc.routed_to=hello-world/polecat"
 	if got != want {
 		t.Errorf("EffectiveSlingQuery() = %q, want %q", got, want)
 	}
@@ -1646,7 +1649,7 @@ func TestEffectiveSlingQueryPoolNameOverride(t *testing.T) {
 		PoolName: "hello-world/dog",
 	}
 	got := a.EffectiveSlingQuery()
-	want := "bd update {} --assignee hello-world/dog-1 --set-metadata gc.routed_to=hello-world/dog-1"
+	want := "bd update {} --set-metadata gc.routed_to=hello-world/dog-1"
 	if got != want {
 		t.Errorf("EffectiveSlingQuery() = %q, want %q", got, want)
 	}

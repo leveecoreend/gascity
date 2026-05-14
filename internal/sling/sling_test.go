@@ -273,8 +273,9 @@ func TestCheckBeadStatePinnedDefaultBDQueryRemainsIdempotent(t *testing.T) {
 	}
 
 	result := CheckBeadState(store, bead.ID, config.Agent{
-		Name:       "mayor",
-		SlingQuery: "bd   update {}   --assignee mayor   --set-metadata gc.routed_to=mayor",
+		Name:              "mayor",
+		MaxActiveSessions: intPtr(1),
+		SlingQuery:        "bd   update {}   --assignee mayor   --set-metadata gc.routed_to=mayor",
 	}, SlingDeps{})
 
 	if !result.Idempotent {

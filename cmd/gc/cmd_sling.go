@@ -586,6 +586,7 @@ func (r cliBeadRouter) Route(_ context.Context, req sling.RouteRequest) error {
 	if r.deps == nil {
 		return fmt.Errorf("sling router: missing dependencies")
 	}
+	assignTarget := true
 	if r.deps.Cfg != nil {
 		if agentCfg, ok := findAgentByQualified(r.deps.Cfg, req.Target); ok && isCustomSlingQuery(agentCfg) {
 			if r.deps.Runner == nil {
@@ -594,22 +595,21 @@ func (r cliBeadRouter) Route(_ context.Context, req sling.RouteRequest) error {
 			slingCmd, _ := sling.BuildSlingCommandForAgent("sling_query", agentCfg.EffectiveSlingQuery(), req.BeadID, r.deps.CityPath, r.deps.CityName, agentCfg, r.deps.Cfg.Rigs)
 			_, err := r.deps.Runner(req.WorkDir, slingCmd, req.Env)
 			return err
+		} else if ok {
+			assignTarget = !agentCfg.SupportsInstanceExpansion()
 		}
 	}
 	if r.deps.Store == nil {
 		return fmt.Errorf("built-in sling routing requires a store")
 	}
-	// Set assignee in addition to gc.routed_to. Without an assignee, the
-	// supervisor's assignedWorkBeads query (which filters by Bead.Assignee)
-	// cannot see the slung bead and the target agent never materializes —
-	// gc.routed_to alone is informational. Update writes both atomically so a
-	// concurrent reader never observes a half-routed bead. This mirrors the
-	// behavior of the textual default sling query (see Agent.DefaultSlingQuery).
-	target := req.Target
-	if err := r.deps.Store.Update(req.BeadID, beads.UpdateOpts{
-		Assignee: &target,
+	opts := beads.UpdateOpts{
 		Metadata: map[string]string{"gc.routed_to": req.Target},
-	}); err != nil {
+	}
+	if assignTarget {
+		target := req.Target
+		opts.Assignee = &target
+	}
+	if err := r.deps.Store.Update(req.BeadID, opts); err != nil {
 		return fmt.Errorf("routing %s to %s: %w", req.BeadID, req.Target, err)
 	}
 	return nil
