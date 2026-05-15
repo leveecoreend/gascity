@@ -2,6 +2,9 @@ module github.com/myfork/gascity
 
 go 1.22
 
+// Personal fork of gastownhall/gascity for learning Ethereum/Go development.
+// Upstream: https://github.com/gastownhall/gascity
+
 require (
 	github.com/ethereum/go-ethereum v1.13.14
 	github.com/gin-gonic/gin v1.9.1
